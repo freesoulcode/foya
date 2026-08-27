@@ -16,6 +16,16 @@ type SubmitTurnResponse struct {
 	RunID string `json:"run_id"`
 }
 
+// ProviderConfig 是 provider 配置的线格式(读写设置界面用)。
+// 读取时 APIKey 脱敏(仅返回是否已设置),写入时按需带上明文。
+type ProviderConfig struct {
+	Kind      string `json:"kind"`
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	APIKey    string `json:"api_key,omitempty"`     // 仅写入方向携带
+	HasAPIKey bool   `json:"has_api_key,omitempty"` // 仅读取方向返回:是否已配置 key
+}
+
 // ApprovalDecisionRequest 是客户端回执一个审批决策。
 type ApprovalDecisionRequest struct {
 	RequestID string `json:"request_id"`

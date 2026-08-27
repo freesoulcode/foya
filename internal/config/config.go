@@ -29,6 +29,16 @@ type Config struct {
 	SocketPath string // Unix socket 路径(TransportUnixSocket 时)
 	Addr       string // 监听地址(TransportTCP 时)
 	DataDir    string // 事件日志、SQLite 索引所在目录
+
+	Provider Provider // 模型 provider 配置(BYOK)
+}
+
+// Provider 是模型 provider 配置(BYOK:用户自带 base_url + key + model)。
+type Provider struct {
+	Kind    string // 始终为 "openai"
+	BaseURL string
+	APIKey  string
+	Model   string
 }
 
 // Default 返回本地桌面场景的默认配置。
@@ -38,6 +48,17 @@ func Default() Config {
 		Lifecycle:  LifecycleEphemeral,
 		SocketPath: DefaultSocketPath(),
 		DataDir:    DefaultDataDir(),
+		Provider:   providerFromEnv(),
+	}
+}
+
+// providerFromEnv 从环境变量装配 provider 配置。
+func providerFromEnv() Provider {
+	return Provider{
+		Kind:    "openai",
+		BaseURL: os.Getenv("FOYA_PROVIDER_BASE_URL"),
+		APIKey:  os.Getenv("FOYA_PROVIDER_API_KEY"),
+		Model:   os.Getenv("FOYA_PROVIDER_MODEL"),
 	}
 }
 
