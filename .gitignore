@@ -1,0 +1,35 @@
+# 二进制产物
+/bin/
+/dist/
+/foya
+*.exe
+
+# Sidecar 构建产物(由 make sidecar 生成,不入库)
+/apps/desktop/src-tauri/binaries/
+
+# Go
+*.test
+*.out
+/vendor/
+
+# 运行时数据(会话日志、SQLite 索引、凭证等，绝不入库)
+/run/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+
+# 前端(后续加入)
+node_modules/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/target/
+
+# 环境与密钥
+.env
+.env.*
+*.key
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/

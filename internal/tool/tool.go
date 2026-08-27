@@ -1,0 +1,54 @@
+// Package tool 定义工具接口、注册表与路由。
+//
+// 工具是模型可调用的执行单元:声明喂给模型的 schema、把模型返回的
+// 调用路由到 handler、执行并结构化回灌。工具是内核的核心扩展点——
+// 子 agent、Computer Use 等能力都以工具形态暴露给模型。
+package tool
+
+import "context"
+
+// Exposure 控制工具对模型的可见性。
+type Exposure string
+
+const (
+	ExposureDirect   Exposure = "direct"   // 初始即在模型工具列表中
+	ExposureDeferred Exposure = "deferred" // 延迟加载 schema,经 tool-search 拉取(省 token)
+	ExposureHidden   Exposure = "hidden"   // 不暴露给模型
+)
+
+// Call 是模型发起的一次工具调用。
+type Call struct {
+	ID    string
+	Name  string
+	Input []byte // 原始 JSON 参数
+}
+
+// ContentPart 是工具结果的一个内容块(文本 / 图片 / artifact 引用)。
+type ContentPart struct {
+	Type string // text / image / artifact_ref
+	Text string
+	Ref  string // artifact 引用(富媒体走引用,不塞进事件流)
+}
+
+// Result 是工具执行结果。
+type Result struct {
+	Content   []ContentPart
+	IsError   bool // 失败也结构化回灌给模型自我修正
+	Terminate bool // 是否提前结束该回合批次
+}
+
+// Tool 是模型可调用的执行单元。
+type Tool interface {
+	Name() string
+	Spec() []byte // JSON Schema,喂给模型
+	Exposure() Exposure
+	Run(ctx context.Context, call Call) (Result, error)
+}
+
+// Registry 管理工具集合。
+type Registry interface {
+	Register(t Tool)         // 内置工具
+	RegisterExternal(t Tool) // MCP / 动态工具,可去重
+	Get(name string) (Tool, bool)
+	List() []Tool
+}
