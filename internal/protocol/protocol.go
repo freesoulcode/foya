@@ -11,6 +11,22 @@ type SubmitTurnRequest struct {
 	Message string `json:"message"`
 }
 
+// CreateSessionRequest 新建会话时的可选参数。
+// 留空的字段由内核用当前 provider 默认值/默认审批档位填充。
+type CreateSessionRequest struct {
+	Model        string `json:"model,omitempty"`
+	Workspace    string `json:"workspace,omitempty"`
+	ApprovalMode string `json:"approval_mode,omitempty"`
+}
+
+// UpdateSessionRequest 局部更新会话可变字段。
+// 指针为 nil 表示不变;空字符串表示清空。
+type UpdateSessionRequest struct {
+	Model        *string `json:"model,omitempty"`
+	Workspace    *string `json:"workspace,omitempty"`
+	ApprovalMode *string `json:"approval_mode,omitempty"`
+}
+
 // SubmitTurnResponse 返回该回合的 RunID,用于在 SSE 流中关联事件。
 type SubmitTurnResponse struct {
 	RunID string `json:"run_id"`
@@ -24,6 +40,11 @@ type ProviderConfig struct {
 	Model     string `json:"model"`
 	APIKey    string `json:"api_key,omitempty"`     // 仅写入方向携带
 	HasAPIKey bool   `json:"has_api_key,omitempty"` // 仅读取方向返回:是否已配置 key
+}
+
+// ModelsResponse 是 GET /config/models 的响应。
+type ModelsResponse struct {
+	Models []string `json:"models"`
 }
 
 // ApprovalDecisionRequest 是客户端回执一个审批决策。

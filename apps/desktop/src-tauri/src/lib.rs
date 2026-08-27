@@ -89,11 +89,27 @@ mod kernel {
     }
 }
 
-/// 建会话,返回会话 JSON。
+/// 建会话,返回会话 JSON。options 为可选的创建参数(model/workspace/approval_mode)。
 #[cfg(unix)]
 #[tauri::command]
-fn create_session() -> Result<String, String> {
-    kernel::request("POST", "/sessions", None)
+fn create_session(options: Option<serde_json::Value>) -> Result<String, String> {
+    let body = options.map(|v| v.to_string());
+    kernel::request(
+        "POST",
+        "/sessions",
+        body.as_deref(),
+    )
+}
+
+/// 局部更新会话(模型/工作目录/审批档位),返回更新后的会话 JSON。
+#[cfg(unix)]
+#[tauri::command]
+fn update_session(session_id: String, patch: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "PATCH",
+        &format!("/sessions/{session_id}"),
+        Some(&patch.to_string()),
+    )
 }
 
 /// 提交一轮对话。
@@ -132,6 +148,13 @@ fn set_provider(config: serde_json::Value) -> Result<String, String> {
     kernel::request("PUT", "/config/provider", Some(&config.to_string()))
 }
 
+/// 拉取当前 provider 可用模型列表(内核用已配置的 base_url + api_key 代求 /models)。
+#[cfg(unix)]
+#[tauri::command]
+fn list_models() -> Result<String, String> {
+    kernel::request("GET", "/config/models", None)
+}
+
 /// 订阅会话事件流。在后台线程持续把 SSE 事件经 Channel 推给前端。
 #[cfg(unix)]
 #[tauri::command]
@@ -145,7 +168,13 @@ fn subscribe_events(session_id: String, channel: Channel<String>) -> Result<(), 
 // Windows 占位。
 #[cfg(not(unix))]
 #[tauri::command]
-fn create_session() -> Result<String, String> {
+fn create_session(_options: Option<serde_json::Value>) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn update_session(_session_id: String, _patch: serde_json::Value) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -181,6 +210,12 @@ fn set_provider(_config: serde_json::Value) -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn list_models() -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn subscribe_events(_session_id: String, _channel: Channel<String>) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -190,6 +225,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // macOS 用 titleBarStyle=Overlay(在 tauri.conf.json)保留红绿灯;
             // 其他平台关闭原生装饰,改用前端自绘标题栏(WindowControls)。
@@ -227,11 +263,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_session,
+            update_session,
             submit_turn,
             list_sessions,
             load_history,
             get_provider,
             set_provider,
+            list_models,
             subscribe_events
         ])
         .run(tauri::generate_context!())

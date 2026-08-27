@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
@@ -35,10 +36,10 @@ type Config struct {
 
 // Provider 是模型 provider 配置(BYOK:用户自带 base_url + key + model)。
 type Provider struct {
-	Kind    string // 始终为 "openai"
-	BaseURL string
-	APIKey  string
-	Model   string
+	Kind    string `json:"kind"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
+	Model   string `json:"model"`
 }
 
 // Default 返回本地桌面场景的默认配置。
@@ -76,4 +77,43 @@ func DefaultDataDir() string {
 // 放在用户私有目录下,靠 0700 目录 + 0600 socket 做单用户信任边界。
 func DefaultSocketPath() string {
 	return filepath.Join(DefaultDataDir(), "kernel.sock")
+}
+
+// providerConfigPath 返回持久化 provider 配置文件路径。
+func providerConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, "provider.json")
+}
+
+// LoadProvider 从 dataDir 读取持久化的 provider 配置。
+// 文件不存在时返回 (零值, false, nil),供调用方回退到环境变量。
+func LoadProvider(dataDir string) (Provider, bool, error) {
+	b, err := os.ReadFile(providerConfigPath(dataDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Provider{}, false, nil
+		}
+		return Provider{}, false, err
+	}
+	var p Provider
+	if err := json.Unmarshal(b, &p); err != nil {
+		return Provider{}, false, err
+	}
+	if p.Kind == "" {
+		p.Kind = "openai"
+	}
+	return p, true, nil
+}
+
+// SaveProvider 把 provider 配置持久化到 dataDir。
+// 目录权限 0700、文件权限 0600,构成单用户信任边界(脚手架阶段;
+// 后续 API Key 改为存 OS keychain)。
+func SaveProvider(dataDir string, p Provider) error {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(providerConfigPath(dataDir), b, 0o600)
 }

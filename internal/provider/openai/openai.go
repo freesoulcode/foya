@@ -151,5 +151,54 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	return ch, nil
 }
 
+// modelsResponse 是 GET /models 的响应(仅取需要的字段)。
+type modelsResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 列表。
+// 复用已配置的 baseURL 与 apiKey,直连用户自带端点(BYOK)。
+func (p *Provider) ListModels(ctx context.Context) ([]string, error) {
+	if p.baseURL == "" {
+		return nil, fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL 和 API Key")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("provider 返回 %s: %s", resp.Status, strings.TrimSpace(buf.String()))
+	}
+
+	var mr modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+		return nil, fmt.Errorf("解析模型列表失败: %w", err)
+	}
+	ids := make([]string, 0, len(mr.Data))
+	for _, m := range mr.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids, nil
+}
+
 // 确保实现了接口。
-var _ provider.Provider = (*Provider)(nil)
+var (
+	_ provider.Provider    = (*Provider)(nil)
+	_ provider.ModelLister = (*Provider)(nil)
+)

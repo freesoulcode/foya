@@ -8,6 +8,8 @@ package backend
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/freesoulcode/foya/internal/agent"
@@ -32,25 +34,33 @@ type Backend struct {
 	engine   *agent.Engine
 
 	buildProvider ProviderBuilder
+	dataDir       string
 	mu            sync.RWMutex // 保护 provCfg
 	provCfg       config.Provider
 }
 
 // New 组装一个 Backend。
-func New(sessions session.Manager, log *state.MemLog, bus *broker.Broker[event.Event], engine *agent.Engine, build ProviderBuilder, provCfg config.Provider) *Backend {
+func New(sessions session.Manager, log *state.MemLog, bus *broker.Broker[event.Event], engine *agent.Engine, build ProviderBuilder, provCfg config.Provider, dataDir string) *Backend {
 	return &Backend{
 		sessions:      sessions,
 		log:           log,
 		bus:           bus,
 		engine:        engine,
 		buildProvider: build,
+		dataDir:       dataDir,
 		provCfg:       provCfg,
 	}
 }
 
-// CreateSession 新建会话。
-func (b *Backend) CreateSession(model string) (*session.Session, error) {
-	return b.sessions.Create(model)
+// CreateSession 新建会话。opts 中为空的字段由调用方(server)填充默认值。
+func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, error) {
+	return b.sessions.Create(opts)
+}
+
+// UpdateSession 局部更新会话可变字段(模型/工作目录/审批档位),
+// 供会话进行中实时切换审批档位等场景使用。
+func (b *Backend) UpdateSession(id string, model, workspace, approvalMode *string) (*session.Session, error) {
+	return b.sessions.Update(id, model, workspace, approvalMode)
 }
 
 // ListSessions 列出会话。
@@ -85,11 +95,21 @@ func (b *Backend) ProviderConfig() config.Provider {
 	return b.provCfg
 }
 
+// ListModels 列出当前 provider 可用的模型(供模型选择器拉取)。
+func (b *Backend) ListModels(ctx context.Context) ([]string, error) {
+	return b.engine.ListModels(ctx)
+}
+
 // SetProviderConfig 热替换 provider 配置并重建 provider(供设置界面保存)。
+// 同时持久化到数据目录,使下次启动自动加载。
 func (b *Backend) SetProviderConfig(pc config.Provider) {
 	prov, model := b.buildProvider(pc)
 	b.engine.SwitchProvider(prov, model)
 	b.mu.Lock()
 	b.provCfg = pc
 	b.mu.Unlock()
+	// 持久化失败不影响内存热替换;记录到 stderr 供排查。
+	if err := config.SaveProvider(b.dataDir, pc); err != nil {
+		fmt.Fprintf(os.Stderr, "persist provider config failed: %v\n", err)
+	}
 }

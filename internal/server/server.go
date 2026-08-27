@@ -7,12 +7,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/protocol"
+	"github.com/freesoulcode/foya/internal/session"
 )
 
 // Server 承载 REST + SSE 路由。
@@ -33,11 +35,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
+	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
 	s.mux.HandleFunc("GET /config/provider", s.handleGetProvider)
 	s.mux.HandleFunc("PUT /config/provider", s.handleSetProvider)
+	s.mux.HandleFunc("GET /config/models", s.handleListModels)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -45,12 +49,50 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleCreateSession 新建会话。会话模型取当前 provider 的默认模型。
+// handleCreateSession 新建会话。可在请求体中指定模型、工作目录、审批档位;
+// 未指定模型时回退到当前 provider 的默认模型,未指定审批档位时默认为 ask。
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	model := s.backend.ProviderConfig().Model
-	sess, err := s.backend.CreateSession(model)
+	var req protocol.CreateSessionRequest
+	// 兼容空 body(旧客户端):忽略解码错误。
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	model := req.Model
+	if model == "" {
+		model = s.backend.ProviderConfig().Model
+	}
+	approval := req.ApprovalMode
+	if approval == "" {
+		approval = "ask"
+	}
+
+	sess, err := s.backend.CreateSession(session.CreateOptions{
+		Model:        model,
+		Workspace:    req.Workspace,
+		ApprovalMode: approval,
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+// handleUpdateSession 局部更新会话可变字段(模型/工作目录/审批档位),
+// 供会话进行中实时切换审批档位等场景。更新对后续工具调用立即生效。
+func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req protocol.UpdateSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	sess, err := s.backend.UpdateSession(id, req.Model, req.Workspace, req.ApprovalMode)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
@@ -106,6 +148,17 @@ func (s *Server) handleSetProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.ProviderConfig{
 		Kind: kind, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: key != "",
 	})
+}
+
+// handleListModels 用当前配置的 base_url + api_key 代求 provider 的 /models 接口,
+// 返回统一的模型 ID 列表。失败时回传明确错误(如端点不支持、未配置 key)。
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	models, err := s.backend.ListModels(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "models_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ModelsResponse{Models: models})
 }
 
 // handleSubmitTurn 提交一轮对话。回合同步执行,事件从 SSE 流出;

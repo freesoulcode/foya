@@ -52,7 +52,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="scrollEl" class="no-scrollbar flex-1 overflow-y-auto">
+  <div ref="scrollEl" class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
     <div v-if="messages.length === 0" class="flex h-full flex-col items-center justify-center gap-4">
       <div class="flex size-14 items-center justify-center rounded-2xl bg-muted">
         <BotIcon class="size-6 text-muted-foreground/70" />

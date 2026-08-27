@@ -27,3 +27,9 @@ type Provider interface {
 	// Stream 发起流式请求;实现必须把错误编码进事件流,不 panic。
 	Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)
 }
+
+// ModelLister 是可选能力:支持列出该 provider 上可用的模型。
+// OpenAI 兼容服务通常通过 GET /models 返回模型列表;不支持的 provider 可不实现。
+type ModelLister interface {
+	ListModels(ctx context.Context) ([]string, error)
+}

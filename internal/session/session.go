@@ -7,9 +7,13 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sync"
 	"time"
 )
+
+// ErrNotFound 表示会话不存在。
+var ErrNotFound = errors.New("session not found")
 
 // Phase 是会话当前阶段。
 type Phase string
@@ -22,19 +26,32 @@ const (
 
 // Session 是一个长生命周期的交互会话。
 type Session struct {
-	ID        string    `json:"id"`
-	ParentID  string    `json:"parent_id,omitempty"`
-	Phase     Phase     `json:"phase"`
-	Model     string    `json:"model"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	ParentID     string    `json:"parent_id,omitempty"`
+	Phase        Phase     `json:"phase"`
+	Model        string    `json:"model"`
+	Workspace    string    `json:"workspace,omitempty"`
+	ApprovalMode string    `json:"approval_mode,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// CreateOptions 是新建会话时可由客户端指定的参数。
+// 零值字段由上层(backend/server)填充默认值。
+type CreateOptions struct {
+	Model        string
+	Workspace    string
+	ApprovalMode string
 }
 
 // Manager 管理多会话生命周期。
 type Manager interface {
-	Create(model string) (*Session, error)
+	Create(opts CreateOptions) (*Session, error)
 	Get(id string) (*Session, bool)
 	List() []*Session
+	// Update 局部更新会话可变字段(模型、工作目录、审批档位)。
+	// 入参为指针,nil 表示该字段不变;空字符串指针表示清空。
+	Update(id string, model, workspace, approvalMode *string) (*Session, error)
 	Close(id string) error
 }
 
@@ -49,14 +66,16 @@ func NewMemManager() Manager {
 	return &memManager{sessions: make(map[string]*Session)}
 }
 
-func (m *memManager) Create(model string) (*Session, error) {
+func (m *memManager) Create(opts CreateOptions) (*Session, error) {
 	now := time.Now()
 	s := &Session{
-		ID:        newID(),
-		Phase:     PhaseIdle,
-		Model:     model,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:           newID(),
+		Phase:        PhaseIdle,
+		Model:        opts.Model,
+		Workspace:    opts.Workspace,
+		ApprovalMode: opts.ApprovalMode,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	m.mu.Lock()
 	m.sessions[s.ID] = s
@@ -79,6 +98,26 @@ func (m *memManager) List() []*Session {
 		out = append(out, s)
 	}
 	return out
+}
+
+func (m *memManager) Update(id string, model, workspace, approvalMode *string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if model != nil {
+		s.Model = *model
+	}
+	if workspace != nil {
+		s.Workspace = *workspace
+	}
+	if approvalMode != nil {
+		s.ApprovalMode = *approvalMode
+	}
+	s.UpdatedAt = time.Now()
+	return s, nil
 }
 
 func (m *memManager) Close(id string) error {
