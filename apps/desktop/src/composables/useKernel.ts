@@ -74,19 +74,22 @@ function handleEvent(sessionId: string, data: string) {
       const delta = ev.payload as string;
       let idx = streamingIdx[sessionId] ?? -1;
       if (idx < 0) {
+        // 兜底:若乐观气泡缺失(如热更新后),补建一条。
         bucket.push({ role: "assistant", content: "" });
         idx = bucket.length - 1;
         streamingIdx[sessionId] = idx;
-        if (sessionId === activeId.value) streaming.value = true;
       }
+      // 首个 delta 到达,清除可能的 pending/error 态,开始填内容。
+      bucket[idx].error = false;
       bucket[idx].content += delta;
+      if (sessionId === activeId.value) streaming.value = true;
       break;
     }
     case "message_end": {
       const m = ev.payload as ChatMessage;
       const idx = streamingIdx[sessionId] ?? -1;
       if (m.role === "assistant" && idx >= 0) {
-        bucket[idx] = m;
+        bucket[idx] = { ...m, error: false };
         streamingIdx[sessionId] = -1;
         if (sessionId === activeId.value) streaming.value = false;
       }
@@ -106,11 +109,20 @@ function handleEvent(sessionId: string, data: string) {
       }
       break;
     }
-    case "error":
-      bucket.push({ role: "assistant", content: `⚠️ ${String(ev.payload)}` });
-      streamingIdx[sessionId] = -1;
+    case "error": {
+      // 填入已乐观插入的 pending 气泡(若存在),避免多出一条空回复。
+      const text = `⚠️ ${String(ev.payload)}`;
+      const idx = streamingIdx[sessionId] ?? -1;
+      if (idx >= 0) {
+        bucket[idx].content = text;
+        bucket[idx].error = true;
+        streamingIdx[sessionId] = -1;
+      } else {
+        bucket.push({ role: "assistant", content: text, error: true });
+      }
       if (sessionId === activeId.value) streaming.value = false;
       break;
+    }
   }
 }
 
@@ -224,8 +236,26 @@ async function send(text: string) {
   }
 
   ensureBucket(id);
-  messagesBySession.value[id].push({ role: "user", content: text });
-  await api.submitTurn(id, text);
+  const bucket = messagesBySession.value[id];
+  bucket.push({ role: "user", content: text });
+  // 乐观插入一条空 assistant 气泡,首 token 延迟期间立即展示 foya 正在响应。
+  // 第一个 message_delta 会复用它填充内容;turn_complete/error 结束 pending。
+  bucket.push({ role: "assistant", content: "" });
+  streamingIdx[id] = bucket.length - 1;
+  streaming.value = true;
+
+  try {
+    await api.submitTurn(id, text);
+  } catch (e) {
+    // 提交失败(内核未连上/请求错误):把 pending 气泡标记为错误。
+    const idx = streamingIdx[id];
+    if (idx >= 0) {
+      bucket[idx].content = `⚠️ 发送失败：${String(e)}`;
+      bucket[idx].error = true;
+      streamingIdx[id] = -1;
+      streaming.value = false;
+    }
+  }
 }
 
 export function useKernel() {

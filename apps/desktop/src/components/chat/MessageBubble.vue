@@ -12,8 +12,16 @@ const props = defineProps<{
 
 const isUser = computed(() => props.message.role === "user");
 
+// pending:助手气泡已乐观插入但首 token 还没到(空内容且非错误、流式中)。
+const isPending = computed(
+  () => !isUser.value && !props.message.error && props.message.content === "" && !!props.streaming
+);
+
+const isError = computed(() => !isUser.value && props.message.error === true);
+
 const renderedContent = computed(() => {
   if (isUser.value) return props.message.content;
+  if (isPending.value) return "";
   return renderMarkdown(props.message.content);
 });
 
@@ -80,23 +88,32 @@ async function copyAll() {
           : 'w-full'
       )"
     >
+      <!-- pending:首 token 到达前的 typing 指示器 -->
+      <div v-if="isPending" class="flex items-center gap-1 py-1">
+        <span class="typing-dot" />
+        <span class="typing-dot" />
+        <span class="typing-dot" />
+      </div>
+
       <div v-if="isUser" class="whitespace-pre-wrap break-words">
         {{ message.content }}
       </div>
       <div
-        v-else
+        v-else-if="!isPending"
         ref="bodyEl"
         class="prose-chat relative text-foreground"
+        :class="isError && 'text-destructive'"
         v-html="renderedContent"
         @click="onBodyClick"
       />
+      <!-- 流式光标:有内容且仍在流式时显示;pending 时用 typing dots 代替 -->
       <span
-        v-if="streaming"
+        v-if="streaming && !isPending && message.content"
         class="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-current align-baseline"
       />
 
       <div
-        v-if="!isUser && !streaming && message.content"
+        v-if="!isUser && !streaming && message.content && !isError"
         class="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
       >
         <button

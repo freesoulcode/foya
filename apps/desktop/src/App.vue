@@ -96,7 +96,7 @@ onMounted(connect);
     />
 
     <SidebarInset class="min-w-0">
-      <AppTitleBar />
+      <AppTitleBar :session="activeSession" @rename="onRename" />
 
       <main class="flex min-h-0 flex-1 flex-col">
         <MessageList :messages="messages" :streaming="streaming" />

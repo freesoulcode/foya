@@ -34,9 +34,11 @@ export interface UpdateSessionPatch {
 export type ApprovalMode = "explore" | "ask" | "bypass";
 
 // 对话消息(与 Go message.Message 对齐)。
+// error 为前端乐观态:发送失败时标记气泡,不进后端。
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  error?: boolean;
 }
 
 // provider 配置(与 Go protocol.ProviderConfig 对齐)。
