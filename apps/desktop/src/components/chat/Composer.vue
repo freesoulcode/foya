@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, nextTick, watch } from "vue";
 import { onClickOutside } from "@vueuse/core";
 import {
   ArrowUpIcon,
@@ -11,6 +11,7 @@ import {
   XIcon,
   CheckIcon,
   RefreshCwIcon,
+  Minimize2Icon,
 } from "@lucide/vue";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -35,6 +36,7 @@ const props = withDefaults(
     queuedMessages?: QueuedMessage[];
     contextUsage?: ContextUsageData;
     contextWindow?: number;
+    hasSession?: boolean;
   }>(),
   {
     disabled: false,
@@ -48,6 +50,7 @@ const props = withDefaults(
     queuedMessages: () => [],
     contextUsage: undefined,
     contextWindow: 0,
+    hasSession: false,
   }
 );
 
@@ -65,6 +68,63 @@ const emit = defineEmits<{
 }>();
 
 const input = ref("");
+const textareaRef = ref<InstanceType<typeof Textarea> | null>(null);
+const inputFocused = ref(false);
+
+interface SlashCommand {
+  value: string;
+  label: string;
+  description: string;
+}
+
+const slashCommands: SlashCommand[] = [
+  {
+    value: "/compact",
+    label: "压缩上下文",
+    description: "将已完成的对话整理为精简检查点",
+  },
+];
+const selectedCommandIndex = ref(0);
+const commandMenuDismissed = ref(false);
+let completingCommand = false;
+const commandQuery = computed(() => input.value.trimStart());
+const matchingCommands = computed(() => {
+  const query = commandQuery.value.toLowerCase();
+  if (!props.hasSession || props.streaming || !/^\/\S*$/.test(query)) return [];
+  return slashCommands.filter(
+    (command) =>
+      command.value.startsWith(query) ||
+      command.label.toLowerCase().includes(query.slice(1))
+  );
+});
+const commandMenuOpen = computed(
+  () =>
+    inputFocused.value &&
+    !props.disabled &&
+    !commandMenuDismissed.value &&
+    matchingCommands.value.length > 0
+);
+const activeCommand = computed(
+  () => matchingCommands.value[selectedCommandIndex.value]
+);
+
+watch(input, () => {
+  selectedCommandIndex.value = 0;
+  if (completingCommand) {
+    completingCommand = false;
+    return;
+  }
+  commandMenuDismissed.value = false;
+});
+
+function completeCommand(command: SlashCommand) {
+  if (input.value !== command.value) {
+    completingCommand = true;
+    input.value = command.value;
+  }
+  commandMenuDismissed.value = true;
+  void nextTick(() => textareaRef.value?.$el?.focus());
+}
 
 // ---- 审批档位 ----
 const approvalOptions: { value: ApprovalMode; label: string; hint: string }[] = [
@@ -134,6 +194,30 @@ function submit() {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return;
+  if (commandMenuOpen.value) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const direction = e.key === "ArrowDown" ? 1 : -1;
+      selectedCommandIndex.value =
+        (selectedCommandIndex.value + direction + matchingCommands.value.length) %
+        matchingCommands.value.length;
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      commandMenuDismissed.value = true;
+      return;
+    }
+    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+      const command = activeCommand.value;
+      if (command && commandQuery.value !== command.value) {
+        e.preventDefault();
+        completeCommand(command);
+        return;
+      }
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submit();
@@ -155,10 +239,54 @@ function onKeydown(e: KeyboardEvent) {
 
       <!-- 输入卡片 -->
       <div
-        class="rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+        class="relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
       >
+        <div
+          v-if="commandMenuOpen"
+          id="composer-command-menu"
+          class="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+          role="listbox"
+          aria-label="可用命令"
+        >
+          <button
+            v-for="(command, index) in matchingCommands"
+            :id="`composer-command-${index}`"
+            :key="command.value"
+            type="button"
+            role="option"
+            :aria-selected="index === selectedCommandIndex"
+            class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors"
+            :class="
+              index === selectedCommandIndex
+                ? 'bg-accent text-accent-foreground'
+                : 'hover:bg-muted'
+            "
+            @mouseenter="selectedCommandIndex = index"
+            @mousedown.prevent
+            @click="completeCommand(command)"
+          >
+            <Minimize2Icon class="size-4 shrink-0 text-muted-foreground" />
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-medium">{{ command.label }}</span>
+              <span class="block truncate text-xs text-muted-foreground">
+                {{ command.description }}
+              </span>
+            </span>
+            <code class="shrink-0 font-mono text-xs text-muted-foreground">
+              {{ command.value }}
+            </code>
+          </button>
+        </div>
+
         <Textarea
+          ref="textareaRef"
           v-model="input"
+          :aria-activedescendant="
+            commandMenuOpen ? `composer-command-${selectedCommandIndex}` : undefined
+          "
+          :aria-controls="commandMenuOpen ? 'composer-command-menu' : undefined"
+          :aria-expanded="commandMenuOpen"
+          aria-autocomplete="list"
           :placeholder="
             streaming
               ? '继续输入，发送后加入待发送队列…'
@@ -167,6 +295,8 @@ function onKeydown(e: KeyboardEvent) {
           class="max-h-60 min-h-[56px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
           rows="2"
           :disabled="disabled"
+          @focus="inputFocused = true"
+          @blur="inputFocused = false"
           @keydown="onKeydown"
         />
 

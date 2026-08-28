@@ -26,12 +26,12 @@ const (
 
 // Session 是一个长生命周期的交互会话。
 type Session struct {
-	ID            string    `json:"id"`
-	ParentID      string    `json:"parent_id,omitempty"`
-	Phase         Phase     `json:"phase"`
-	Model         string    `json:"model"`
-	Workspace     string    `json:"workspace,omitempty"`
-	ApprovalMode  string    `json:"approval_mode,omitempty"`
+	ID            string     `json:"id"`
+	ParentID      string     `json:"parent_id,omitempty"`
+	Phase         Phase      `json:"phase"`
+	Model         string     `json:"model"`
+	Workspace     string     `json:"workspace,omitempty"`
+	ApprovalMode  string     `json:"approval_mode,omitempty"`
 	Title         string     `json:"title,omitempty"`
 	TitleIsManual bool       `json:"title_is_manual,omitempty"`
 	Pinned        bool       `json:"pinned,omitempty"`
@@ -56,6 +56,8 @@ type Manager interface {
 	// Update 局部更新会话可变字段(模型、工作目录、审批档位)。
 	// 入参为指针,nil 表示该字段不变;空字符串指针表示清空。
 	Update(id string, model, workspace, approvalMode *string) (*Session, error)
+	// SetPhase 更新由内核控制的执行阶段。
+	SetPhase(id string, phase Phase) (*Session, error)
 	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
 	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
 	// AI 结果永不覆盖手动改名。
@@ -130,6 +132,18 @@ func (m *memManager) Update(id string, model, workspace, approvalMode *string) (
 	if approvalMode != nil {
 		s.ApprovalMode = *approvalMode
 	}
+	s.UpdatedAt = time.Now()
+	return s, nil
+}
+
+func (m *memManager) SetPhase(id string, phase Phase) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	s.Phase = phase
 	s.UpdatedAt = time.Now()
 	return s, nil
 }

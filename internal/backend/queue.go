@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
@@ -19,6 +20,8 @@ var (
 	ErrEmptyMessage = errors.New("message must not be empty")
 	// ErrInvalidQueuePosition indicates an out-of-range zero-based position.
 	ErrInvalidQueuePosition = errors.New("invalid queue position")
+	// ErrSessionBusy indicates that a mutually exclusive session operation is active.
+	ErrSessionBusy = errors.New("session is busy")
 )
 
 const (
@@ -39,17 +42,19 @@ type sessionRunner struct {
 }
 
 type turnScheduler struct {
-	mu      sync.Mutex
-	queues  map[string][]queue.Message
-	runners map[string]*sessionRunner
-	deleted map[string]struct{}
+	mu         sync.Mutex
+	queues     map[string][]queue.Message
+	runners    map[string]*sessionRunner
+	compacting map[string]bool
+	deleted    map[string]struct{}
 }
 
 func newTurnScheduler() *turnScheduler {
 	return &turnScheduler{
-		queues:  make(map[string][]queue.Message),
-		runners: make(map[string]*sessionRunner),
-		deleted: make(map[string]struct{}),
+		queues:     make(map[string][]queue.Message),
+		runners:    make(map[string]*sessionRunner),
+		compacting: make(map[string]bool),
+		deleted:    make(map[string]struct{}),
 	}
 }
 
@@ -69,7 +74,7 @@ func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submi
 		b.turns.mu.Unlock()
 		return Submission{}, session.ErrNotFound
 	}
-	if _, running := b.turns.runners[sessionID]; running {
+	if _, running := b.turns.runners[sessionID]; running || b.turns.compacting[sessionID] {
 		item := queue.NewMessage(sessionID, text, len(b.turns.queues[sessionID]))
 		b.turns.queues[sessionID] = append(b.turns.queues[sessionID], item)
 		b.broadcastQueueLocked(sessionID)
@@ -242,6 +247,19 @@ func (b *Backend) DispatchQueuedMessage(
 		cancel()
 		return selected, nil
 	}
+	if b.turns.compacting[sessionID] {
+		if index > 0 {
+			items = append(items[:index], items[index+1:]...)
+			items = append([]queue.Message{selected}, items...)
+			normalizePositions(items)
+			b.turns.queues[sessionID] = items
+		}
+		selected = b.turns.queues[sessionID][0]
+		b.broadcastQueueLocked(sessionID)
+		b.turns.mu.Unlock()
+		b.engine.Cancel(sessionID)
+		return selected, nil
+	}
 
 	items = append(items[:index], items[index+1:]...)
 	normalizePositions(items)
@@ -257,13 +275,56 @@ func (b *Backend) DispatchQueuedMessage(
 func (b *Backend) cancelCurrentTurn(sessionID string) {
 	b.turns.mu.Lock()
 	runner := b.turns.runners[sessionID]
+	compacting := b.turns.compacting[sessionID]
 	if runner != nil {
 		runner.stopAfterCurrent = true
 	}
 	b.turns.mu.Unlock()
 	if runner != nil {
 		runner.cancel()
+		return
 	}
+	if compacting {
+		b.engine.Cancel(sessionID)
+	}
+}
+
+// CompactSession runs one standalone compaction. New turns submitted while it
+// runs are queued and start automatically after the compaction settles.
+func (b *Backend) CompactSession(
+	ctx context.Context,
+	sessionID string,
+) (*compaction.Checkpoint, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return nil, session.ErrNotFound
+	}
+	b.turns.mu.Lock()
+	if _, deleted := b.turns.deleted[sessionID]; deleted {
+		b.turns.mu.Unlock()
+		return nil, session.ErrNotFound
+	}
+	if b.turns.runners[sessionID] != nil || b.turns.compacting[sessionID] {
+		b.turns.mu.Unlock()
+		return nil, ErrSessionBusy
+	}
+	b.turns.compacting[sessionID] = true
+	b.turns.mu.Unlock()
+
+	checkpoint, err := b.engine.CompactSession(ctx, sessionID)
+
+	b.turns.mu.Lock()
+	delete(b.turns.compacting, sessionID)
+	if _, deleted := b.turns.deleted[sessionID]; deleted ||
+		len(b.turns.queues[sessionID]) == 0 {
+		b.turns.mu.Unlock()
+		return checkpoint, err
+	}
+	next := b.popQueueLocked(sessionID)
+	runner, turnCtx := b.createRunnerLocked(sessionID)
+	b.broadcastQueueLocked(sessionID)
+	b.turns.mu.Unlock()
+	go b.runTurnLoop(sessionID, next.Text, runner, turnCtx)
+	return checkpoint, err
 }
 
 func (b *Backend) stopSessionAndWait(sessionID string, timeout time.Duration) {

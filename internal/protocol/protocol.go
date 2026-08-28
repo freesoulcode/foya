@@ -66,6 +66,13 @@ type ModelsResponse struct {
 	ContextWindows map[string]int64 `json:"context_windows,omitempty"`
 }
 
+// CompactSessionResponse 是一次手动上下文压缩的结果。
+type CompactSessionResponse struct {
+	ThroughSeq            uint64 `json:"through_seq"`
+	EstimatedTokensBefore int64  `json:"estimated_tokens_before"`
+	EstimatedTokensAfter  int64  `json:"estimated_tokens_after"`
+}
+
 // ApprovalDecisionRequest 是客户端回执一个审批决策。
 type ApprovalDecisionRequest struct {
 	RequestID string `json:"request_id"`

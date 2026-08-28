@@ -37,6 +37,7 @@ const streaming = ref(false);
 // 哪些会话正在运行 AI 回合(sessionId → true)。供侧边栏给运行中的会话加动画,
 // 与当前激活会话无关:切到别的会话后,原会话仍显示运行态。
 const runningSessions = ref<Record<string, boolean>>({});
+const compactingSessions = ref<Record<string, boolean>>({});
 
 // 新对话草稿态的配置(activeId === "" 时生效)。
 const draft = reactive<DraftConfig>({
@@ -301,6 +302,22 @@ function handleEvent(sessionId: string, data: string) {
       }
       break;
     }
+    case "compaction_started":
+      compactingSessions.value[sessionId] = true;
+      if (sessionId === activeId.value) streaming.value = true;
+      break;
+    case "compaction_completed":
+      delete compactingSessions.value[sessionId];
+      if (sessionId === activeId.value) {
+        streaming.value = Boolean(runningSessions.value[sessionId]);
+      }
+      break;
+    case "compaction_failed":
+      delete compactingSessions.value[sessionId];
+      if (sessionId === activeId.value) {
+        streaming.value = Boolean(runningSessions.value[sessionId]);
+      }
+      break;
     case "session_updated": {
       // 会话元数据变更(标题/模型等),按 id 替换本地会话项,侧边栏自动响应。
       const updated = ev.payload as Session;
@@ -517,6 +534,7 @@ function removeSession(id: string) {
   subscribed.delete(id);
   delete streamingIdx[id];
   delete runningSessions.value[id];
+  delete compactingSessions.value[id];
   // 清理该会话的待处理审批。
   for (const [aid, a] of Object.entries(pendingApprovals.value)) {
     if (a.session === id) delete pendingApprovals.value[aid];
@@ -565,6 +583,20 @@ async function send(text: string) {
   if (!text.trim()) return;
 
   let id = activeId.value;
+  if (text.trim() === "/compact") {
+    if (!id) return;
+    try {
+      await api.compactSession(id);
+    } catch (e) {
+      ensureBucket(id);
+      messagesBySession.value[id].push({
+        role: "assistant",
+        content: `⚠️ 压缩失败：${String(e)}`,
+        error: true,
+      });
+    }
+    return;
+  }
 
   if (!id) {
     const s = await api.createSession({
@@ -657,6 +689,7 @@ export function useKernel() {
     streaming,
     sessions,
     runningSessions,
+    compactingSessions,
     activeId,
     activeSession,
     isDraft,

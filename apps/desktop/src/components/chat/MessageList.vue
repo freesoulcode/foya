@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, onMounted, onBeforeUnmount, computed } from "vue";
-import { BotIcon, ArrowDownIcon } from "@lucide/vue";
+import { BotIcon, ArrowDownIcon, RefreshCwIcon } from "@lucide/vue";
 import MessageBubble from "./MessageBubble.vue";
 import type { ChatMessage } from "@/lib/api";
 
 const props = defineProps<{
   messages: ChatMessage[];
   streaming: boolean;
+  compacting?: boolean;
   activeTurn?: number;
 }>();
 
@@ -137,6 +138,16 @@ watch(
   }
 );
 
+watch(
+  () => props.compacting,
+  async (compacting) => {
+    if (!compacting || !stickToBottom.value) return;
+    await nextTick();
+    const el = scrollEl.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+);
+
 onMounted(() => {
   scrollEl.value?.addEventListener("scroll", onScroll, { passive: true });
 });
@@ -191,8 +202,20 @@ onBeforeUnmount(() => {
       >
         <MessageBubble
           :message="m"
-          :streaming="streaming && m.role === 'assistant' && i === messages.length - 1"
+          :streaming="
+            streaming && !compacting && m.role === 'assistant' && i === messages.length - 1
+          "
         />
+      </div>
+
+      <div
+        v-if="compacting"
+        class="flex h-7 items-center gap-2 text-xs text-muted-foreground"
+        role="status"
+        aria-live="polite"
+      >
+        <RefreshCwIcon class="size-3.5 animate-spin" />
+        <span>正在压缩上下文</span>
       </div>
     </div>
   </div>

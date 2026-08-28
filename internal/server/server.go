@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/protocol"
@@ -40,6 +41,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
 	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
 	s.mux.HandleFunc("GET /sessions/{id}/queue", s.handleListQueue)
 	s.mux.HandleFunc("POST /sessions/{id}/queue", s.handleEnqueueMessage)
@@ -253,6 +255,31 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		RunID:  id,
 		Status: result.Status,
 		Queued: result.Queued,
+	})
+}
+
+// handleCompactSession manually compacts completed history for an idle session.
+func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
+	checkpoint, err := s.backend.CompactSession(r.Context(), r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, backend.ErrSessionBusy):
+			writeErr(w, http.StatusConflict, "session_busy", err.Error())
+		case errors.Is(err, agent.ErrNothingToCompact):
+			writeErr(w, http.StatusConflict, "nothing_to_compact", err.Error())
+		case errors.Is(err, agent.ErrCompactionUnavailable):
+			writeErr(w, http.StatusNotImplemented, "compaction_unavailable", err.Error())
+		default:
+			writeErr(w, http.StatusBadGateway, "compaction_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.CompactSessionResponse{
+		ThroughSeq:            uint64(checkpoint.ThroughSeq),
+		EstimatedTokensBefore: checkpoint.EstimatedTokensBefore,
+		EstimatedTokensAfter:  checkpoint.EstimatedTokensAfter,
 	})
 }
 

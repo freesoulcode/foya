@@ -19,6 +19,7 @@ const {
   streaming,
   sessions,
   runningSessions,
+  compactingSessions,
   activeId,
   activeSession,
   isDraft,
@@ -102,6 +103,9 @@ const composerContextWindow = computed(
 const composerContextUsage = computed(() =>
   contextUsage.value?.model === composerModel.value ? contextUsage.value : undefined
 );
+const activeCompacting = computed(
+  () => Boolean(activeId.value && compactingSessions.value[activeId.value])
+);
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelChange(value: string) {
@@ -177,6 +181,7 @@ onMounted(connect);
             v-model:active-turn="activeTurn"
             :messages="messages"
             :streaming="streaming"
+            :compacting="activeCompacting"
           />
         </div>
         <Composer
@@ -191,6 +196,7 @@ onMounted(connect);
           :queued-messages="queuedMessages"
           :context-usage="composerContextUsage"
           :context-window="composerContextWindow"
+          :has-session="!isDraft"
           @send="send"
           @stop="cancelTurn"
           @edit-queued="editQueuedMessage"

@@ -62,6 +62,12 @@ export interface ContextUsage {
   cached_tokens: number;
 }
 
+export interface CompactSessionResult {
+  through_seq: number;
+  estimated_tokens_before: number;
+  estimated_tokens_after: number;
+}
+
 export interface ModelCatalog {
   models: string[];
   context_windows: Record<string, number>;
@@ -145,6 +151,11 @@ export const api = {
   submitTurn: (sessionId: string, message: string) =>
     invoke<string>("submit_turn", { sessionId, message }).then(
       (r) => JSON.parse(r) as SubmitTurnResult
+    ),
+
+  compactSession: (sessionId: string) =>
+    invoke<string>("compact_session", { sessionId }).then(
+      (r) => JSON.parse(r) as CompactSessionResult
     ),
 
   listQueuedMessages: (sessionId: string) =>

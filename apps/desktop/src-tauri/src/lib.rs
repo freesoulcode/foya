@@ -212,6 +212,13 @@ async fn submit_turn(session_id: String, message: String) -> Result<String, Stri
     .await
 }
 
+/// 手动压缩会话的已完成历史。
+#[cfg(unix)]
+#[tauri::command]
+async fn compact_session(session_id: String) -> Result<String, String> {
+    kernel::request("POST", &format!("/sessions/{session_id}/compact"), None).await
+}
+
 /// 读取会话的待发送队列。
 #[cfg(unix)]
 #[tauri::command]
@@ -385,6 +392,12 @@ fn submit_turn(_session_id: String, _message: String) -> Result<String, String> 
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn compact_session(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn list_queued_messages(_session_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -526,6 +539,7 @@ pub fn run() {
             create_session,
             update_session,
             submit_turn,
+            compact_session,
             list_queued_messages,
             enqueue_message,
             update_queued_message,
