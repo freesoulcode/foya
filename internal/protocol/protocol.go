@@ -25,6 +25,7 @@ type UpdateSessionRequest struct {
 	Model        *string `json:"model,omitempty"`
 	Workspace    *string `json:"workspace,omitempty"`
 	ApprovalMode *string `json:"approval_mode,omitempty"`
+	Title        *string `json:"title,omitempty"` // 手动改名;置 TitleIsManual=true
 }
 
 // SubmitTurnResponse 返回该回合的 RunID,用于在 SSE 流中关联事件。

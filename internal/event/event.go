@@ -21,6 +21,7 @@ const (
 	KindToolEnd        Kind = "tool_end"         // 工具调用结束
 	KindApprovalReq    Kind = "approval_request" // 审批请求(必达)
 	KindApprovalResolved Kind = "approval_resolved" // 审批已决策(必达)
+	KindSessionUpdated Kind = "session_updated"   // 会话元数据变更(标题/模型等,必达)
 	KindTurnStarted    Kind = "turn_started"
 	KindTurnComplete   Kind = "turn_complete" // 回合结束(必达)
 	KindError          Kind = "error"

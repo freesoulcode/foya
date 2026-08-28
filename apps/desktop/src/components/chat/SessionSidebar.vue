@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, nextTick } from "vue";
 import { PlusIcon, MessageSquareIcon, SettingsIcon } from "@lucide/vue";
 import {
   Sidebar,
@@ -26,11 +26,36 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "new"): void;
   (e: "select", id: string): void;
+  (e: "rename", id: string, title: string): void;
   (e: "open-settings"): void;
 }>();
 
 function title(s: Session) {
-  return s.model || "新对话";
+  return s.title || "新对话";
+}
+
+// 双击改名:本地维护编辑态,回车提交、Esc 取消。
+const editingId = ref("");
+const editingText = ref("");
+const editInput = ref<HTMLInputElement | null>(null);
+
+async function startRename(s: Session) {
+  editingId.value = s.id;
+  editingText.value = s.title || "";
+  await nextTick();
+  editInput.value?.focus();
+  editInput.value?.select();
+}
+
+function commitRename() {
+  const id = editingId.value;
+  const text = editingText.value.trim();
+  editingId.value = "";
+  if (id && text) emit("rename", id, text);
+}
+
+function cancelRename() {
+  editingId.value = "";
 }
 
 function isSameDay(a: Date, b: Date) {
@@ -110,7 +135,22 @@ const groups = computed(() => {
                 @click="emit('select', s.id)"
               >
                 <MessageSquareIcon />
-                <span>{{ title(s) }}</span>
+                <input
+                  v-if="editingId === s.id"
+                  ref="editInput"
+                  v-model="editingText"
+                  class="w-full bg-transparent outline-none"
+                  @click.stop
+                  @keydown.enter.prevent="commitRename"
+                  @keydown.esc.prevent="cancelRename"
+                  @blur="commitRename"
+                />
+                <span
+                  v-else
+                  class="truncate"
+                  @dblclick.stop="startRename(s)"
+                  >{{ title(s) }}</span
+                >
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

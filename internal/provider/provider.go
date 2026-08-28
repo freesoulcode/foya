@@ -33,3 +33,9 @@ type Provider interface {
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]string, error)
 }
+
+// Completer 是可选能力:非流式一次性生成短文本。
+// 用于标题生成等旁路任务;不支持的 provider 可不实现,调用方走截断兜底。
+type Completer interface {
+	Complete(ctx context.Context, req Request) (string, error)
+}

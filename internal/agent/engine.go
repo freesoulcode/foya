@@ -13,6 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/title"
 )
 
 // ctxKey 是会话级配置在 context 中的键类型。
@@ -31,6 +32,12 @@ type stringResolver func() string
 // SessionLookup 是引擎读取会话元数据所需的最小依赖(避免依赖完整 Manager)。
 type SessionLookup interface {
 	Get(id string) (*session.Session, bool)
+}
+
+// titleStore 是标题生成所需的会话存储:读元数据 + if-absent 写标题。
+type titleStore interface {
+	SessionLookup
+	SetGeneratedTitle(id, t string) (bool, error)
 }
 
 // WorkspaceFromContext 从回合上下文实时取出绑定的工作目录(可能为空)。
@@ -56,7 +63,7 @@ func ApprovalModeFromContext(ctx context.Context) string {
 type Engine struct {
 	log      *state.MemLog
 	bus      *broker.Broker[event.Event]
-	sessions SessionLookup
+	sessions titleStore
 
 	mu       sync.RWMutex // 保护 provider/model 的热替换
 	provider provider.Provider
@@ -64,7 +71,7 @@ type Engine struct {
 }
 
 // NewEngine 组装回合引擎。
-func NewEngine(log *state.MemLog, bus *broker.Broker[event.Event], sessions SessionLookup, p provider.Provider, model string) *Engine {
+func NewEngine(log *state.MemLog, bus *broker.Broker[event.Event], sessions titleStore, p provider.Provider, model string) *Engine {
 	return &Engine{log: log, bus: bus, sessions: sessions, provider: p, model: model}
 }
 
@@ -126,6 +133,18 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 			}
 			return ""
 		}))
+	}
+
+	// 标题生成:仅当这是该会话第一条用户消息、标题仍为空且用户未手动改名时,
+	// 后台异步生成。必须在写入当前用户消息之前检查历史(否则守卫永远为真)。
+	// 用脱离回合取消的 context,使标题任务在回合结束后仍能完成。
+	if e.sessions != nil {
+		if hist, err := e.log.History(ctx, sessionID); err == nil && !hasUserMessage(hist) {
+			if s, ok := e.sessions.Get(sessionID); ok && s.Title == "" && !s.TitleIsManual {
+				detached := context.WithoutCancel(ctx)
+				go e.generateTitle(detached, sessionID, userText)
+			}
+		}
 	}
 
 	// 1. 用户消息写入日志(成为历史的一部分)。
@@ -190,3 +209,37 @@ func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, pa
 
 // topic 是某会话的事件 topic。
 func topic(sessionID string) string { return "session:" + sessionID }
+
+// hasUserMessage 判断历史中是否已有真实用户消息(排除系统/工具/助手)。
+// 用于标题生成的「仅首条触发」守卫。
+func hasUserMessage(msgs []message.Message) bool {
+	for _, m := range msgs {
+		if m.Role == message.RoleUser {
+			return true
+		}
+	}
+	return false
+}
+
+// generateTitle 在后台生成会话标题并幂等落库,随后广播 session_updated。
+// provider 不支持非流式 Complete 时直接用截断兜底;任何失败都不影响主回合。
+func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
+	prov, _ := e.currentProvider()
+	model := e.currentModel(sessionID)
+	var generated string
+	if c, ok := prov.(provider.Completer); ok {
+		generated = title.Generate(ctx, c, model, userText)
+	}
+	if generated == "" {
+		generated = title.Fallback(userText)
+	}
+	ok, err := e.sessions.SetGeneratedTitle(sessionID, generated)
+	if err != nil || !ok {
+		return
+	}
+	s, exists := e.sessions.Get(sessionID)
+	if !exists {
+		return
+	}
+	e.emit(ctx, sessionID, event.KindSessionUpdated, s, true)
+}

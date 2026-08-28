@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/broker"
@@ -61,6 +62,23 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 // 供会话进行中实时切换审批档位等场景使用。
 func (b *Backend) UpdateSession(id string, model, workspace, approvalMode *string) (*session.Session, error) {
 	return b.sessions.Update(id, model, workspace, approvalMode)
+}
+
+// RenameSession 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
+// 改名后发 session_updated 事件广播给所有订阅者(多端同步)。
+func (b *Backend) RenameSession(ctx context.Context, id, title string) (*session.Session, error) {
+	if err := b.sessions.Rename(id, title); err != nil {
+		return nil, err
+	}
+	s, ok := b.sessions.Get(id)
+	if !ok {
+		return nil, session.ErrNotFound
+	}
+	ev := event.Event{Kind: event.KindSessionUpdated, Session: id, Time: time.Now(), Payload: s}
+	seq, _ := b.log.Append(ctx, ev)
+	ev.Seq = seq
+	_ = b.bus.PublishMustDeliver(ctx, "session:"+id, ev)
+	return s, nil
 }
 
 // ListSessions 列出会话。

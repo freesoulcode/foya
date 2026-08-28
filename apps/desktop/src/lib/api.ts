@@ -9,6 +9,8 @@ export interface Session {
   model: string;
   workspace?: string;
   approval_mode?: string;
+  title?: string;
+  title_is_manual?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -25,6 +27,7 @@ export interface UpdateSessionPatch {
   model?: string;
   workspace?: string;
   approval_mode?: string;
+  title?: string;
 }
 
 // 审批档位(与 Go approval.Mode 对齐)。

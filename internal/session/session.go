@@ -26,14 +26,16 @@ const (
 
 // Session 是一个长生命周期的交互会话。
 type Session struct {
-	ID           string    `json:"id"`
-	ParentID     string    `json:"parent_id,omitempty"`
-	Phase        Phase     `json:"phase"`
-	Model        string    `json:"model"`
-	Workspace    string    `json:"workspace,omitempty"`
-	ApprovalMode string    `json:"approval_mode,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	ParentID      string    `json:"parent_id,omitempty"`
+	Phase         Phase     `json:"phase"`
+	Model         string    `json:"model"`
+	Workspace     string    `json:"workspace,omitempty"`
+	ApprovalMode  string    `json:"approval_mode,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	TitleIsManual bool      `json:"title_is_manual,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // CreateOptions 是新建会话时可由客户端指定的参数。
@@ -52,6 +54,12 @@ type Manager interface {
 	// Update 局部更新会话可变字段(模型、工作目录、审批档位)。
 	// 入参为指针,nil 表示该字段不变;空字符串指针表示清空。
 	Update(id string, model, workspace, approvalMode *string) (*Session, error)
+	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
+	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
+	// AI 结果永不覆盖手动改名。
+	SetGeneratedTitle(id, title string) (bool, error)
+	// Rename 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
+	Rename(id, title string) error
 	Close(id string) error
 }
 
@@ -118,6 +126,35 @@ func (m *memManager) Update(id string, model, workspace, approvalMode *string) (
 	}
 	s.UpdatedAt = time.Now()
 	return s, nil
+}
+
+func (m *memManager) SetGeneratedTitle(id, title string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return false, ErrNotFound
+	}
+	// if-absent:标题已存在或用户手动改过时,不覆盖。
+	if s.Title != "" || s.TitleIsManual {
+		return false, nil
+	}
+	s.Title = title
+	s.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (m *memManager) Rename(id, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return ErrNotFound
+	}
+	s.Title = title
+	s.TitleIsManual = true
+	s.UpdatedAt = time.Now()
+	return nil
 }
 
 func (m *memManager) Close(id string) error {

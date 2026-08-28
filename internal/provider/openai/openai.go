@@ -66,6 +66,15 @@ type chatChunk struct {
 	} `json:"choices"`
 }
 
+// chatResponse 是非流式响应(仅用到的字段)。
+type chatResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
 // Stream 发起流式 Chat Completions 请求,把增量编码为 StreamEvent。
 // 错误一律编码进事件流,不 panic。
 func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
@@ -151,6 +160,58 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	return ch, nil
 }
 
+// Complete 发起非流式 Chat Completions 请求,返回完整文本。
+// 用于标题生成等一次性短文本旁路任务。
+func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, error) {
+	if p.baseURL == "" {
+		return "", fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
+	}
+
+	model := req.Model
+	if model == "" {
+		model = p.model
+	}
+
+	msgs := make([]chatMsg, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		msgs = append(msgs, chatMsg{Role: string(m.Role), Content: m.Content})
+	}
+
+	body, err := json.Marshal(chatRequest{Model: model, Messages: msgs, Stream: false})
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		return "", fmt.Errorf("provider 返回 %s: %s", resp.Status, strings.TrimSpace(buf.String()))
+	}
+
+	var out chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if len(out.Choices) == 0 {
+		return "", nil
+	}
+	return out.Choices[0].Message.Content, nil
+}
+
 // modelsResponse 是 GET /models 的响应(仅取需要的字段)。
 type modelsResponse struct {
 	Data []struct {
@@ -201,4 +262,5 @@ func (p *Provider) ListModels(ctx context.Context) ([]string, error) {
 var (
 	_ provider.Provider    = (*Provider)(nil)
 	_ provider.ModelLister = (*Provider)(nil)
+	_ provider.Completer   = (*Provider)(nil)
 )

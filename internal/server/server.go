@@ -77,8 +77,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
-// handleUpdateSession 局部更新会话可变字段(模型/工作目录/审批档位),
-// 供会话进行中实时切换审批档位等场景。更新对后续工具调用立即生效。
+// handleUpdateSession 局部更新会话可变字段(模型/工作目录/审批档位/标题),
+// 供会话进行中实时切换审批档位、手动改名等场景。更新对后续工具调用立即生效。
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req protocol.UpdateSessionRequest
@@ -86,6 +86,20 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+
+	// 手动改名走 RenameSession(置 TitleIsManual 并广播)。
+	if req.Title != nil {
+		if _, err := s.backend.RenameSession(r.Context(), id, *req.Title); err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				writeErr(w, http.StatusNotFound, "not_found", err.Error())
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "rename_failed", err.Error())
+			return
+		}
+	}
+
+	// 其余字段走局部更新;无字段时直接返回当前会话。
 	sess, err := s.backend.UpdateSession(id, req.Model, req.Workspace, req.ApprovalMode)
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {

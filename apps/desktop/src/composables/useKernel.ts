@@ -97,6 +97,15 @@ function handleEvent(sessionId: string, data: string) {
       streamingIdx[sessionId] = -1;
       if (sessionId === activeId.value) streaming.value = false;
       break;
+    case "session_updated": {
+      // 会话元数据变更(标题/模型等),按 id 替换本地会话项,侧边栏自动响应。
+      const updated = ev.payload as Session;
+      if (updated && updated.id) {
+        const idx = sessions.value.findIndex((s) => s.id === updated.id);
+        if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated };
+      }
+      break;
+    }
     case "error":
       bucket.push({ role: "assistant", content: `⚠️ ${String(ev.payload)}` });
       streamingIdx[sessionId] = -1;
@@ -187,6 +196,12 @@ async function updateSession(id: string, patch: UpdateSessionPatch) {
   return updated;
 }
 
+// 手动改名:置 title_is_manual,此后内核自动标题不再覆盖。
+// 内核会广播 session_updated,本地会话项随之更新。
+async function renameSession(id: string, title: string) {
+  return updateSession(id, { title });
+}
+
 // 发送一条消息(乐观插入用户消息)。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
 async function send(text: string) {
@@ -233,6 +248,7 @@ export function useKernel() {
     select,
     send,
     updateSession,
+    renameSession,
     refreshModels,
   };
 }

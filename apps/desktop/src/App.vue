@@ -29,6 +29,7 @@ const {
   select,
   send,
   updateSession,
+  renameSession,
   refreshModels,
 } = useKernel();
 
@@ -73,6 +74,11 @@ function onApprovalChange(value: ApprovalMode) {
   }
 }
 
+// 侧边栏手动改名:调用内核 PATCH,置 title_is_manual。
+function onRename(id: string, title: string) {
+  void renameSession(id, title);
+}
+
 onMounted(connect);
 </script>
 
@@ -85,6 +91,7 @@ onMounted(connect);
       :is-draft="isDraft"
       @new="newSession"
       @select="select"
+      @rename="onRename"
       @open-settings="settingsOpen = true"
     />
 
