@@ -46,6 +46,7 @@ mod kernel {
     use hyperlocal::{UnixConnector, Uri as HyperlocalUri};
     use std::path::Path;
     use tauri::ipc::Channel;
+    use tokio::sync::oneshot;
 
     /// 在缓冲区中查找下一个换行符(\n)的位置。
     fn find_line_end(buf: &[u8]) -> Option<usize> {
@@ -60,10 +61,7 @@ mod kernel {
 
     fn socket_uri(path: &str) -> Result<hyperlocal::Uri, String> {
         let sock = kernel_socket_path().ok_or("无法解析 socket 路径")?;
-        Ok(HyperlocalUri::new(
-            Path::new(&sock),
-            &path,
-        ))
+        Ok(HyperlocalUri::new(Path::new(&sock), path))
     }
 
     fn method_from_str(m: &str) -> Method {
@@ -113,24 +111,43 @@ mod kernel {
     }
 
     /// 订阅某会话的 SSE 事件流,逐条经 Channel 推给前端(每个 data 行一条)。
-    pub async fn subscribe(session_id: &str, channel: Channel<String>) -> Result<(), String> {
-        let path = format!("/sessions/{session_id}/events");
-        let uri = socket_uri(&path)?;
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(uri)
-            .header("accept", "text/event-stream")
-            .body(Full::new(Bytes::new()))
-            .map_err(|e| format!("构造请求失败: {e}"))?;
+    pub async fn subscribe(
+        session_id: &str,
+        channel: Channel<String>,
+        ready: oneshot::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
+        let setup = async {
+            let path = format!("/sessions/{session_id}/events");
+            let uri = socket_uri(&path)?;
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(uri)
+                .header("accept", "text/event-stream")
+                .body(Full::new(Bytes::new()))
+                .map_err(|e| format!("构造请求失败: {e}"))?;
 
-        let resp = client()
-            .request(req)
-            .await
-            .map_err(|e| format!("连接内核失败: {e}"))?;
+            let resp = client()
+                .request(req)
+                .await
+                .map_err(|e| format!("连接内核失败: {e}"))?;
 
-        if resp.status() != StatusCode::OK {
-            return Err(format!("订阅失败: HTTP {}", resp.status().as_u16()));
+            if resp.status() != StatusCode::OK {
+                return Err(format!("订阅失败: HTTP {}", resp.status().as_u16()));
+            }
+            Ok(resp)
         }
+        .await;
+
+        let resp = match setup {
+            Ok(resp) => {
+                let _ = ready.send(Ok(()));
+                resp
+            }
+            Err(error) => {
+                let _ = ready.send(Err(error.clone()));
+                return Err(error);
+            }
+        };
 
         // 直接从 body 流读取,累积到缓冲区后按行切分 SSE。
         // 每个 SSE data: 行是一条 JSON 事件,经 Channel 推给前端。
@@ -174,7 +191,12 @@ async fn create_session(options: Option<serde_json::Value>) -> Result<String, St
 #[cfg(unix)]
 #[tauri::command]
 async fn update_session(session_id: String, patch: serde_json::Value) -> Result<String, String> {
-    kernel::request("PATCH", &format!("/sessions/{session_id}"), Some(&patch.to_string())).await
+    kernel::request(
+        "PATCH",
+        &format!("/sessions/{session_id}"),
+        Some(&patch.to_string()),
+    )
+    .await
 }
 
 /// 提交一轮对话。
@@ -182,7 +204,73 @@ async fn update_session(session_id: String, patch: serde_json::Value) -> Result<
 #[tauri::command]
 async fn submit_turn(session_id: String, message: String) -> Result<String, String> {
     let body = serde_json::json!({ "message": message }).to_string();
-    kernel::request("POST", &format!("/sessions/{session_id}/turns"), Some(&body)).await
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/turns"),
+        Some(&body),
+    )
+    .await
+}
+
+/// 读取会话的待发送队列。
+#[cfg(unix)]
+#[tauri::command]
+async fn list_queued_messages(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/queue"), None).await
+}
+
+/// 显式追加一条待发送消息。
+#[cfg(unix)]
+#[tauri::command]
+async fn enqueue_message(session_id: String, message: String) -> Result<String, String> {
+    let body = serde_json::json!({ "message": message }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/queue"),
+        Some(&body),
+    )
+    .await
+}
+
+/// 编辑待发送消息正文或顺序。
+#[cfg(unix)]
+#[tauri::command]
+async fn update_queued_message(
+    session_id: String,
+    message_id: String,
+    patch: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "PATCH",
+        &format!("/sessions/{session_id}/queue/{message_id}"),
+        Some(&patch.to_string()),
+    )
+    .await
+}
+
+/// 删除一条待发送消息。
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_queued_message(session_id: String, message_id: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/sessions/{session_id}/queue/{message_id}"),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 取消当前回合并优先发送选中的队列消息。
+#[cfg(unix)]
+#[tauri::command]
+async fn dispatch_queued_message(session_id: String, message_id: String) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/queue/{message_id}/dispatch"),
+        None,
+    )
+    .await
 }
 
 /// 列出所有会话。
@@ -197,6 +285,13 @@ async fn list_sessions() -> Result<String, String> {
 #[tauri::command]
 async fn load_history(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/history"), None).await
+}
+
+/// 读取会话最近一次模型请求的 token 使用情况。
+#[cfg(unix)]
+#[tauri::command]
+async fn load_usage(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/usage"), None).await
 }
 
 /// 读取当前 provider 配置(key 脱敏)。
@@ -223,11 +318,14 @@ async fn list_models() -> Result<String, String> {
 /// 订阅会话事件流。在后台异步任务持续把 SSE 事件经 Channel 推给前端。
 #[cfg(unix)]
 #[tauri::command]
-fn subscribe_events(session_id: String, channel: Channel<String>) -> Result<(), String> {
+async fn subscribe_events(session_id: String, channel: Channel<String>) -> Result<(), String> {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     tauri::async_runtime::spawn(async move {
-        let _ = kernel::subscribe(&session_id, channel).await;
+        let _ = kernel::subscribe(&session_id, channel, ready_tx).await;
     });
-    Ok(())
+    ready_rx
+        .await
+        .map_err(|_| "事件订阅在连接前意外结束".to_string())?
 }
 
 /// 回执审批决策(批准/拒绝)。
@@ -257,6 +355,15 @@ async fn cancel_turn(session_id: String) -> Result<(), String> {
         .map(|_| ())
 }
 
+/// 删除会话(中断回合、清除元数据与历史、广播移除)。
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_session(session_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/sessions/{session_id}"), None)
+        .await
+        .map(|_| ())
+}
+
 // Windows 占位。
 #[cfg(not(unix))]
 #[tauri::command]
@@ -278,6 +385,40 @@ fn submit_turn(_session_id: String, _message: String) -> Result<String, String> 
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn list_queued_messages(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn enqueue_message(_session_id: String, _message: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn update_queued_message(
+    _session_id: String,
+    _message_id: String,
+    _patch: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn delete_queued_message(_session_id: String, _message_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn dispatch_queued_message(_session_id: String, _message_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn list_sessions() -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -285,6 +426,12 @@ fn list_sessions() -> Result<String, String> {
 #[cfg(not(unix))]
 #[tauri::command]
 fn load_history(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn load_usage(_session_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -325,6 +472,12 @@ async fn resolve_approval(
 #[cfg(not(unix))]
 #[tauri::command]
 async fn cancel_turn(_session_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_session(_session_id: String) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -373,14 +526,21 @@ pub fn run() {
             create_session,
             update_session,
             submit_turn,
+            list_queued_messages,
+            enqueue_message,
+            update_queued_message,
+            delete_queued_message,
+            dispatch_queued_message,
             list_sessions,
             load_history,
+            load_usage,
             get_provider,
             set_provider,
             list_models,
             subscribe_events,
             resolve_approval,
-            cancel_turn
+            cancel_turn,
+            delete_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,14 +18,18 @@ const {
   ready,
   streaming,
   sessions,
+  runningSessions,
   activeId,
   activeSession,
   isDraft,
   draft,
   availableModels,
+  modelContextWindows,
   modelsLoading,
   modelsError,
   messages,
+  queuedMessages,
+  contextUsage,
   connect,
   newSession,
   select,
@@ -33,6 +37,12 @@ const {
   cancelTurn,
   updateSession,
   renameSession,
+  pinSession,
+  deleteSession,
+  editQueuedMessage,
+  reorderQueuedMessage,
+  deleteQueuedMessage,
+  dispatchQueuedMessage,
   refreshModels,
 } = useKernel();
 
@@ -86,6 +96,12 @@ const composerApproval = computed<ApprovalMode>(
       ? draft.approvalMode
       : (activeSession.value?.approval_mode as ApprovalMode)) || "ask"
 );
+const composerContextWindow = computed(
+  () => modelContextWindows.value[composerModel.value] ?? 0
+);
+const composerContextUsage = computed(() =>
+  contextUsage.value?.model === composerModel.value ? contextUsage.value : undefined
+);
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelChange(value: string) {
@@ -112,6 +128,16 @@ function onRename(id: string, title: string) {
   void renameSession(id, title);
 }
 
+// 置顶/取消置顶:走 PATCH pinned 字段,内核广播后本地项更新。
+function onPin(id: string, pinned: boolean) {
+  void pinSession(id, pinned);
+}
+
+// 删除会话:内核中断回合、清历史并广播,前端移除并按需切换会话。
+function onDelete(id: string) {
+  void deleteSession(id);
+}
+
 onMounted(connect);
 </script>
 
@@ -120,11 +146,14 @@ onMounted(connect);
     <SessionSidebar
       :is-mac="isMac"
       :sessions="sessions"
+      :running="runningSessions"
       :active-id="activeId"
       :is-draft="isDraft"
       @new="newSession"
       @select="select"
       @rename="onRename"
+      @pin="onPin"
+      @delete="onDelete"
       @open-settings="settingsOpen = true"
     />
 
@@ -133,15 +162,9 @@ onMounted(connect);
 
       <main class="flex min-h-0 flex-1 flex-col">
         <div class="flex min-h-0 flex-1">
-          <MessageList
-            ref="messageListRef"
-            v-model:active-turn="activeTurn"
-            :messages="messages"
-            :streaming="streaming"
-          />
           <aside
             v-if="turnPoints.length > 3"
-            class="hidden w-8 shrink-0 items-center justify-center pr-0.5 md:flex"
+            class="hidden w-8 shrink-0 items-center justify-center pl-0.5 md:flex"
           >
             <Timeline
               :turns="turnPoints"
@@ -149,6 +172,12 @@ onMounted(connect);
               @select="onTurnSelect"
             />
           </aside>
+          <MessageList
+            ref="messageListRef"
+            v-model:active-turn="activeTurn"
+            :messages="messages"
+            :streaming="streaming"
+          />
         </div>
         <Composer
           :disabled="!ready"
@@ -159,8 +188,15 @@ onMounted(connect);
           :available-models="availableModels"
           :models-loading="modelsLoading"
           :models-error="modelsError"
+          :queued-messages="queuedMessages"
+          :context-usage="composerContextUsage"
+          :context-window="composerContextWindow"
           @send="send"
           @stop="cancelTurn"
+          @edit-queued="editQueuedMessage"
+          @reorder-queued="reorderQueuedMessage"
+          @dispatch-queued="dispatchQueuedMessage"
+          @delete-queued="deleteQueuedMessage"
           @update:model="onModelChange"
           @update:workspace="onWorkspaceChange"
           @update:approval="onApprovalChange"

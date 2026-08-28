@@ -75,6 +75,10 @@ type Engine struct {
 	// 结束后删除。Cancel 据此中断正在跑的回合(provider HTTP、
 	// 工具执行、审批等待都会随 ctx 取消而终止)。
 	cancels sync.Map // sessionID -> context.CancelFunc
+
+	// dones 持有每个会话当前回合的结束信号:RunTurn goroutine 退出时 close。
+	// 删除会话时用 CancelAndWait 等待回合彻底收尾,避免收尾事件写入已删会话。
+	dones sync.Map // sessionID -> chan struct{}
 }
 
 // NewEngine 组装回合引擎。
@@ -132,7 +136,7 @@ func (e *Engine) currentModel(sessionID string) string {
 }
 
 // ListModels 列出当前 provider 可用的模型。
-func (e *Engine) ListModels(ctx context.Context) ([]string, error) {
+func (e *Engine) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
 	prov, _ := e.currentProvider()
 	lister, ok := prov.(provider.ModelLister)
 	if !ok {
@@ -162,7 +166,13 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 		cancel()
 		return fmt.Errorf("该会话已有回合正在运行")
 	}
+	// done 在 RunTurn 完全退出(所有收尾事件已发出)后 close;
+	// CancelAndWait 据此确保删除会话前回合已彻底停透。
+	done := make(chan struct{})
+	e.dones.Store(sessionID, done)
 	defer e.cancels.Delete(sessionID)
+	defer e.dones.Delete(sessionID)
+	defer close(done)
 	defer cancel()
 	ctx = turnCtx
 
@@ -242,6 +252,10 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 
 		for ev := range stream {
 			switch ev.Type {
+			case "usage":
+				if ev.Usage != nil {
+					e.emit(ctx, sessionID, event.KindUsageUpdated, *ev.Usage, true)
+				}
 			case "text_delta":
 				accText += ev.Text
 				e.bus.Publish(topic(sessionID), event.Event{
@@ -401,6 +415,23 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 func (e *Engine) Cancel(sessionID string) {
 	if v, ok := e.cancels.Load(sessionID); ok {
 		v.(context.CancelFunc)()
+	}
+}
+
+// CancelAndWait 中断会话当前回合,并阻塞等待其 goroutine 彻底退出(或超时)。
+// 删除会话时调用:确保回合的收尾事件(tool_end/turn_complete 等)已全部发出,
+// 之后再清理会话数据,避免迟到事件把已删除会话的日志/状态重新写回。
+func (e *Engine) CancelAndWait(sessionID string, timeout time.Duration) {
+	v, ok := e.cancels.Load(sessionID)
+	if !ok {
+		return // 无活跃回合
+	}
+	v.(context.CancelFunc)()
+	if d, ok := e.dones.Load(sessionID); ok {
+		select {
+		case <-d.(chan struct{}):
+		case <-time.After(timeout):
+		}
 	}
 }
 

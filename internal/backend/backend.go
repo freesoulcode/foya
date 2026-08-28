@@ -39,6 +39,7 @@ type Backend struct {
 	dataDir       string
 	mu            sync.RWMutex
 	provCfg       config.Provider
+	turns         *turnScheduler
 }
 
 // New 组装一个 Backend。
@@ -61,6 +62,7 @@ func New(
 		buildProvider: build,
 		dataDir:       dataDir,
 		provCfg:       provCfg,
+		turns:         newTurnScheduler(),
 	}
 }
 
@@ -83,11 +85,55 @@ func (b *Backend) RenameSession(ctx context.Context, id, title string) (*session
 	if !ok {
 		return nil, session.ErrNotFound
 	}
-	ev := event.Event{Kind: event.KindSessionUpdated, Session: id, Time: time.Now(), Payload: s}
+	b.broadcastSession(ctx, s)
+	return s, nil
+}
+
+// PinSession 置顶/取消置顶会话,变更后广播 session_updated。
+func (b *Backend) PinSession(ctx context.Context, id string, pinned bool) (*session.Session, error) {
+	s, err := b.sessions.SetPinned(id, pinned)
+	if err != nil {
+		return nil, err
+	}
+	b.broadcastSession(ctx, s)
+	return s, nil
+}
+
+// deleteTurnGrace 是删除会话时等待活跃回合彻底收尾的上限。
+const deleteTurnGrace = 3 * time.Second
+
+// DeleteSession 删除会话:
+//  1. 先中断正在跑的回合并等其 goroutine 彻底退出,确保清理后不再有事件写入;
+//  2. 删除会话元数据与事件日志(日志层标记删除,迟到事件在 Append 处丢弃);
+//  3. 广播 session_deleted 通知在线客户端移除。
+//
+// session_deleted 属于会话目录层事件,只广播、不写入该会话分区日志——
+// 会话已不存在,持久化它没有读者,重连时靠 list_sessions 自然收敛。
+func (b *Backend) DeleteSession(ctx context.Context, id string) error {
+	if _, ok := b.sessions.Get(id); !ok {
+		return session.ErrNotFound
+	}
+	b.stopSessionAndWait(id, deleteTurnGrace)
+	if err := b.sessions.Delete(id); err != nil {
+		return err
+	}
+	b.log.Delete(id)
+	ev := event.Event{
+		Kind:    event.KindSessionDeleted,
+		Session: id,
+		Time:    time.Now(),
+		Payload: map[string]string{"id": id},
+	}
+	_ = b.bus.PublishMustDeliver(ctx, "session:"+id, ev)
+	return nil
+}
+
+// broadcastSession 把会话当前状态作为 session_updated 事件持久化并广播。
+func (b *Backend) broadcastSession(ctx context.Context, s *session.Session) {
+	ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
 	seq, _ := b.log.Append(ctx, ev)
 	ev.Seq = seq
-	_ = b.bus.PublishMustDeliver(ctx, "session:"+id, ev)
-	return s, nil
+	_ = b.bus.PublishMustDeliver(ctx, "session:"+s.ID, ev)
 }
 
 // ListSessions 列出会话。
@@ -95,14 +141,10 @@ func (b *Backend) ListSessions() []*session.Session {
 	return b.sessions.List()
 }
 
-// SubmitTurn 提交一轮对话。
-func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) error {
-	return b.engine.RunTurn(ctx, sessionID, text)
-}
-
 // CancelTurn 中断指定会话当前正在运行的回合(用户点停止)。
+// 队列保留且暂停自动发送,由用户选择“立即发送”或再次发送后恢复。
 func (b *Backend) CancelTurn(sessionID string) {
-	b.engine.Cancel(sessionID)
+	b.cancelCurrentTurn(sessionID)
 }
 
 // ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。
@@ -133,9 +175,32 @@ func (b *Backend) ProviderConfig() config.Provider {
 	return b.provCfg
 }
 
-// ListModels 列出当前 provider 可用的模型。
-func (b *Backend) ListModels(ctx context.Context) ([]string, error) {
+// ListModels 列出当前 provider 可用的模型及其上下文窗口。
+func (b *Backend) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
 	return b.engine.ListModels(ctx)
+}
+
+// Usage 返回会话最近一次模型请求的 token 使用情况。
+func (b *Backend) Usage(ctx context.Context, sessionID string) (*provider.Usage, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return nil, session.ErrNotFound
+	}
+	events, err := b.log.Read(ctx, sessionID, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != event.KindUsageUpdated {
+			continue
+		}
+		switch usage := events[i].Payload.(type) {
+		case provider.Usage:
+			return &usage, nil
+		case *provider.Usage:
+			return usage, nil
+		}
+	}
+	return nil, nil
 }
 
 // SetProviderConfig 热替换 provider 配置并重建 provider。

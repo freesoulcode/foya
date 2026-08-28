@@ -35,6 +35,10 @@ const points = computed(() =>
   }))
 );
 
+// ScrollArea 的 viewport 使用 100% 高度，因此必须给根节点明确高度。
+// 每行 36px，加上下 8px 内边距，最多展示 8 行。
+const pickerHeight = computed(() => Math.min(points.value.length * 36 + 8, 296));
+
 function setDotRef(el: HTMLElement | null, i: number) {
   if (el) dotRefs.value[i] = el;
 }
@@ -87,12 +91,12 @@ function onSelect(i: number) {
     </HoverCardTrigger>
 
     <HoverCardContent
-      side="left"
+      side="right"
       align="center"
       :side-offset="8"
       class="w-64 p-0"
     >
-      <ScrollArea class="max-h-72">
+      <ScrollArea :style="{ height: `${pickerHeight}px` }">
         <ul class="py-1">
           <li v-for="p in points" :key="p.index">
             <button

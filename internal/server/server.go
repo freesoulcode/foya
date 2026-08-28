@@ -5,7 +5,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,10 +35,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
+	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
+	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
+	s.mux.HandleFunc("GET /sessions/{id}/queue", s.handleListQueue)
+	s.mux.HandleFunc("POST /sessions/{id}/queue", s.handleEnqueueMessage)
+	s.mux.HandleFunc("PATCH /sessions/{id}/queue/{message_id}", s.handleUpdateQueuedMessage)
+	s.mux.HandleFunc("DELETE /sessions/{id}/queue/{message_id}", s.handleDeleteQueuedMessage)
+	s.mux.HandleFunc("POST /sessions/{id}/queue/{message_id}/dispatch", s.handleDispatchQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
 	s.mux.HandleFunc("GET /config/provider", s.handleGetProvider)
 	s.mux.HandleFunc("PUT /config/provider", s.handleSetProvider)
@@ -101,6 +107,18 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 置顶/取消置顶走 PinSession(单独记录 PinnedAt 并广播)。
+	if req.Pinned != nil {
+		if _, err := s.backend.PinSession(r.Context(), id, *req.Pinned); err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				writeErr(w, http.StatusNotFound, "not_found", err.Error())
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "pin_failed", err.Error())
+			return
+		}
+	}
+
 	// 其余字段走局部更新;无字段时直接返回当前会话。
 	sess, err := s.backend.UpdateSession(id, req.Model, req.Workspace, req.ApprovalMode)
 	if err != nil {
@@ -112,6 +130,21 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+// handleDeleteSession 删除会话:中断正在跑的回合、清除元数据与事件日志,
+// 并广播 session_deleted 让所有已连接客户端移除该会话。
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.backend.DeleteSession(r.Context(), id); err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "delete_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleListSessions 列出会话。
@@ -128,6 +161,20 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, msgs)
+}
+
+// handleUsage 返回会话最近一次模型请求的 token 使用情况。
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := s.backend.Usage(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "usage_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
 }
 
 // handleGetProvider 返回当前 provider 配置(key 脱敏)。
@@ -174,11 +221,22 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "models_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.ModelsResponse{Models: models})
+	ids := make([]string, 0, len(models))
+	contextWindows := make(map[string]int64)
+	for _, model := range models {
+		ids = append(ids, model.ID)
+		if model.ContextWindow > 0 {
+			contextWindows[model.ID] = model.ContextWindow
+		}
+	}
+	writeJSON(w, http.StatusOK, protocol.ModelsResponse{
+		Models:         ids,
+		ContextWindows: contextWindows,
+	})
 }
 
-// handleSubmitTurn 提交一轮对话。回合同步执行,事件从 SSE 流出;
-// 这里异步跑 turn,立即返回 RunID,客户端从已订阅的 SSE 收事件。
+// handleSubmitTurn 原子提交消息:空闲时立即启动,运行时进入 FIFO 队列。
+// Backend 自己持有后台 runner,请求返回不影响回合生命周期。
 func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req protocol.SubmitTurnRequest
@@ -186,11 +244,16 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	// 用后台 context,使 turn 不随此 HTTP 请求结束而取消。
-	go func() {
-		_ = s.backend.SubmitTurn(context.Background(), id, req.Message)
-	}()
-	writeJSON(w, http.StatusOK, protocol.SubmitTurnResponse{RunID: id})
+	result, err := s.backend.SubmitTurn(r.Context(), id, req.Message)
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.SubmitTurnResponse{
+		RunID:  id,
+		Status: result.Status,
+		Queued: result.Queued,
+	})
 }
 
 // handleCancelTurn 取消该会话当前正在运行的回合(用户点停止)。
@@ -198,6 +261,81 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.backend.CancelTurn(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListQueue returns the current ordered queue snapshot.
+func (s *Server) handleListQueue(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.ListQueuedMessages(r.PathValue("id"))
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// handleEnqueueMessage explicitly appends a message without starting it.
+func (s *Server) handleEnqueueMessage(w http.ResponseWriter, r *http.Request) {
+	var req protocol.QueueMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.EnqueueMessage(r.Context(), r.PathValue("id"), req.Message)
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+// handleUpdateQueuedMessage edits text and/or moves an item.
+func (s *Server) handleUpdateQueuedMessage(w http.ResponseWriter, r *http.Request) {
+	var req protocol.UpdateQueuedMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.UpdateQueuedMessage(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("message_id"),
+		req.Message,
+		req.Position,
+	)
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+// handleDeleteQueuedMessage removes one pending item.
+func (s *Server) handleDeleteQueuedMessage(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.DeleteQueuedMessage(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("message_id"),
+	)
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDispatchQueuedMessage interrupts the active turn and prioritizes the
+// selected item, or starts it directly when the session is idle.
+func (s *Server) handleDispatchQueuedMessage(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.DispatchQueuedMessage(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("message_id"),
+	)
+	if err != nil {
+		writeQueueErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // handleResolveApproval 接收客户端的审批决策(批准/拒绝)。
@@ -255,6 +393,20 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, errCode, msg string) {
 	writeJSON(w, code, protocol.ErrorResponse{Code: errCode, Message: msg})
+}
+
+func writeQueueErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, backend.ErrQueuedMessageNotFound):
+		writeErr(w, http.StatusNotFound, "queued_message_not_found", err.Error())
+	case errors.Is(err, backend.ErrEmptyMessage),
+		errors.Is(err, backend.ErrInvalidQueuePosition):
+		writeErr(w, http.StatusBadRequest, "invalid_queue_message", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "queue_failed", err.Error())
+	}
 }
 
 // Handler 返回 http.Handler,便于挂到任意监听器(Unix socket / TCP)。

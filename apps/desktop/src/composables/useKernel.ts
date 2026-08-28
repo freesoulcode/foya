@@ -5,6 +5,8 @@ import {
   type ChatMessage,
   type UpdateSessionPatch,
   type ApprovalMode,
+  type QueuedMessage,
+  type ContextUsage,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、绑定文件夹、设定审批档位。
@@ -32,6 +34,9 @@ const connectError = ref("");
 const sessions = ref<Session[]>([]);
 const activeId = ref<string>("");
 const streaming = ref(false);
+// 哪些会话正在运行 AI 回合(sessionId → true)。供侧边栏给运行中的会话加动画,
+// 与当前激活会话无关:切到别的会话后,原会话仍显示运行态。
+const runningSessions = ref<Record<string, boolean>>({});
 
 // 新对话草稿态的配置(activeId === "" 时生效)。
 const draft = reactive<DraftConfig>({
@@ -42,6 +47,7 @@ const draft = reactive<DraftConfig>({
 
 // 从 provider 的标准 /models 接口拉取的可用模型列表(应用级共享,不随会话变化)。
 const availableModels = ref<string[]>([]);
+const modelContextWindows = ref<Record<string, number>>({});
 const modelsLoading = ref(false);
 const modelsError = ref("");
 
@@ -49,6 +55,11 @@ const modelsError = ref("");
 const messagesBySession = ref<Record<string, ChatMessage[]>>({});
 const subscribed = new Set<string>();
 const streamingIdx: Record<string, number> = {};
+// 已删除会话:其迟到事件(如 turn_complete)一律丢弃,不重建消息桶。
+const deletedSessions = new Set<string>();
+// 待发送队列由内核持有;这里仅按会话保存 SSE/GET 投影。
+const queuedBySession = ref<Record<string, QueuedMessage[]>>({});
+const usageBySession = ref<Record<string, ContextUsage>>({});
 
 // 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
 export interface PendingApproval {
@@ -61,6 +72,12 @@ export interface PendingApproval {
 const pendingApprovals = ref<Record<string, PendingApproval>>({});
 
 const activeMessages = computed<ChatMessage[]>(() => messagesBySession.value[activeId.value] ?? []);
+const activeQueuedMessages = computed<QueuedMessage[]>(
+  () => queuedBySession.value[activeId.value] ?? []
+);
+const activeUsage = computed<ContextUsage | undefined>(
+  () => usageBySession.value[activeId.value]
+);
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value));
 const isDraft = computed(() => activeId.value === "");
 
@@ -102,6 +119,8 @@ function handleEvent(sessionId: string, data: string) {
   } catch {
     return;
   }
+  // 已删除会话的迟到事件直接丢弃,不重建消息桶(删除可能晚于事件到达)。
+  if (deletedSessions.has(sessionId)) return;
   ensureBucket(sessionId);
   const bucket = messagesBySession.value[sessionId];
 
@@ -139,6 +158,12 @@ function handleEvent(sessionId: string, data: string) {
     }
     case "message_end": {
       const m = ev.payload as ChatMessage;
+      // 用户消息由内核事件统一落到界面,而非只在发起请求的客户端乐观插入;
+      // 因此同一会话的其它在线客户端也能看到新回合。
+      if (m.role === "user") {
+        bucket.push(m);
+        break;
+      }
       const idx = streamingIdx[sessionId] ?? -1;
       if (m.role === "assistant" && idx >= 0) {
         // 内容以流式累积的 delta 为准;仅在无 delta 时用服务端 payload 兜底。
@@ -159,7 +184,7 @@ function handleEvent(sessionId: string, data: string) {
           streamingIdx[sessionId] = -1;
         }
       }
-      // user 消息回执已在 send 时乐观插入;tool 结果消息通过 tool_end 事件展示,不重复插入。
+      // tool 结果消息通过 tool_end 事件展示,不重复插入。
       break;
     }
     case "tool_begin": {
@@ -248,10 +273,34 @@ function handleEvent(sessionId: string, data: string) {
       delete pendingApprovals.value[p.id];
       break;
     }
+    case "turn_started": {
+      runningSessions.value[sessionId] = true;
+      let idx = streamingIdx[sessionId] ?? -1;
+      if (idx < 0) {
+        bucket.push({ role: "assistant", content: "" });
+        idx = bucket.length - 1;
+        streamingIdx[sessionId] = idx;
+      }
+      if (sessionId === activeId.value) streaming.value = true;
+      break;
+    }
     case "turn_complete":
       streamingIdx[sessionId] = -1;
+      delete runningSessions.value[sessionId];
       if (sessionId === activeId.value) streaming.value = false;
       break;
+    case "queue_updated": {
+      const p = ev.payload as { items?: QueuedMessage[] };
+      queuedBySession.value[sessionId] = p?.items ?? [];
+      break;
+    }
+    case "usage_updated": {
+      const usage = ev.payload as ContextUsage;
+      if (usage && usage.total_tokens > 0) {
+        usageBySession.value[sessionId] = usage;
+      }
+      break;
+    }
     case "session_updated": {
       // 会话元数据变更(标题/模型等),按 id 替换本地会话项,侧边栏自动响应。
       const updated = ev.payload as Session;
@@ -261,8 +310,17 @@ function handleEvent(sessionId: string, data: string) {
       }
       break;
     }
+    case "session_deleted": {
+      // 会话被删除(可能来自其他设备):从列表移除,清理本地缓存;
+      // 若正在查看该会话,切换到另一个会话或进入草稿态。
+      const p = ev.payload as { id?: string };
+      const id = p?.id ?? sessionId;
+      removeSession(id);
+      break;
+    }
     case "error": {
-      // 填入已乐观插入的 pending 气泡(若存在),避免多出一条空回复。
+      // 优先填入当前回合的空 assistant 气泡,避免多出一条错误消息。
+      delete runningSessions.value[sessionId];
       const text = `⚠️ ${String(ev.payload)}`;
       const idx = streamingIdx[sessionId] ?? -1;
       if (idx >= 0) {
@@ -283,7 +341,12 @@ async function subscribe(sessionId: string) {
   if (subscribed.has(sessionId)) return;
   subscribed.add(sessionId);
   streamingIdx[sessionId] = -1;
-  await api.subscribeEvents(sessionId, (data) => handleEvent(sessionId, data));
+  try {
+    await api.subscribeEvents(sessionId, (data) => handleEvent(sessionId, data));
+  } catch (error) {
+    subscribed.delete(sessionId);
+    throw error;
+  }
 }
 
 // 拉取可用模型列表(标准 /models 协议)。草稿态且尚未选模型时自动选中第一个。
@@ -291,12 +354,15 @@ async function refreshModels() {
   modelsLoading.value = true;
   modelsError.value = "";
   try {
-    availableModels.value = await api.listModels();
+    const catalog = await api.listModels();
+    availableModels.value = catalog.models;
+    modelContextWindows.value = catalog.context_windows;
     if (isDraft.value && !draft.model && availableModels.value.length > 0) {
       draft.model = availableModels.value[0];
     }
   } catch (e) {
     availableModels.value = [];
+    modelContextWindows.value = {};
     modelsError.value = String(e);
   } finally {
     modelsLoading.value = false;
@@ -405,12 +471,19 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
 // 切换到某会话:首次进入时加载历史并订阅。
 async function select(id: string) {
   activeId.value = id;
-  streaming.value = (streamingIdx[id] ?? -1) >= 0;
+  streaming.value = Boolean(runningSessions.value[id]);
   if (!messagesBySession.value[id] || messagesBySession.value[id].length === 0) {
     const history = await api.loadHistory(id);
     messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
+  const [queued, usage] = await Promise.all([
+    api.listQueuedMessages(id),
+    api.loadUsage(id),
+  ]);
+  queuedBySession.value[id] = queued;
+  if (usage) usageBySession.value[id] = usage;
+  else delete usageBySession.value[id];
 }
 
 // 局部更新当前会话的可变配置(模型/工作目录/审批档位)。
@@ -428,6 +501,45 @@ async function renameSession(id: string, title: string) {
   return updateSession(id, { title });
 }
 
+// 置顶/取消置顶:走 PATCH,返回的会话项直接替换本地项。
+async function pinSession(id: string, pinned: boolean) {
+  return updateSession(id, { pinned });
+}
+
+// 从本地集合移除会话并清理缓存;若移除的是当前会话,切到另一个或进入草稿态。
+function removeSession(id: string) {
+  deletedSessions.add(id);
+  const idx = sessions.value.findIndex((s) => s.id === id);
+  if (idx >= 0) sessions.value.splice(idx, 1);
+  delete messagesBySession.value[id];
+  delete queuedBySession.value[id];
+  delete usageBySession.value[id];
+  subscribed.delete(id);
+  delete streamingIdx[id];
+  delete runningSessions.value[id];
+  // 清理该会话的待处理审批。
+  for (const [aid, a] of Object.entries(pendingApprovals.value)) {
+    if (a.session === id) delete pendingApprovals.value[aid];
+  }
+  if (activeId.value === id) {
+    const next = sessions.value[0];
+    if (next) {
+      void select(next.id);
+    } else {
+      activeId.value = "";
+      streaming.value = false;
+      ensureBucket("");
+    }
+  }
+}
+
+// 删除会话:调用内核 DELETE(中断回合、清历史、广播),成功后本地移除。
+// 非活跃会话不订阅其 SSE,故删除后需这里主动移除;活跃会话的广播也会到达,去重即可。
+async function deleteSession(id: string) {
+  await api.deleteSession(id);
+  removeSession(id);
+}
+
 // 回执审批决策(批准/拒绝)。
 async function resolveApproval(sessionId: string, requestId: string, decision: string) {
   await api.resolveApproval(sessionId, requestId, decision);
@@ -435,8 +547,7 @@ async function resolveApproval(sessionId: string, requestId: string, decision: s
 }
 
 // 中断当前会话正在运行的回合(用户点停止)。后端会传播 ctx 取消,
-// 中断 provider HTTP 请求、工具执行与审批等待;turn_complete 事件到达后
-// streaming 复位,UI 恢复可输入。
+// 中断 provider HTTP 请求、工具执行与审批等待;待发送队列保留并暂停。
 async function cancelTurn() {
   const id = activeId.value;
   if (!id) return;
@@ -447,12 +558,11 @@ async function cancelTurn() {
   }
 }
 
-// 发送一条消息(乐观插入用户消息)。
+// 发送一条消息。内核原子决定直接启动或进入队列;用户消息与运行态
+// 统一由 SSE 事件投影,从而让多个客户端保持一致。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
 async function send(text: string) {
   if (!text.trim()) return;
-  // 回合进行中禁止再发消息(后端也会拒绝并发回合,这里提前拦避免乐观插入脏气泡)。
-  if (streaming.value) return;
 
   let id = activeId.value;
 
@@ -468,28 +578,74 @@ async function send(text: string) {
     id = s.id;
     activeId.value = id;
     await subscribe(id);
+    queuedBySession.value[id] = [];
   }
 
   ensureBucket(id);
-  const bucket = messagesBySession.value[id];
-  bucket.push({ role: "user", content: text });
-  // 乐观插入一条空 assistant 气泡,首 token 延迟期间立即展示 foya 正在响应。
-  // 第一个 message_delta 会复用它填充内容;turn_complete/error 结束 pending。
-  bucket.push({ role: "assistant", content: "" });
-  streamingIdx[id] = bucket.length - 1;
-  streaming.value = true;
 
   try {
-    await api.submitTurn(id, text);
-  } catch (e) {
-    // 提交失败(内核未连上/请求错误):把 pending 气泡标记为错误。
-    const idx = streamingIdx[id];
-    if (idx >= 0) {
-      bucket[idx].content = `⚠️ 发送失败：${String(e)}`;
-      bucket[idx].error = true;
-      streamingIdx[id] = -1;
-      streaming.value = false;
+    const result = await api.submitTurn(id, text);
+    if (result.status === "queued" && result.queued) {
+      const current = queuedBySession.value[id] ?? [];
+      if (!current.some((item) => item.id === result.queued!.id)) {
+        queuedBySession.value[id] = [...current, result.queued];
+      }
     }
+  } catch (e) {
+    messagesBySession.value[id].push({
+      role: "assistant",
+      content: `⚠️ 发送失败：${String(e)}`,
+      error: true,
+    });
+  }
+}
+
+async function editQueuedMessage(messageId: string, text: string) {
+  const id = activeId.value;
+  if (!id || !text.trim()) return;
+  try {
+    await api.updateQueuedMessage(id, messageId, { message: text });
+    queuedBySession.value[id] = await api.listQueuedMessages(id);
+  } catch (e) {
+    console.error("编辑待发送消息失败:", e);
+  }
+}
+
+async function reorderQueuedMessage(messageId: string, position: number) {
+  const id = activeId.value;
+  if (!id) return;
+  const items = queuedBySession.value[id] ?? [];
+  const index = items.findIndex((item) => item.id === messageId);
+  if (index < 0 || position < 0 || position >= items.length) return;
+  try {
+    await api.updateQueuedMessage(id, messageId, { position });
+    queuedBySession.value[id] = await api.listQueuedMessages(id);
+  } catch (e) {
+    console.error("调整待发送顺序失败:", e);
+  }
+}
+
+async function deleteQueuedMessage(messageId: string) {
+  const id = activeId.value;
+  if (!id) return;
+  try {
+    await api.deleteQueuedMessage(id, messageId);
+    queuedBySession.value[id] = (queuedBySession.value[id] ?? []).filter(
+      (item) => item.id !== messageId
+    );
+  } catch (e) {
+    console.error("删除待发送消息失败:", e);
+  }
+}
+
+async function dispatchQueuedMessage(messageId: string) {
+  const id = activeId.value;
+  if (!id) return;
+  try {
+    await api.dispatchQueuedMessage(id, messageId);
+    queuedBySession.value[id] = await api.listQueuedMessages(id);
+  } catch (e) {
+    console.error("立即发送失败:", e);
   }
 }
 
@@ -500,14 +656,18 @@ export function useKernel() {
     connectError,
     streaming,
     sessions,
+    runningSessions,
     activeId,
     activeSession,
     isDraft,
     draft,
     availableModels,
+    modelContextWindows,
     modelsLoading,
     modelsError,
     messages: activeMessages,
+    queuedMessages: activeQueuedMessages,
+    contextUsage: activeUsage,
     pendingApprovals,
     connect,
     newSession,
@@ -516,6 +676,12 @@ export function useKernel() {
     cancelTurn,
     updateSession,
     renameSession,
+    pinSession,
+    deleteSession,
+    editQueuedMessage,
+    reorderQueuedMessage,
+    deleteQueuedMessage,
+    dispatchQueuedMessage,
     resolveApproval,
     refreshModels,
   };

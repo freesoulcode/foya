@@ -32,10 +32,12 @@ type Session struct {
 	Model         string    `json:"model"`
 	Workspace     string    `json:"workspace,omitempty"`
 	ApprovalMode  string    `json:"approval_mode,omitempty"`
-	Title         string    `json:"title,omitempty"`
-	TitleIsManual bool      `json:"title_is_manual,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Title         string     `json:"title,omitempty"`
+	TitleIsManual bool       `json:"title_is_manual,omitempty"`
+	Pinned        bool       `json:"pinned,omitempty"`
+	PinnedAt      *time.Time `json:"pinned_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // CreateOptions 是新建会话时可由客户端指定的参数。
@@ -60,6 +62,10 @@ type Manager interface {
 	SetGeneratedTitle(id, title string) (bool, error)
 	// Rename 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
 	Rename(id, title string) error
+	// SetPinned 置顶/取消置顶。置顶记录 PinnedAt 用于同组内排序。
+	SetPinned(id string, pinned bool) (*Session, error)
+	// Delete 永久删除会话及其元数据。
+	Delete(id string) error
 	Close(id string) error
 }
 
@@ -154,6 +160,30 @@ func (m *memManager) Rename(id, title string) error {
 	s.Title = title
 	s.TitleIsManual = true
 	s.UpdatedAt = time.Now()
+	return nil
+}
+
+func (m *memManager) SetPinned(id string, pinned bool) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	s.Pinned = pinned
+	if pinned {
+		now := time.Now()
+		s.PinnedAt = &now
+	} else {
+		s.PinnedAt = nil
+	}
+	return s, nil
+}
+
+func (m *memManager) Delete(id string) error {
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
 	return nil
 }
 

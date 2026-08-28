@@ -5,6 +5,8 @@
 // (本地 Unix socket / 远端 TCP+TLS),协议不变。
 package protocol
 
+import "github.com/freesoulcode/foya/internal/queue"
+
 // SubmitTurnRequest 发起一个回合。
 type SubmitTurnRequest struct {
 	Session string `json:"session"`
@@ -25,12 +27,27 @@ type UpdateSessionRequest struct {
 	Model        *string `json:"model,omitempty"`
 	Workspace    *string `json:"workspace,omitempty"`
 	ApprovalMode *string `json:"approval_mode,omitempty"`
-	Title        *string `json:"title,omitempty"` // 手动改名;置 TitleIsManual=true
+	Title        *string `json:"title,omitempty"`  // 手动改名;置 TitleIsManual=true
+	Pinned       *bool   `json:"pinned,omitempty"` // 置顶/取消置顶
 }
 
-// SubmitTurnResponse 返回该回合的 RunID,用于在 SSE 流中关联事件。
+// SubmitTurnResponse 表示消息已直接启动或进入待发送队列。
 type SubmitTurnResponse struct {
-	RunID string `json:"run_id"`
+	RunID  string         `json:"run_id,omitempty"`
+	Status string         `json:"status"` // started / queued
+	Queued *queue.Message `json:"queued,omitempty"`
+}
+
+// QueueMessageRequest 显式向待发送队列追加消息。
+type QueueMessageRequest struct {
+	Message string `json:"message"`
+}
+
+// UpdateQueuedMessageRequest 修改队列消息正文或位置。
+// Position 从 0 开始;省略字段表示保持不变。
+type UpdateQueuedMessageRequest struct {
+	Message  *string `json:"message,omitempty"`
+	Position *int    `json:"position,omitempty"`
 }
 
 // ProviderConfig 是 provider 配置的线格式(读写设置界面用)。
@@ -45,7 +62,8 @@ type ProviderConfig struct {
 
 // ModelsResponse 是 GET /config/models 的响应。
 type ModelsResponse struct {
-	Models []string `json:"models"`
+	Models         []string         `json:"models"`
+	ContextWindows map[string]int64 `json:"context_windows,omitempty"`
 }
 
 // ApprovalDecisionRequest 是客户端回执一个审批决策。

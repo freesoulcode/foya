@@ -13,7 +13,14 @@ import {
   RefreshCwIcon,
 } from "@lucide/vue";
 import { Textarea } from "@/components/ui/textarea";
-import { api, type ApprovalMode } from "@/lib/api";
+import {
+  api,
+  type ApprovalMode,
+  type ContextUsage as ContextUsageData,
+  type QueuedMessage,
+} from "@/lib/api";
+import ContextUsage from "./ContextUsage.vue";
+import QueuedMessages from "./QueuedMessages.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -25,6 +32,9 @@ const props = withDefaults(
     availableModels?: string[];
     modelsLoading?: boolean;
     modelsError?: string;
+    queuedMessages?: QueuedMessage[];
+    contextUsage?: ContextUsageData;
+    contextWindow?: number;
   }>(),
   {
     disabled: false,
@@ -35,12 +45,19 @@ const props = withDefaults(
     availableModels: () => [],
     modelsLoading: false,
     modelsError: "",
+    queuedMessages: () => [],
+    contextUsage: undefined,
+    contextWindow: 0,
   }
 );
 
 const emit = defineEmits<{
   (e: "send", text: string): void;
   (e: "stop"): void;
+  (e: "edit-queued", id: string, text: string): void;
+  (e: "reorder-queued", id: string, position: number): void;
+  (e: "dispatch-queued", id: string): void;
+  (e: "delete-queued", id: string): void;
   (e: "update:model", value: string): void;
   (e: "update:workspace", value: string): void;
   (e: "update:approval", value: ApprovalMode): void;
@@ -111,13 +128,13 @@ function basename(p: string) {
 // ---- 发送 ----
 function submit() {
   const text = input.value.trim();
-  if (!text || props.disabled || props.streaming) return;
+  if (!text || props.disabled) return;
   input.value = "";
   emit("send", text);
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submit();
   }
@@ -127,6 +144,15 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <div class="shrink-0 px-4 pb-4 pt-2">
     <div class="mx-auto max-w-3xl">
+      <QueuedMessages
+        :items="queuedMessages"
+        :streaming="streaming"
+        @edit="(id, text) => emit('edit-queued', id, text)"
+        @reorder="(id, position) => emit('reorder-queued', id, position)"
+        @dispatch="(id) => emit('dispatch-queued', id)"
+        @delete="(id) => emit('delete-queued', id)"
+      />
+
       <!-- 输入卡片 -->
       <div
         class="rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
@@ -135,12 +161,12 @@ function onKeydown(e: KeyboardEvent) {
           v-model="input"
           :placeholder="
             streaming
-              ? 'foya 正在思考，点停止可中断当前回合…'
+              ? '继续输入，发送后加入待发送队列…'
               : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
           "
           class="max-h-60 min-h-[56px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
           rows="2"
-          :disabled="disabled || streaming"
+          :disabled="disabled"
           @keydown="onKeydown"
         />
 
@@ -203,6 +229,11 @@ function onKeydown(e: KeyboardEvent) {
           </div>
 
           <div class="flex items-center gap-1">
+            <ContextUsage
+              :usage="contextUsage"
+              :context-window="contextWindow"
+            />
+
             <!-- 模型下拉(从标准 /models 列表中选择) -->
             <div ref="modelRef" class="relative">
               <button
@@ -273,7 +304,7 @@ function onKeydown(e: KeyboardEvent) {
               </div>
             </div>
 
-            <!-- 发送/停止 -->
+            <!-- 运行时同时保留停止与入队发送。 -->
             <button
               v-if="streaming"
               type="button"
@@ -284,11 +315,10 @@ function onKeydown(e: KeyboardEvent) {
               <SquareIcon class="size-3.5 fill-current" />
             </button>
             <button
-              v-else
               type="button"
               class="flex size-8 items-center justify-center rounded-lg bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
               :disabled="disabled || !input.trim()"
-              title="发送 (Enter)"
+              :title="streaming ? '加入待发送队列 (Enter)' : '发送 (Enter)'"
               @click="submit"
             >
               <ArrowUpIcon class="size-4" />
@@ -323,7 +353,7 @@ function onKeydown(e: KeyboardEvent) {
       </div>
 
       <p class="mt-2 text-center text-[11px] text-muted-foreground">
-        Enter 发送 · Shift+Enter 换行
+        {{ streaming ? "Enter 加入待发送队列" : "Enter 发送" }} · Shift+Enter 换行
       </p>
     </div>
   </div>

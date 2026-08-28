@@ -23,16 +23,33 @@ type ToolDef struct {
 	Function FunctionDef `json:"function"`
 }
 
+// Usage 是单次模型请求的 token 使用情况。
+// CachedTokens 是 InputTokens 的子集,仍占用上下文窗口。
+type Usage struct {
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+	CachedTokens int64  `json:"cached_tokens"`
+}
+
+// ModelInfo 是模型列表中的可用元数据。ContextWindow 为 0 表示端点未提供。
+type ModelInfo struct {
+	ID            string `json:"id"`
+	ContextWindow int64  `json:"context_window,omitempty"`
+}
+
 // StreamEvent 是模型流式响应的一个增量。
 type StreamEvent struct {
-	Type string // text_delta / reasoning_delta / tool_call_delta / done / error
-	Text string
+	Type  string // text_delta / reasoning_delta / tool_call_delta / done / error
+	Text  string
+	Usage *Usage
 
 	// tool_call_delta 字段
-	ToolIndex    int    // 该工具调用在本批次中的序号(用于分片拼接)
-	ToolCallID   string // 首片携带
-	ToolName     string // 首片携带
-	ToolArgsDlt  string // 参数 JSON 的增量片段
+	ToolIndex   int    // 该工具调用在本批次中的序号(用于分片拼接)
+	ToolCallID  string // 首片携带
+	ToolName    string // 首片携带
+	ToolArgsDlt string // 参数 JSON 的增量片段
 
 	FinishReason string // stop / tool_calls / length / error(仅 done 事件)
 }
@@ -54,7 +71,7 @@ type Provider interface {
 // ModelLister 是可选能力:支持列出该 provider 上可用的模型。
 // OpenAI 兼容服务通常通过 GET /models 返回模型列表;不支持的 provider 可不实现。
 type ModelLister interface {
-	ListModels(ctx context.Context) ([]string, error)
+	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
 
 // Completer 是可选能力:非流式一次性生成短文本。

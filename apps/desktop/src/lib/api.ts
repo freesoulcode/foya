@@ -11,6 +11,8 @@ export interface Session {
   approval_mode?: string;
   title?: string;
   title_is_manual?: boolean;
+  pinned?: boolean;
+  pinned_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -28,6 +30,41 @@ export interface UpdateSessionPatch {
   workspace?: string;
   approval_mode?: string;
   title?: string;
+  pinned?: boolean;
+}
+
+// 内核持有的待发送消息。position 为会话队列中的零基位置。
+export interface QueuedMessage {
+  id: string;
+  session_id: string;
+  text: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubmitTurnResult {
+  run_id?: string;
+  status: "started" | "queued";
+  queued?: QueuedMessage;
+}
+
+export interface UpdateQueuedMessagePatch {
+  message?: string;
+  position?: number;
+}
+
+export interface ContextUsage {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+}
+
+export interface ModelCatalog {
+  models: string[];
+  context_windows: Record<string, number>;
 }
 
 // 审批档位(与 Go approval.Mode 对齐)。
@@ -85,6 +122,10 @@ export const api = {
       (r) => JSON.parse(r) as Session
     ),
 
+  // 删除会话(中断回合、清除历史、广播移除)。
+  deleteSession: (sessionId: string) =>
+    invoke("delete_session", { sessionId }),
+
   pickFolder: () =>
     open({ directory: true, multiple: false, title: "选择工作文件夹" }),
 
@@ -96,8 +137,42 @@ export const api = {
       (r) => (JSON.parse(r) as ChatMessage[]) ?? []
     ),
 
+  loadUsage: (sessionId: string) =>
+    invoke<string>("load_usage", { sessionId }).then(
+      (r) => JSON.parse(r) as ContextUsage | null
+    ),
+
   submitTurn: (sessionId: string, message: string) =>
-    invoke("submit_turn", { sessionId, message }),
+    invoke<string>("submit_turn", { sessionId, message }).then(
+      (r) => JSON.parse(r) as SubmitTurnResult
+    ),
+
+  listQueuedMessages: (sessionId: string) =>
+    invoke<string>("list_queued_messages", { sessionId }).then(
+      (r) => (JSON.parse(r) as QueuedMessage[]) ?? []
+    ),
+
+  enqueueMessage: (sessionId: string, message: string) =>
+    invoke<string>("enqueue_message", { sessionId, message }).then(
+      (r) => JSON.parse(r) as QueuedMessage
+    ),
+
+  updateQueuedMessage: (
+    sessionId: string,
+    messageId: string,
+    patch: UpdateQueuedMessagePatch
+  ) =>
+    invoke<string>("update_queued_message", { sessionId, messageId, patch }).then(
+      (r) => JSON.parse(r) as QueuedMessage
+    ),
+
+  deleteQueuedMessage: (sessionId: string, messageId: string) =>
+    invoke("delete_queued_message", { sessionId, messageId }),
+
+  dispatchQueuedMessage: (sessionId: string, messageId: string) =>
+    invoke<string>("dispatch_queued_message", { sessionId, messageId }).then(
+      (r) => JSON.parse(r) as QueuedMessage
+    ),
 
   // 中断当前回合(用户点停止)。
   cancelTurn: (sessionId: string) =>
@@ -112,7 +187,13 @@ export const api = {
   // 用已配置的 base_url + api_key 拉取 provider 可用模型列表。
   listModels: () =>
     invoke<string>("list_models").then(
-      (r) => (JSON.parse(r) as { models: string[] }).models ?? []
+      (r) => {
+        const result = JSON.parse(r) as Partial<ModelCatalog>;
+        return {
+          models: result.models ?? [],
+          context_windows: result.context_windows ?? {},
+        } satisfies ModelCatalog;
+      }
     ),
 
   subscribeEvents: (sessionId: string, onEvent: (data: string) => void) => {

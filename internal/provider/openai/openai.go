@@ -12,10 +12,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/respjson"
 	"github.com/openai/openai-go/shared"
 
 	"github.com/freesoulcode/foya/internal/message"
@@ -129,8 +131,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	}
 
 	params := oai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(model),
-		Messages: toChatMsgs(req.Messages),
+		Model:         shared.ChatModel(model),
+		Messages:      toChatMsgs(req.Messages),
+		StreamOptions: oai.ChatCompletionStreamOptionsParam{IncludeUsage: oai.Bool(true)},
 	}
 	if tools := toChatToolDefs(req.Tools); len(tools) > 0 {
 		params.Tools = tools
@@ -154,6 +157,18 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 
 		for stream.Next() {
 			chunk := stream.Current()
+			if chunk.JSON.Usage.Valid() && chunk.Usage.TotalTokens > 0 {
+				usage := provider.Usage{
+					Model:        model,
+					InputTokens:  chunk.Usage.PromptTokens,
+					OutputTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:  chunk.Usage.TotalTokens,
+					CachedTokens: chunk.Usage.PromptTokensDetails.CachedTokens,
+				}
+				if !emit(provider.StreamEvent{Type: "usage", Usage: &usage}) {
+					return
+				}
+			}
 			for _, c := range chunk.Choices {
 				// 非标准思考内容(reasoning_content):走 ExtraFields 提取。
 				if reasoning := extractReasoning(c.Delta); reasoning != "" {
@@ -239,20 +254,49 @@ func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, 
 	return resp.Choices[0].Message.Content, nil
 }
 
-// ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 列表。
+// ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 与上下文窗口。
 // 复用已配置的 baseURL 与 api_key,直连用户自带端点(BYOK)。
-func (p *Provider) ListModels(ctx context.Context) ([]string, error) {
+func (p *Provider) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
 	page, err := p.client.Models.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(page.Data))
+	models := make([]provider.ModelInfo, 0, len(page.Data))
 	for _, m := range page.Data {
 		if m.ID != "" {
-			ids = append(ids, m.ID)
+			models = append(models, provider.ModelInfo{
+				ID:            m.ID,
+				ContextWindow: extractContextWindow(m.JSON.ExtraFields),
+			})
 		}
 	}
-	return ids, nil
+	return models, nil
+}
+
+func extractContextWindow(fields map[string]respjson.Field) int64 {
+	for _, key := range []string{
+		"max_model_len",
+		"context_window",
+		"context_length",
+		"max_context_length",
+	} {
+		field, ok := fields[key]
+		if !ok {
+			continue
+		}
+		raw := field.Raw()
+		var integer int64
+		if err := json.Unmarshal([]byte(raw), &integer); err == nil && integer > 0 {
+			return integer
+		}
+		var text string
+		if err := json.Unmarshal([]byte(raw), &text); err == nil {
+			if parsed, err := strconv.ParseInt(text, 10, 64); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 // 确保实现了接口。
