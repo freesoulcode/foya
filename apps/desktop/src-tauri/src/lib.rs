@@ -30,59 +30,132 @@ fn dirs_config_dir() -> Option<PathBuf> {
 }
 
 // ============ 以下为 Unix 平台的内核连接实现 ============
-// 脚手架阶段用 std::os::unix::net 手写最小 HTTP/1.1 over Unix socket,零额外依赖。
+// 使用 hyper(事实标准 HTTP 实现)+ hyperlocal(Unix socket 连接器)。
+// chunked、keep-alive、header 解析全部由库负责,避免手写 HTTP 客户端的边界 bug。
 // Windows 传输(named pipe / AF_UNIX)后续单独实现。
 
 #[cfg(unix)]
 mod kernel {
     use super::kernel_socket_path;
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
+    use bytes::{Buf, Bytes};
+    use futures_util::StreamExt;
+    use http_body_util::{BodyDataStream, BodyExt, Full};
+    use hyper::{Method, Request, StatusCode};
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+    use hyperlocal::{UnixConnector, Uri as HyperlocalUri};
+    use std::path::Path;
     use tauri::ipc::Channel;
 
-    /// 发一个带 body 的 HTTP 请求,读完整响应,返回 body 字符串(用于短请求)。
-    pub fn request(method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+    /// 在缓冲区中查找下一个换行符(\n)的位置。
+    fn find_line_end(buf: &[u8]) -> Option<usize> {
+        buf.iter().position(|&b| b == b'\n')
+    }
+
+    type HttpClient = Client<UnixConnector, Full<Bytes>>;
+
+    fn client() -> HttpClient {
+        Client::builder(TokioExecutor::new()).build(UnixConnector)
+    }
+
+    fn socket_uri(path: &str) -> Result<hyperlocal::Uri, String> {
         let sock = kernel_socket_path().ok_or("无法解析 socket 路径")?;
-        let mut stream = UnixStream::connect(&sock).map_err(|e| format!("连接内核失败: {e}"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .map_err(|e| e.to_string())?;
+        Ok(HyperlocalUri::new(
+            Path::new(&sock),
+            &path,
+        ))
+    }
 
-        let body = body.unwrap_or("");
-        let req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    fn method_from_str(m: &str) -> Method {
+        match m {
+            "POST" => Method::POST,
+            "PUT" => Method::PUT,
+            "PATCH" => Method::PATCH,
+            "DELETE" => Method::DELETE,
+            _ => Method::GET,
+        }
+    }
 
-        let mut resp = String::new();
-        stream.read_to_string(&mut resp).map_err(|e| e.to_string())?;
-        let body = resp.rsplit("\r\n\r\n").next().unwrap_or("").trim().to_string();
-        Ok(body)
+    /// 发一个带 body 的 HTTP 请求,读完整响应,返回 body 字符串(用于短请求)。
+    pub async fn request(method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+        let uri = socket_uri(path)?;
+        let mut builder = Request::builder().method(method_from_str(method)).uri(uri);
+        let body_bytes: Bytes = match body {
+            Some(b) if !b.is_empty() => {
+                builder = builder.header("content-type", "application/json");
+                Bytes::copy_from_slice(b.as_bytes())
+            }
+            _ => Bytes::new(),
+        };
+        let req = builder
+            .body(Full::new(body_bytes))
+            .map_err(|e| format!("构造请求失败: {e}"))?;
+
+        let resp = client()
+            .request(req)
+            .await
+            .map_err(|e| format!("连接内核失败: {e}"))?;
+
+        let status = resp.status();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?
+            .to_bytes();
+        let text = String::from_utf8_lossy(&bytes).to_string();
+
+        if status.is_success() {
+            Ok(text)
+        } else {
+            Err(format!("内核返回 {}: {}", status.as_u16(), text))
+        }
     }
 
     /// 订阅某会话的 SSE 事件流,逐条经 Channel 推给前端(每个 data 行一条)。
-    /// 阻塞运行,应在独立线程调用。
-    pub fn subscribe(session_id: &str, channel: Channel<String>) -> Result<(), String> {
-        let sock = kernel_socket_path().ok_or("无法解析 socket 路径")?;
-        let stream = UnixStream::connect(&sock).map_err(|e| format!("连接内核失败: {e}"))?;
-
+    pub async fn subscribe(session_id: &str, channel: Channel<String>) -> Result<(), String> {
         let path = format!("/sessions/{session_id}/events");
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
-        );
-        {
-            let mut w = stream.try_clone().map_err(|e| e.to_string())?;
-            w.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        let uri = socket_uri(&path)?;
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(uri)
+            .header("accept", "text/event-stream")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| format!("构造请求失败: {e}"))?;
+
+        let resp = client()
+            .request(req)
+            .await
+            .map_err(|e| format!("连接内核失败: {e}"))?;
+
+        if resp.status() != StatusCode::OK {
+            return Err(format!("订阅失败: HTTP {}", resp.status().as_u16()));
         }
 
-        let reader = BufReader::new(stream);
-        for line in reader.lines() {
-            let line = line.map_err(|e| e.to_string())?;
-            // SSE 的 data 行:把 JSON 负载推给前端。
-            if let Some(payload) = line.strip_prefix("data: ") {
-                let _ = channel.send(payload.to_string());
+        // 直接从 body 流读取,累积到缓冲区后按行切分 SSE。
+        // 每个 SSE data: 行是一条 JSON 事件,经 Channel 推给前端。
+        let mut stream = BodyDataStream::new(resp.into_body());
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(mut data) => {
+                    buf.extend_from_slice(data.copy_to_bytes(data.remaining()).as_ref());
+                    while let Some(pos) = find_line_end(&buf) {
+                        let line: Vec<u8> = buf.drain(..=pos).collect();
+                        // 去掉行尾 \n 及可能的 \r。
+                        let end = line
+                            .iter()
+                            .rposition(|&b| b != b'\n' && b != b'\r')
+                            .map(|p| p + 1)
+                            .unwrap_or(0);
+                        if let Ok(text) = std::str::from_utf8(&line[..end]) {
+                            if let Some(payload) = text.strip_prefix("data: ") {
+                                let _ = channel.send(payload.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(e) => return Err(format!("读取事件流失败: {e}")),
             }
         }
         Ok(())
@@ -92,75 +165,67 @@ mod kernel {
 /// 建会话,返回会话 JSON。options 为可选的创建参数(model/workspace/approval_mode)。
 #[cfg(unix)]
 #[tauri::command]
-fn create_session(options: Option<serde_json::Value>) -> Result<String, String> {
+async fn create_session(options: Option<serde_json::Value>) -> Result<String, String> {
     let body = options.map(|v| v.to_string());
-    kernel::request(
-        "POST",
-        "/sessions",
-        body.as_deref(),
-    )
+    kernel::request("POST", "/sessions", body.as_deref()).await
 }
 
 /// 局部更新会话(模型/工作目录/审批档位),返回更新后的会话 JSON。
 #[cfg(unix)]
 #[tauri::command]
-fn update_session(session_id: String, patch: serde_json::Value) -> Result<String, String> {
-    kernel::request(
-        "PATCH",
-        &format!("/sessions/{session_id}"),
-        Some(&patch.to_string()),
-    )
+async fn update_session(session_id: String, patch: serde_json::Value) -> Result<String, String> {
+    kernel::request("PATCH", &format!("/sessions/{session_id}"), Some(&patch.to_string())).await
 }
 
 /// 提交一轮对话。
 #[cfg(unix)]
 #[tauri::command]
-fn submit_turn(session_id: String, message: String) -> Result<String, String> {
+async fn submit_turn(session_id: String, message: String) -> Result<String, String> {
     let body = serde_json::json!({ "message": message }).to_string();
-    kernel::request("POST", &format!("/sessions/{session_id}/turns"), Some(&body))
+    kernel::request("POST", &format!("/sessions/{session_id}/turns"), Some(&body)).await
 }
 
 /// 列出所有会话。
 #[cfg(unix)]
 #[tauri::command]
-fn list_sessions() -> Result<String, String> {
-    kernel::request("GET", "/sessions", None)
+async fn list_sessions() -> Result<String, String> {
+    kernel::request("GET", "/sessions", None).await
 }
 
 /// 加载某会话的对话历史。
 #[cfg(unix)]
 #[tauri::command]
-fn load_history(session_id: String) -> Result<String, String> {
-    kernel::request("GET", &format!("/sessions/{session_id}/history"), None)
+async fn load_history(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/history"), None).await
 }
 
 /// 读取当前 provider 配置(key 脱敏)。
 #[cfg(unix)]
 #[tauri::command]
-fn get_provider() -> Result<String, String> {
-    kernel::request("GET", "/config/provider", None)
+async fn get_provider() -> Result<String, String> {
+    kernel::request("GET", "/config/provider", None).await
 }
 
 /// 保存 provider 配置(热替换)。
 #[cfg(unix)]
 #[tauri::command]
-fn set_provider(config: serde_json::Value) -> Result<String, String> {
-    kernel::request("PUT", "/config/provider", Some(&config.to_string()))
+async fn set_provider(config: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/config/provider", Some(&config.to_string())).await
 }
 
 /// 拉取当前 provider 可用模型列表(内核用已配置的 base_url + api_key 代求 /models)。
 #[cfg(unix)]
 #[tauri::command]
-fn list_models() -> Result<String, String> {
-    kernel::request("GET", "/config/models", None)
+async fn list_models() -> Result<String, String> {
+    kernel::request("GET", "/config/models", None).await
 }
 
-/// 订阅会话事件流。在后台线程持续把 SSE 事件经 Channel 推给前端。
+/// 订阅会话事件流。在后台异步任务持续把 SSE 事件经 Channel 推给前端。
 #[cfg(unix)]
 #[tauri::command]
 fn subscribe_events(session_id: String, channel: Channel<String>) -> Result<(), String> {
-    std::thread::spawn(move || {
-        let _ = kernel::subscribe(&session_id, channel);
+    tauri::async_runtime::spawn(async move {
+        let _ = kernel::subscribe(&session_id, channel).await;
     });
     Ok(())
 }

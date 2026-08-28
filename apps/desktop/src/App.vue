@@ -7,6 +7,7 @@ import type { ApprovalMode, UpdateSessionPatch } from "@/lib/api";
 import AppTitleBar from "@/components/AppTitleBar.vue";
 import SessionSidebar from "@/components/chat/SessionSidebar.vue";
 import MessageList from "@/components/chat/MessageList.vue";
+import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import SettingsDialog from "@/components/chat/SettingsDialog.vue";
 
@@ -34,6 +35,36 @@ const {
 } = useKernel();
 
 const settingsOpen = ref(false);
+const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
+const activeTurn = ref(0);
+
+// 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
+const TURN_LABEL_MAX = 40;
+const turnPoints = computed(() =>
+  messages.value
+    .filter((m) => m.role === "user")
+    .map((m) => {
+      const text = m.content.replace(/\s+/g, " ").trim();
+      return {
+        label:
+          text.length > TURN_LABEL_MAX
+            ? `${text.slice(0, TURN_LABEL_MAX)}…`
+            : text || "新对话",
+      };
+    })
+);
+
+// 新回合产生(用户发消息)或切会话时,默认高亮最新回合;滚动时由 MessageList 覆盖。
+watch(
+  () => turnPoints.value.length,
+  (n) => {
+    activeTurn.value = Math.max(0, n - 1);
+  }
+);
+
+function onTurnSelect(i: number) {
+  messageListRef.value?.scrollToTurn(i);
+}
 
 // 设置弹窗关闭后刷新模型列表(provider 配置可能已变更)。
 watch(settingsOpen, (open) => {
@@ -99,7 +130,23 @@ onMounted(connect);
       <AppTitleBar :session="activeSession" @rename="onRename" />
 
       <main class="flex min-h-0 flex-1 flex-col">
-        <MessageList :messages="messages" :streaming="streaming" />
+        <div class="flex min-h-0 flex-1">
+          <MessageList
+            ref="messageListRef"
+            v-model:active-turn="activeTurn"
+            :messages="messages"
+            :streaming="streaming"
+          />
+          <aside
+            class="hidden w-8 shrink-0 items-center justify-center pr-0.5 md:flex"
+          >
+            <Timeline
+              :turns="turnPoints"
+              :active="activeTurn"
+              @select="onTurnSelect"
+            />
+          </aside>
+        </div>
         <Composer
           :disabled="!ready"
           :streaming="streaming"
