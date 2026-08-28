@@ -212,6 +212,30 @@ async fn submit_turn(session_id: String, message: String) -> Result<String, Stri
     .await
 }
 
+/// 编辑一条已完成的用户消息并从该位置创建新分支。
+#[cfg(unix)]
+#[tauri::command]
+async fn edit_turn(
+    session_id: String,
+    message_seq: u64,
+    message: String,
+    confirm_effects: bool,
+    expected_head_seq: u64,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "message": message,
+        "confirm_effects": confirm_effects,
+        "expected_head_seq": expected_head_seq,
+    })
+    .to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/turns/{message_seq}/edit"),
+        Some(&body),
+    )
+    .await
+}
+
 /// 手动压缩会话的已完成历史。
 #[cfg(unix)]
 #[tauri::command]
@@ -392,6 +416,18 @@ fn submit_turn(_session_id: String, _message: String) -> Result<String, String> 
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn edit_turn(
+    _session_id: String,
+    _message_seq: u64,
+    _message: String,
+    _confirm_effects: bool,
+    _expected_head_seq: u64,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn compact_session(_session_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -539,6 +575,7 @@ pub fn run() {
             create_session,
             update_session,
             submit_turn,
+            edit_turn,
             compact_session,
             list_queued_messages,
             enqueue_message,

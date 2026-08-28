@@ -62,6 +62,9 @@ type Manager interface {
 	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
 	// AI 结果永不覆盖手动改名。
 	SetGeneratedTitle(id, title string) (bool, error)
+	// ResetGeneratedTitle clears an automatic title before regenerating it from
+	// an edited first turn. Manually assigned titles are never changed.
+	ResetGeneratedTitle(id string) (*Session, bool, error)
 	// Rename 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
 	Rename(id, title string) error
 	// SetPinned 置顶/取消置顶。置顶记录 PinnedAt 用于同组内排序。
@@ -162,6 +165,21 @@ func (m *memManager) SetGeneratedTitle(id, title string) (bool, error) {
 	s.Title = title
 	s.UpdatedAt = time.Now()
 	return true, nil
+}
+
+func (m *memManager) ResetGeneratedTitle(id string) (*Session, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	if s.TitleIsManual || s.Title == "" {
+		return s, false, nil
+	}
+	s.Title = ""
+	s.UpdatedAt = time.Now()
+	return s, true, nil
 }
 
 func (m *memManager) Rename(id, title string) error {

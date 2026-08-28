@@ -11,6 +11,7 @@ import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import SettingsDialog from "@/components/chat/SettingsDialog.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
+import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
 
 const { isMac } = usePlatform();
 
@@ -35,6 +36,7 @@ const {
   newSession,
   select,
   send,
+  editSentMessage,
   cancelTurn,
   updateSession,
   renameSession,
@@ -182,6 +184,8 @@ onMounted(connect);
             :messages="messages"
             :streaming="streaming"
             :compacting="activeCompacting"
+            :editable="queuedMessages.length === 0"
+            @edit-message="editSentMessage"
           />
         </div>
         <Composer
@@ -213,5 +217,6 @@ onMounted(connect);
 
     <SettingsDialog v-model:open="settingsOpen" />
     <ApprovalDialog />
+    <HistoryEditDialog />
   </SidebarProvider>
 </template>

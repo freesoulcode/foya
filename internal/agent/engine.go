@@ -428,9 +428,30 @@ type toolCallPayload struct {
 	Diff    string `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
 }
 
-// RunTurn 同步执行一轮对话(可能含多步工具调用)。
-// 同一时刻一个会话只能有一个回合;重复提交返回错误。可用 Cancel 中断。
+// RunTurn executes a regular user turn.
 func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error {
+	return e.runTurn(ctx, sessionID, userText, false)
+}
+
+// RunEditedTurn executes the replacement turn after an earlier user message was
+// edited. The notice keeps the model aware that the workspace was not rewound.
+func (e *Engine) RunEditedTurn(ctx context.Context, sessionID, userText string) error {
+	return e.runTurn(ctx, sessionID, userText, true)
+}
+
+// InvalidateHistoryEstimate drops request-size baselines tied to a superseded
+// conversation projection.
+func (e *Engine) InvalidateHistoryEstimate(sessionID string) {
+	e.requestBudgets.Delete(sessionID)
+}
+
+// runTurn 同步执行一轮对话(可能含多步工具调用)。
+// 同一时刻一个会话只能有一个回合;重复提交返回错误。可用 Cancel 中断。
+func (e *Engine) runTurn(
+	ctx context.Context,
+	sessionID, userText string,
+	editedHistory bool,
+) error {
 	// 注册 per-session cancel:同一会话只允许一个活跃回合。
 	turnCtx, cancel := context.WithCancel(ctx)
 	if _, loaded := e.cancels.LoadOrStore(sessionID, cancel); loaded {
@@ -494,6 +515,15 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 			Workspace:    e.resolveWorkspace(sessionID),
 			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
 		})
+		if editedHistory {
+			sysPrompt += `
+
+<edited_history_notice>
+An earlier user message was edited and the superseded conversation suffix is not visible.
+The workspace was not rolled back and may still contain changes from that old branch or from the user.
+Inspect the current workspace before modifying files; do not assume it matches the visible conversation history.
+</edited_history_notice>`
+		}
 		messages, payloadUnits, err := e.prepareModelRequest(
 			ctx,
 			sessionID,

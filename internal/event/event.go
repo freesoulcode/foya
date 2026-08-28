@@ -29,10 +29,25 @@ const (
 	KindCompactionStarted   Kind = "compaction_started"
 	KindCompactionCompleted Kind = "compaction_completed"
 	KindCompactionFailed    Kind = "compaction_failed"
+	KindHistoryBranched     Kind = "history_branched"
 	KindTurnStarted         Kind = "turn_started"
 	KindTurnComplete        Kind = "turn_complete" // 回合结束(必达)
 	KindError               Kind = "error"
 )
+
+// BranchEffect summarizes a potentially persistent workspace side effect in a
+// superseded history suffix. It is advisory: external effects are not rolled back.
+type BranchEffect struct {
+	Tool   string `json:"tool"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// HistoryBranched marks the active history as the prefix before TargetUserSeq.
+// All source events remain immutable; later projections hide the superseded suffix.
+type HistoryBranched struct {
+	TargetUserSeq Seq            `json:"target_user_seq"`
+	Effects       []BranchEffect `json:"effects,omitempty"`
+}
 
 // Event 是内核事件的信封。Payload 由 Kind 决定其具体类型。
 type Event struct {

@@ -3,13 +3,33 @@ package state
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 )
+
+var (
+	ErrActiveUserMessageNotFound = errors.New("active user message not found")
+	ErrMessageUnchanged          = errors.New("edited message is unchanged")
+	ErrBranchChanged             = errors.New("active history changed after branch preview")
+)
+
+// BranchResult reports whether a branch was committed or still needs explicit
+// confirmation because the superseded suffix may have changed the workspace.
+type BranchResult struct {
+	Event     event.Event
+	Effects   []event.BranchEffect
+	HeadSeq   event.Seq
+	FirstUser bool
+	Applied   bool
+}
 
 // MemLog 是内存版事件日志:按会话保存有序事件,分配全局单调序号。
 type MemLog struct {
@@ -67,17 +87,15 @@ func (l *MemLog) Delete(session string) {
 	l.mu.Unlock()
 }
 
-// History 从事件日志投影出某会话的对话历史(多轮上下文的真相来源)。
-// 取所有 MessageEnd 事件,按序还原为消息序列。
+// History projects the active conversation branch. Superseded messages remain
+// in the event log but are omitted from this client-visible projection.
 func (l *MemLog) History(ctx context.Context, session string) ([]message.Message, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	var msgs []message.Message
-	for _, ev := range l.events[session] {
-		if ev.Kind != event.KindMessageEnd {
-			continue
-		}
-		if m, ok := ev.Payload.(message.Message); ok {
+	for _, ev := range activeMessageEvents(l.events[session]) {
+		if m, ok := messageFromEvent(ev); ok {
+			m.EventSeq = uint64(ev.Seq)
 			msgs = append(msgs, m)
 		}
 	}
@@ -89,7 +107,7 @@ func (l *MemLog) History(ctx context.Context, session string) ([]message.Message
 func (l *MemLog) ModelHistory(ctx context.Context, session string) ([]message.Message, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	events := append([]event.Event(nil), l.events[session]...)
+	events := activeMessageEvents(l.events[session])
 	checkpoint, ok := l.checkpoints[session]
 	if !ok {
 		return compaction.Project(events, nil), nil
@@ -97,11 +115,11 @@ func (l *MemLog) ModelHistory(ctx context.Context, session string) ([]message.Me
 	return compaction.Project(events, &checkpoint), nil
 }
 
-// Events returns an ordered snapshot for compaction planning.
+// Events returns the active message events used for compaction planning.
 func (l *MemLog) Events(ctx context.Context, session string) ([]event.Event, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	return append([]event.Event(nil), l.events[session]...), nil
+	return activeMessageEvents(l.events[session]), nil
 }
 
 // Checkpoint returns the latest accepted checkpoint for a session.
@@ -123,8 +141,9 @@ func (l *MemLog) RecordCheckpoint(
 ) (event.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	events := l.events[checkpoint.SessionID]
-	if !compaction.ValidateCheckpoint(events, checkpoint) {
+	sourceEvents := l.events[checkpoint.SessionID]
+	active := activeMessageEvents(sourceEvents)
+	if !compaction.ValidateCheckpoint(active, checkpoint) {
 		return event.Event{}, fmt.Errorf("compaction checkpoint does not match source events")
 	}
 	l.seq++
@@ -135,7 +154,194 @@ func (l *MemLog) RecordCheckpoint(
 		Payload: checkpoint,
 		Time:    checkpoint.CreatedAt,
 	}
-	l.events[checkpoint.SessionID] = append(events, ev)
+	l.events[checkpoint.SessionID] = append(sourceEvents, ev)
 	l.checkpoints[checkpoint.SessionID] = checkpoint
 	return ev, nil
+}
+
+// Branch replaces the active suffix beginning at targetUserSeq with a new
+// branch marker. No source event is deleted. If the suffix contains possible
+// workspace side effects, callers must explicitly allow them to remain.
+func (l *MemLog) Branch(
+	ctx context.Context,
+	session string,
+	targetUserSeq event.Seq,
+	editedContent string,
+	allowEffects bool,
+	expectedHeadSeq event.Seq,
+) (BranchResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	active := activeMessageEvents(l.events[session])
+	targetIndex := -1
+	var target message.Message
+	for i, ev := range active {
+		if ev.Seq != targetUserSeq {
+			continue
+		}
+		msg, ok := messageFromEvent(ev)
+		if !ok || msg.Role != message.RoleUser {
+			break
+		}
+		targetIndex = i
+		target = msg
+		break
+	}
+	if targetIndex < 0 {
+		return BranchResult{}, ErrActiveUserMessageNotFound
+	}
+	if target.Content == editedContent {
+		return BranchResult{}, ErrMessageUnchanged
+	}
+
+	effects := branchEffects(active[targetIndex:])
+	firstUser := true
+	for _, ev := range active[:targetIndex] {
+		msg, ok := messageFromEvent(ev)
+		if ok && msg.Role == message.RoleUser {
+			firstUser = false
+			break
+		}
+	}
+	var headSeq event.Seq
+	if len(active) > 0 {
+		headSeq = active[len(active)-1].Seq
+	}
+	if len(effects) > 0 && !allowEffects {
+		return BranchResult{Effects: effects, HeadSeq: headSeq}, nil
+	}
+	if len(effects) > 0 && expectedHeadSeq != headSeq {
+		return BranchResult{}, ErrBranchChanged
+	}
+
+	l.seq++
+	payload := event.HistoryBranched{
+		TargetUserSeq: targetUserSeq,
+		Effects:       effects,
+	}
+	ev := event.Event{
+		Seq:     l.seq,
+		Kind:    event.KindHistoryBranched,
+		Session: session,
+		Time:    time.Now(),
+		Payload: payload,
+	}
+	l.events[session] = append(l.events[session], ev)
+	delete(l.checkpoints, session)
+	return BranchResult{
+		Event:     ev,
+		Effects:   effects,
+		HeadSeq:   headSeq,
+		FirstUser: firstUser,
+		Applied:   true,
+	}, nil
+}
+
+func activeMessageEvents(events []event.Event) []event.Event {
+	active := make([]event.Event, 0, len(events))
+	for _, ev := range events {
+		switch ev.Kind {
+		case event.KindMessageEnd:
+			active = append(active, ev)
+		case event.KindHistoryBranched:
+			branch, ok := historyBranchFromPayload(ev.Payload)
+			if !ok {
+				continue
+			}
+			for i := len(active) - 1; i >= 0; i-- {
+				if active[i].Seq == branch.TargetUserSeq {
+					active = active[:i]
+					break
+				}
+			}
+		}
+	}
+	return active
+}
+
+func messageFromEvent(ev event.Event) (message.Message, bool) {
+	switch value := ev.Payload.(type) {
+	case message.Message:
+		return value, true
+	case *message.Message:
+		if value != nil {
+			return *value, true
+		}
+	}
+	return message.Message{}, false
+}
+
+func historyBranchFromPayload(payload any) (event.HistoryBranched, bool) {
+	switch value := payload.(type) {
+	case event.HistoryBranched:
+		return value, true
+	case *event.HistoryBranched:
+		if value != nil {
+			return *value, true
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return event.HistoryBranched{}, false
+	}
+	var branch event.HistoryBranched
+	if err := json.Unmarshal(data, &branch); err != nil || branch.TargetUserSeq == 0 {
+		return event.HistoryBranched{}, false
+	}
+	return branch, true
+}
+
+func branchEffects(events []event.Event) []event.BranchEffect {
+	toolResults := make(map[string]message.Message)
+	for _, ev := range events {
+		msg, ok := messageFromEvent(ev)
+		if ok && msg.Role == message.RoleTool {
+			toolResults[msg.ToolCallID] = msg
+		}
+	}
+
+	effects := make([]event.BranchEffect, 0)
+	for _, ev := range events {
+		msg, ok := messageFromEvent(ev)
+		if !ok || msg.Role != message.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			switch call.Name {
+			case "bash":
+				effects = append(effects, event.BranchEffect{
+					Tool:   call.Name,
+					Detail: toolArgument(call.Input, "command"),
+				})
+			case "write", "edit":
+				result, completed := toolResults[call.ID]
+				if !completed || result.Diff == "" {
+					continue
+				}
+				effects = append(effects, event.BranchEffect{
+					Tool:   call.Name,
+					Detail: toolArgument(call.Input, "path"),
+				})
+			}
+			if len(effects) == 20 {
+				return effects
+			}
+		}
+	}
+	return effects
+}
+
+func toolArgument(input json.RawMessage, key string) string {
+	var args map[string]any
+	if err := json.Unmarshal(input, &args); err != nil {
+		return ""
+	}
+	value, _ := args[key].(string)
+	const maxRunes = 160
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return string(runes)
 }

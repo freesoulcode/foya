@@ -49,6 +49,17 @@ export interface SubmitTurnResult {
   queued?: QueuedMessage;
 }
 
+export interface BranchEffect {
+  tool: string;
+  detail?: string;
+}
+
+export interface EditTurnResult {
+  status: "started" | "confirmation_required";
+  effects?: BranchEffect[];
+  head_seq?: number;
+}
+
 export interface UpdateQueuedMessagePatch {
   message?: string;
   position?: number;
@@ -98,6 +109,7 @@ export type MessageSegment =
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  event_seq?: number;
   reasoning?: string;
   tool_calls?: ToolCallView[];
   // 有序段落(仅 assistant)。存在时优先按其渲染;缺失时回退到 reasoning/tool_calls/content 扁平字段。
@@ -152,6 +164,21 @@ export const api = {
     invoke<string>("submit_turn", { sessionId, message }).then(
       (r) => JSON.parse(r) as SubmitTurnResult
     ),
+
+  editTurn: (
+    sessionId: string,
+    messageSeq: number,
+    message: string,
+    confirmEffects = false,
+    expectedHeadSeq = 0
+  ) =>
+    invoke<string>("edit_turn", {
+      sessionId,
+      messageSeq,
+      message,
+      confirmEffects,
+      expectedHeadSeq,
+    }).then((r) => JSON.parse(r) as EditTurnResult),
 
   compactSession: (sessionId: string) =>
     invoke<string>("compact_session", { sessionId }).then(

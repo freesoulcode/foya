@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import {
   BotIcon,
   CopyIcon,
   CheckIcon,
+  PencilIcon,
+  XIcon,
   TerminalIcon,
   ChevronRightIcon,
   BrainIcon,
@@ -18,10 +20,16 @@ import {
 import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
 
 const props = defineProps<{
   message: ChatMessage;
   streaming?: boolean;
+  editable?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "edit", messageSeq: number, text: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === "user");
@@ -183,6 +191,9 @@ function renderSegment(text: string): string {
 
 const bodyEl = ref<HTMLElement | null>(null);
 const copiedAll = ref(false);
+const editing = ref(false);
+const editText = ref("");
+const editRef = ref<InstanceType<typeof Textarea> | null>(null);
 
 async function copyText(text: string) {
   try {
@@ -216,10 +227,50 @@ async function copyAll() {
     window.setTimeout(() => (copiedAll.value = false), 1500);
   }
 }
+
+function beginEdit() {
+  if (!props.editable || !props.message.event_seq) return;
+  editText.value = props.message.content;
+  editing.value = true;
+  void nextTick(() => {
+    const textarea = editRef.value?.$el as HTMLTextAreaElement | undefined;
+    textarea?.focus();
+    textarea?.select();
+  });
+}
+
+function cancelEdit() {
+  editing.value = false;
+  editText.value = "";
+}
+
+function saveEdit() {
+  const text = editText.value.trim();
+  if (
+    !props.message.event_seq ||
+    !text ||
+    text === props.message.content.trim()
+  ) {
+    return;
+  }
+  emit("edit", props.message.event_seq, text);
+  cancelEdit();
+}
+
+function onEditKeydown(event: KeyboardEvent) {
+  if (event.isComposing) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelEdit();
+  } else if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    saveEdit();
+  }
+}
 </script>
 
 <template>
-  <div :class="cn('group', isUser ? 'flex flex-row-reverse gap-3' : 'flex flex-col gap-1.5')">
+  <div :class="cn('group', isUser ? 'flex flex-col items-end gap-1' : 'flex flex-col gap-1.5')">
     <template v-if="!isUser">
       <div
         :class="cn(
@@ -240,14 +291,49 @@ async function copyAll() {
       :class="cn(
         'min-w-0',
         isUser
-          ? 'max-w-[80%] rounded-2xl rounded-tr-md bg-secondary px-4 py-2.5 text-sm leading-relaxed'
+          ? cn(
+              'max-w-[80%] rounded-2xl rounded-tr-md bg-secondary px-4 py-2.5 text-sm leading-relaxed',
+              editing && 'w-full'
+            )
           : 'w-full'
       )"
     >
       <!-- 用户消息:纯文本 -->
-      <div v-if="isUser" class="whitespace-pre-wrap break-words">
-        {{ message.content }}
-      </div>
+      <template v-if="isUser">
+        <template v-if="editing">
+          <Textarea
+            ref="editRef"
+            v-model="editText"
+            class="max-h-56 min-h-20 resize-none border-border bg-background px-3 py-2 text-sm leading-relaxed"
+            rows="3"
+            @keydown="onEditKeydown"
+          />
+          <div class="mt-2 flex justify-end gap-1">
+            <button
+              type="button"
+              class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="取消编辑"
+              @click="cancelEdit"
+            >
+              <XIcon class="size-3.5" />
+            </button>
+            <button
+              type="button"
+              class="flex size-7 items-center justify-center rounded-md bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
+              :disabled="
+                !editText.trim() || editText.trim() === message.content.trim()
+              "
+              title="保存并重新执行"
+              @click="saveEdit"
+            >
+              <CheckIcon class="size-3.5" />
+            </button>
+          </div>
+        </template>
+        <div v-else class="whitespace-pre-wrap break-words">
+          {{ message.content }}
+        </div>
+      </template>
 
       <!-- pending:首 token 到达前的 typing 指示器 -->
       <div v-else-if="isPending" class="flex items-center gap-1 py-1">
@@ -370,6 +456,31 @@ async function copyAll() {
           {{ copiedAll ? "已复制" : "复制" }}
         </button>
       </div>
+    </div>
+
+    <div
+      v-if="isUser && !editing"
+      class="flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+    >
+      <button
+        type="button"
+        class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        :title="copiedAll ? '已复制' : '复制消息'"
+        @click="copyAll"
+      >
+        <CheckIcon v-if="copiedAll" class="size-3.5" />
+        <CopyIcon v-else class="size-3.5" />
+      </button>
+      <button
+        v-if="message.event_seq"
+        type="button"
+        class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+        :disabled="!editable"
+        :title="editable ? '编辑消息' : '会话运行时不可编辑'"
+        @click="beginEdit"
+      >
+        <PencilIcon class="size-3.5" />
+      </button>
     </div>
   </div>
 </template>

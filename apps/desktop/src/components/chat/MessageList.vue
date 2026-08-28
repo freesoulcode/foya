@@ -8,11 +8,13 @@ const props = defineProps<{
   messages: ChatMessage[];
   streaming: boolean;
   compacting?: boolean;
+  editable?: boolean;
   activeTurn?: number;
 }>();
 
 const emit = defineEmits<{
   "update:activeTurn": [value: number];
+  "edit-message": [messageSeq: number, text: string];
 }>();
 
 const scrollEl = ref<HTMLElement | null>(null);
@@ -197,13 +199,17 @@ onBeforeUnmount(() => {
     <div v-else class="relative mx-auto max-w-3xl space-y-6 px-4 py-6">
       <div
         v-for="(m, i) in messages"
-        :key="i"
+        :key="m.event_seq ?? i"
         :ref="(el) => setItemRef(el as HTMLElement | null, i)"
       >
         <MessageBubble
           :message="m"
+          :editable="editable && !streaming && !compacting"
           :streaming="
             streaming && !compacting && m.role === 'assistant' && i === messages.length - 1
+          "
+          @edit="
+            (messageSeq, text) => emit('edit-message', messageSeq, text)
           "
         />
       </div>

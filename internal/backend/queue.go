@@ -11,6 +11,7 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/state"
 )
 
 var (
@@ -22,17 +23,35 @@ var (
 	ErrInvalidQueuePosition = errors.New("invalid queue position")
 	// ErrSessionBusy indicates that a mutually exclusive session operation is active.
 	ErrSessionBusy = errors.New("session is busy")
+	// ErrActiveUserMessageNotFound indicates that an edit target is not on the active branch.
+	ErrActiveUserMessageNotFound = errors.New("active user message not found")
+	// ErrMessageUnchanged rejects edits that do not change the user message.
+	ErrMessageUnchanged = errors.New("edited message is unchanged")
+	// ErrSessionQueueNotEmpty avoids carrying prompts authored against a superseded branch.
+	ErrSessionQueueNotEmpty = errors.New("session has queued messages")
+	// ErrHistoryChanged rejects a stale side-effect confirmation.
+	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
 )
 
 const (
-	SubmissionStarted = "started"
-	SubmissionQueued  = "queued"
+	SubmissionStarted        = "started"
+	SubmissionQueued         = "queued"
+	EditStarted              = "started"
+	EditConfirmationRequired = "confirmation_required"
 )
 
 // Submission describes whether a submitted message started or was queued.
 type Submission struct {
 	Status string
 	Queued *queue.Message
+}
+
+// EditSubmission reports whether an edited turn started or needs explicit
+// confirmation that workspace effects from the old branch will remain.
+type EditSubmission struct {
+	Status  string
+	Effects []event.BranchEffect
+	HeadSeq event.Seq
 }
 
 type sessionRunner struct {
@@ -91,13 +110,13 @@ func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submi
 		runner, turnCtx := b.createRunnerLocked(sessionID)
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		go b.runTurnLoop(sessionID, next.Text, runner, turnCtx)
+		go b.runTurnLoop(sessionID, next.Text, runner, turnCtx, false)
 		return Submission{Status: SubmissionQueued, Queued: &item}, nil
 	}
 
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, text, runner, turnCtx)
+	go b.runTurnLoop(sessionID, text, runner, turnCtx, false)
 	return Submission{Status: SubmissionStarted}, nil
 }
 
@@ -267,7 +286,7 @@ func (b *Backend) DispatchQueuedMessage(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, selected.Text, runner, turnCtx)
+	go b.runTurnLoop(sessionID, selected.Text, runner, turnCtx, false)
 	return selected, nil
 }
 
@@ -323,8 +342,93 @@ func (b *Backend) CompactSession(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, next.Text, runner, turnCtx)
+	go b.runTurnLoop(sessionID, next.Text, runner, turnCtx, false)
 	return checkpoint, err
+}
+
+// EditTurn creates a new active history branch before targetUserSeq and starts
+// the replacement user turn. Superseded events and workspace changes are kept.
+func (b *Backend) EditTurn(
+	ctx context.Context,
+	sessionID string,
+	targetUserSeq event.Seq,
+	text string,
+	confirmEffects bool,
+	expectedHeadSeq event.Seq,
+) (EditSubmission, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return EditSubmission{}, session.ErrNotFound
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return EditSubmission{}, ErrEmptyMessage
+	}
+
+	b.turns.mu.Lock()
+	if _, deleted := b.turns.deleted[sessionID]; deleted {
+		b.turns.mu.Unlock()
+		return EditSubmission{}, session.ErrNotFound
+	}
+	if b.turns.runners[sessionID] != nil || b.turns.compacting[sessionID] {
+		b.turns.mu.Unlock()
+		return EditSubmission{}, ErrSessionBusy
+	}
+	if len(b.turns.queues[sessionID]) > 0 {
+		b.turns.mu.Unlock()
+		return EditSubmission{}, ErrSessionQueueNotEmpty
+	}
+
+	branch, err := b.log.Branch(
+		ctx,
+		sessionID,
+		targetUserSeq,
+		text,
+		confirmEffects,
+		expectedHeadSeq,
+	)
+	if err != nil {
+		b.turns.mu.Unlock()
+		switch {
+		case errors.Is(err, state.ErrActiveUserMessageNotFound):
+			return EditSubmission{}, ErrActiveUserMessageNotFound
+		case errors.Is(err, state.ErrMessageUnchanged):
+			return EditSubmission{}, ErrMessageUnchanged
+		case errors.Is(err, state.ErrBranchChanged):
+			return EditSubmission{}, ErrHistoryChanged
+		default:
+			return EditSubmission{}, err
+		}
+	}
+	if !branch.Applied {
+		b.turns.mu.Unlock()
+		return EditSubmission{
+			Status:  EditConfirmationRequired,
+			Effects: branch.Effects,
+			HeadSeq: branch.HeadSeq,
+		}, nil
+	}
+
+	b.engine.InvalidateHistoryEstimate(sessionID)
+	runner, turnCtx := b.createRunnerLocked(sessionID)
+	publishCtx := context.WithoutCancel(ctx)
+	_ = b.bus.PublishMustDeliver(
+		publishCtx,
+		"session:"+sessionID,
+		branch.Event,
+	)
+	if branch.FirstUser {
+		if updated, changed, resetErr := b.sessions.ResetGeneratedTitle(sessionID); resetErr == nil && changed {
+			b.broadcastSession(publishCtx, updated)
+		}
+	}
+	b.turns.mu.Unlock()
+
+	go b.runTurnLoop(sessionID, text, runner, turnCtx, true)
+	return EditSubmission{
+		Status:  EditStarted,
+		Effects: branch.Effects,
+		HeadSeq: branch.HeadSeq,
+	}, nil
 }
 
 func (b *Backend) stopSessionAndWait(sessionID string, timeout time.Duration) {
@@ -358,10 +462,16 @@ func (b *Backend) runTurnLoop(
 	sessionID, text string,
 	runner *sessionRunner,
 	turnCtx context.Context,
+	editedHistory bool,
 ) {
 	defer close(runner.done)
 	for {
-		_ = b.engine.RunTurn(turnCtx, sessionID, text)
+		if editedHistory {
+			_ = b.engine.RunEditedTurn(turnCtx, sessionID, text)
+			editedHistory = false
+		} else {
+			_ = b.engine.RunTurn(turnCtx, sessionID, text)
+		}
 
 		b.turns.mu.Lock()
 		current, exists := b.turns.runners[sessionID]

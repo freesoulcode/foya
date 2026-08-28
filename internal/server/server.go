@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/session"
 )
@@ -41,6 +43,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
 	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/edit", s.handleEditTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
 	s.mux.HandleFunc("GET /sessions/{id}/queue", s.handleListQueue)
@@ -255,6 +258,56 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		RunID:  id,
 		Status: result.Status,
 		Queued: result.Queued,
+	})
+}
+
+// handleEditTurn branches before an active user message and runs its edited
+// replacement. Potential workspace effects require an explicit second request.
+func (s *Server) handleEditTurn(w http.ResponseWriter, r *http.Request) {
+	rawSeq := r.PathValue("message_seq")
+	seq, err := strconv.ParseUint(rawSeq, 10, 64)
+	if err != nil || seq == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid_message_seq", "invalid message sequence")
+		return
+	}
+	var req protocol.EditTurnRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	result, err := s.backend.EditTurn(
+		r.Context(),
+		r.PathValue("id"),
+		event.Seq(seq),
+		req.Message,
+		req.ConfirmEffects,
+		event.Seq(req.ExpectedHeadSeq),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, backend.ErrActiveUserMessageNotFound):
+			writeErr(w, http.StatusNotFound, "message_not_found", err.Error())
+		case errors.Is(err, backend.ErrEmptyMessage):
+			writeErr(w, http.StatusBadRequest, "empty_message", err.Error())
+		case errors.Is(err, backend.ErrMessageUnchanged):
+			writeErr(w, http.StatusConflict, "message_unchanged", err.Error())
+		case errors.Is(err, backend.ErrSessionBusy):
+			writeErr(w, http.StatusConflict, "session_busy", err.Error())
+		case errors.Is(err, backend.ErrSessionQueueNotEmpty):
+			writeErr(w, http.StatusConflict, "queue_not_empty", err.Error())
+		case errors.Is(err, backend.ErrHistoryChanged):
+			writeErr(w, http.StatusConflict, "history_changed", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "edit_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.EditTurnResponse{
+		Status:  result.Status,
+		Effects: result.Effects,
+		HeadSeq: uint64(result.HeadSeq),
 	})
 }
 

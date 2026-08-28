@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -211,4 +212,164 @@ func TestQueueSnapshotIsBroadcastToEverySubscriber(t *testing.T) {
 			t.Fatalf("subscriber %d timed out", i)
 		}
 	}
+}
+
+func TestEditTurnStartsFromActiveHistoryPrefix(t *testing.T) {
+	be, sessionID, prov := newQueueTestBackend(t)
+	ctx := context.Background()
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "first",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "first answer",
+	})
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "old second",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "old answer",
+	})
+
+	result, err := be.EditTurn(ctx, sessionID, target, "edited second", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != EditStarted {
+		t.Fatalf("edit status = %q", result.Status)
+	}
+	awaitStarted(t, prov, "edited second")
+
+	history, err := be.History(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 ||
+		history[0].Content != "first" ||
+		history[1].Content != "first answer" ||
+		history[2].Content != "edited second" {
+		t.Fatalf("active history = %#v", history)
+	}
+	prov.releases <- struct{}{}
+}
+
+func TestEditTurnRequiresConfirmationForRetainedEffects(t *testing.T) {
+	be, sessionID, prov := newQueueTestBackend(t)
+	ctx := context.Background()
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "change the file",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID:    "write-1",
+			Name:  "write",
+			Input: json.RawMessage(`{"path":"main.go","content":"new"}`),
+		}},
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "write-1",
+		Content:    "written",
+		Diff:       "@@ -0,0 +1 @@\n+new",
+	})
+
+	preview, err := be.EditTurn(
+		ctx,
+		sessionID,
+		target,
+		"change it differently",
+		false,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Status != EditConfirmationRequired ||
+		len(preview.Effects) != 1 ||
+		preview.Effects[0].Detail != "main.go" {
+		t.Fatalf("edit preview = %#v", preview)
+	}
+	select {
+	case started := <-prov.started:
+		t.Fatalf("turn started before confirmation: %q", started)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	started, err := be.EditTurn(
+		ctx,
+		sessionID,
+		target,
+		"change it differently",
+		true,
+		preview.HeadSeq,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Status != EditStarted {
+		t.Fatalf("confirmed edit status = %q", started.Status)
+	}
+	awaitStarted(t, prov, "change it differently")
+	prov.releases <- struct{}{}
+}
+
+func TestEditFirstTurnRefreshesAutomaticTitle(t *testing.T) {
+	be, sessionID, prov := newQueueTestBackend(t)
+	ctx := context.Background()
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "old first request",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "old answer",
+	})
+	if _, err := be.sessions.SetGeneratedTitle(sessionID, "old title"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := be.EditTurn(
+		ctx,
+		sessionID,
+		target,
+		"edited first request",
+		false,
+		0,
+	); err != nil {
+		t.Fatal(err)
+	}
+	awaitStarted(t, prov, "edited first request")
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		sess, ok := be.sessions.Get(sessionID)
+		if !ok {
+			t.Fatal("session disappeared")
+		}
+		if sess.Title == "edited first request" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic title = %q, want edited first request", sess.Title)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	prov.releases <- struct{}{}
+}
+
+func appendHistoryMessage(
+	t *testing.T,
+	be *Backend,
+	sessionID string,
+	msg message.Message,
+) event.Seq {
+	t.Helper()
+	seq, err := be.log.Append(context.Background(), event.Event{
+		Kind:    event.KindMessageEnd,
+		Session: sessionID,
+		Payload: msg,
+		Time:    time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seq
 }

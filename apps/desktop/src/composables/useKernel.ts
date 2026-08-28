@@ -7,6 +7,7 @@ import {
   type ApprovalMode,
   type QueuedMessage,
   type ContextUsage,
+  type BranchEffect,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、绑定文件夹、设定审批档位。
@@ -71,6 +72,17 @@ export interface PendingApproval {
   detail: string;
 }
 const pendingApprovals = ref<Record<string, PendingApproval>>({});
+
+export interface PendingHistoryEdit {
+  sessionId: string;
+  messageSeq: number;
+  message: string;
+  effects: BranchEffect[];
+  headSeq: number;
+  submitting?: boolean;
+  error?: string;
+}
+const pendingHistoryEdit = ref<PendingHistoryEdit | null>(null);
 
 const activeMessages = computed<ChatMessage[]>(() => messagesBySession.value[activeId.value] ?? []);
 const activeQueuedMessages = computed<QueuedMessage[]>(
@@ -158,7 +170,7 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "message_end": {
-      const m = ev.payload as ChatMessage;
+      const m = { ...(ev.payload as ChatMessage), event_seq: ev.seq };
       // 用户消息由内核事件统一落到界面,而非只在发起请求的客户端乐观插入;
       // 因此同一会话的其它在线客户端也能看到新回合。
       if (m.role === "user") {
@@ -186,6 +198,17 @@ function handleEvent(sessionId: string, data: string) {
         }
       }
       // tool 结果消息通过 tool_end 事件展示,不重复插入。
+      break;
+    }
+    case "history_branched": {
+      const p = ev.payload as { target_user_seq?: number };
+      const target = Number(p?.target_user_seq ?? 0);
+      const index = bucket.findIndex(
+        (message) => message.role === "user" && message.event_seq === target
+      );
+      if (index >= 0) bucket.splice(index);
+      streamingIdx[sessionId] = -1;
+      delete usageBySession.value[sessionId];
       break;
     }
     case "tool_begin": {
@@ -632,6 +655,57 @@ async function send(text: string) {
   }
 }
 
+async function editSentMessage(messageSeq: number, text: string) {
+  const id = activeId.value;
+  const message = text.trim();
+  if (!id || !message || streaming.value) return;
+  try {
+    const result = await api.editTurn(id, messageSeq, message);
+    if (result.status === "confirmation_required") {
+      pendingHistoryEdit.value = {
+        sessionId: id,
+        messageSeq,
+        message,
+        effects: result.effects ?? [],
+        headSeq: result.head_seq ?? 0,
+      };
+    }
+  } catch (error) {
+    pendingHistoryEdit.value = {
+      sessionId: id,
+      messageSeq,
+      message,
+      effects: [],
+      headSeq: 0,
+      error: `编辑失败：${String(error)}`,
+    };
+  }
+}
+
+async function confirmHistoryEdit() {
+  const pending = pendingHistoryEdit.value;
+  if (!pending || pending.submitting) return;
+  pending.submitting = true;
+  pending.error = "";
+  try {
+    await api.editTurn(
+      pending.sessionId,
+      pending.messageSeq,
+      pending.message,
+      true,
+      pending.headSeq
+    );
+    pendingHistoryEdit.value = null;
+  } catch (error) {
+    pending.submitting = false;
+    pending.error = `编辑失败：${String(error)}`;
+  }
+}
+
+function cancelHistoryEdit() {
+  pendingHistoryEdit.value = null;
+}
+
 async function editQueuedMessage(messageId: string, text: string) {
   const id = activeId.value;
   if (!id || !text.trim()) return;
@@ -702,10 +776,14 @@ export function useKernel() {
     queuedMessages: activeQueuedMessages,
     contextUsage: activeUsage,
     pendingApprovals,
+    pendingHistoryEdit,
     connect,
     newSession,
     select,
     send,
+    editSentMessage,
+    confirmHistoryEdit,
+    cancelHistoryEdit,
     cancelTurn,
     updateSession,
     renameSession,

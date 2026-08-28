@@ -31,6 +31,7 @@ type ToolCall struct {
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
+	EventSeq   uint64     `json:"event_seq,omitempty"` // 历史投影中的稳定标识,不回灌模型
 	Reasoning  string     `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`

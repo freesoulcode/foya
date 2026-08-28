@@ -5,7 +5,10 @@
 // (本地 Unix socket / 远端 TCP+TLS),协议不变。
 package protocol
 
-import "github.com/freesoulcode/foya/internal/queue"
+import (
+	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/queue"
+)
 
 // SubmitTurnRequest 发起一个回合。
 type SubmitTurnRequest struct {
@@ -36,6 +39,22 @@ type SubmitTurnResponse struct {
 	RunID  string         `json:"run_id,omitempty"`
 	Status string         `json:"status"` // started / queued
 	Queued *queue.Message `json:"queued,omitempty"`
+}
+
+// EditTurnRequest replaces one active user turn. ConfirmEffects acknowledges
+// that side effects from the superseded branch remain in the workspace.
+type EditTurnRequest struct {
+	Message         string `json:"message"`
+	ConfirmEffects  bool   `json:"confirm_effects,omitempty"`
+	ExpectedHeadSeq uint64 `json:"expected_head_seq,omitempty"`
+}
+
+// EditTurnResponse either reports a started replacement turn or asks the
+// client to confirm retained side effects.
+type EditTurnResponse struct {
+	Status  string               `json:"status"` // started / confirmation_required
+	Effects []event.BranchEffect `json:"effects,omitempty"`
+	HeadSeq uint64               `json:"head_seq,omitempty"`
 }
 
 // QueueMessageRequest 显式向待发送队列追加消息。
