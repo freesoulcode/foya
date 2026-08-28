@@ -5,6 +5,8 @@
 // 的累积。
 package message
 
+import "encoding/json"
+
 // Role 是消息角色。
 type Role string
 
@@ -12,10 +14,24 @@ const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleSystem    Role = "system"
+	RoleTool      Role = "tool"
 )
 
+// ToolCall 是助手发起的一次工具调用(assistant 消息携带)。
+type ToolCall struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
 // Message 是一条对话消息。
+// 纯文本消息:Role + Content。
+// 助手调工具:Role=assistant, Content 可为空, ToolCalls 非空。
+// 工具结果:Role=tool, ToolCallID 指向对应的调用, Content 为结果文本。
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role       Role       `json:"role"`
+	Content    string     `json:"content"`
+	Reasoning  string     `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }

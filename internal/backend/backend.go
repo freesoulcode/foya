@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
+	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
@@ -24,7 +25,6 @@ import (
 )
 
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
-// 由 kernel 注入,backend 借它在运行时热替换 provider。
 type ProviderBuilder func(config.Provider) (provider.Provider, string)
 
 // Backend 是内核业务的统一入口(传输无关)。
@@ -33,39 +33,48 @@ type Backend struct {
 	log      *state.MemLog
 	bus      *broker.Broker[event.Event]
 	engine   *agent.Engine
+	approval approval.Gateway
 
 	buildProvider ProviderBuilder
 	dataDir       string
-	mu            sync.RWMutex // 保护 provCfg
+	mu            sync.RWMutex
 	provCfg       config.Provider
 }
 
 // New 组装一个 Backend。
-func New(sessions session.Manager, log *state.MemLog, bus *broker.Broker[event.Event], engine *agent.Engine, build ProviderBuilder, provCfg config.Provider, dataDir string) *Backend {
+func New(
+	sessions session.Manager,
+	log *state.MemLog,
+	bus *broker.Broker[event.Event],
+	engine *agent.Engine,
+	gw approval.Gateway,
+	build ProviderBuilder,
+	provCfg config.Provider,
+	dataDir string,
+) *Backend {
 	return &Backend{
 		sessions:      sessions,
 		log:           log,
 		bus:           bus,
 		engine:        engine,
+		approval:      gw,
 		buildProvider: build,
 		dataDir:       dataDir,
 		provCfg:       provCfg,
 	}
 }
 
-// CreateSession 新建会话。opts 中为空的字段由调用方(server)填充默认值。
+// CreateSession 新建会话。
 func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, error) {
 	return b.sessions.Create(opts)
 }
 
-// UpdateSession 局部更新会话可变字段(模型/工作目录/审批档位),
-// 供会话进行中实时切换审批档位等场景使用。
+// UpdateSession 局部更新会话可变字段。
 func (b *Backend) UpdateSession(id string, model, workspace, approvalMode *string) (*session.Session, error) {
 	return b.sessions.Update(id, model, workspace, approvalMode)
 }
 
-// RenameSession 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
-// 改名后发 session_updated 事件广播给所有订阅者(多端同步)。
+// RenameSession 手动改名。
 func (b *Backend) RenameSession(ctx context.Context, id, title string) (*session.Session, error) {
 	if err := b.sessions.Rename(id, title); err != nil {
 		return nil, err
@@ -86,47 +95,56 @@ func (b *Backend) ListSessions() []*session.Session {
 	return b.sessions.List()
 }
 
-// SubmitTurn 提交一轮对话(同步执行,事件通过 SSE 流出)。
+// SubmitTurn 提交一轮对话。
 func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) error {
 	return b.engine.RunTurn(ctx, sessionID, text)
 }
 
-// Subscribe 订阅某会话的事件流(供 SSE)。
+// CancelTurn 中断指定会话当前正在运行的回合(用户点停止)。
+func (b *Backend) CancelTurn(sessionID string) {
+	b.engine.Cancel(sessionID)
+}
+
+// ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。
+func (b *Backend) ResolveApproval(requestID string, decision string) {
+	d := approval.Decision(decision)
+	b.approval.Resolve(requestID, d)
+}
+
+// Subscribe 订阅某会话的事件流。
 func (b *Backend) Subscribe(ctx context.Context, sessionID string) <-chan event.Event {
 	return b.bus.Subscribe(ctx, "session:"+sessionID)
 }
 
-// History 返回某会话的对话历史(从事件日志投影)。
+// History 返回某会话的对话历史。
 func (b *Backend) History(ctx context.Context, sessionID string) ([]message.Message, error) {
 	return b.log.History(ctx, sessionID)
 }
 
-// Replay 返回某会话中序号大于 after 的历史事件(供 SSE 断线补发)。
+// Replay 返回某会话中序号大于 after 的历史事件。
 func (b *Backend) Replay(ctx context.Context, sessionID string, after event.Seq) ([]event.Event, error) {
 	return b.log.Read(ctx, sessionID, after)
 }
 
-// ProviderConfig 返回当前 provider 配置(供设置界面读取)。
+// ProviderConfig 返回当前 provider 配置。
 func (b *Backend) ProviderConfig() config.Provider {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.provCfg
 }
 
-// ListModels 列出当前 provider 可用的模型(供模型选择器拉取)。
+// ListModels 列出当前 provider 可用的模型。
 func (b *Backend) ListModels(ctx context.Context) ([]string, error) {
 	return b.engine.ListModels(ctx)
 }
 
-// SetProviderConfig 热替换 provider 配置并重建 provider(供设置界面保存)。
-// 同时持久化到数据目录,使下次启动自动加载。
+// SetProviderConfig 热替换 provider 配置并重建 provider。
 func (b *Backend) SetProviderConfig(pc config.Provider) {
 	prov, model := b.buildProvider(pc)
 	b.engine.SwitchProvider(prov, model)
 	b.mu.Lock()
 	b.provCfg = pc
 	b.mu.Unlock()
-	// 持久化失败不影响内存热替换;记录到 stderr 供排查。
 	if err := config.SaveProvider(b.dataDir, pc); err != nil {
 		fmt.Fprintf(os.Stderr, "persist provider config failed: %v\n", err)
 	}

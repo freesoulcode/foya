@@ -111,7 +111,7 @@ function basename(p: string) {
 // ---- 发送 ----
 function submit() {
   const text = input.value.trim();
-  if (!text || props.disabled) return;
+  if (!text || props.disabled || props.streaming) return;
   input.value = "";
   emit("send", text);
 }
@@ -133,10 +133,14 @@ function onKeydown(e: KeyboardEvent) {
       >
         <Textarea
           v-model="input"
-          placeholder="帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。"
+          :placeholder="
+            streaming
+              ? 'foya 正在思考，点停止可中断当前回合…'
+              : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
+          "
           class="max-h-60 min-h-[56px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
           rows="2"
-          :disabled="disabled"
+          :disabled="disabled || streaming"
           @keydown="onKeydown"
         />
 

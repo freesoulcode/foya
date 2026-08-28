@@ -5,7 +5,11 @@
 // 子 agent、Computer Use 等能力都以工具形态暴露给模型。
 package tool
 
-import "context"
+import (
+	"context"
+
+	"github.com/freesoulcode/foya/internal/provider"
+)
 
 // Exposure 控制工具对模型的可见性。
 type Exposure string
@@ -40,7 +44,8 @@ type Result struct {
 // Tool 是模型可调用的执行单元。
 type Tool interface {
 	Name() string
-	Spec() []byte // JSON Schema,喂给模型
+	Description() string  // 给模型看的工具说明
+	Spec() []byte         // 参数 JSON Schema,喂给模型
 	Exposure() Exposure
 	Run(ctx context.Context, call Call) (Result, error)
 }
@@ -51,4 +56,5 @@ type Registry interface {
 	RegisterExternal(t Tool) // MCP / 动态工具,可去重
 	Get(name string) (Tool, bool)
 	List() []Tool
+	Specs() []provider.ToolDef // 生成喂给模型的工具定义
 }

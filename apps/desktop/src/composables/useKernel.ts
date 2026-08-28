@@ -50,12 +50,48 @@ const messagesBySession = ref<Record<string, ChatMessage[]>>({});
 const subscribed = new Set<string>();
 const streamingIdx: Record<string, number> = {};
 
+// 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
+export interface PendingApproval {
+  id: string;
+  session: string;
+  tool_name: string;
+  action: string;
+  detail: string;
+}
+const pendingApprovals = ref<Record<string, PendingApproval>>({});
+
 const activeMessages = computed<ChatMessage[]>(() => messagesBySession.value[activeId.value] ?? []);
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value));
 const isDraft = computed(() => activeId.value === "");
 
 function ensureBucket(id: string) {
   if (!messagesBySession.value[id]) messagesBySession.value[id] = [];
+}
+
+// 从后往前找最近一条 assistant 消息(用于挂载 tool_call 视图)。
+function findLastAssistantIdx(bucket: ChatMessage[]): number {
+  for (let i = bucket.length - 1; i >= 0; i--) {
+    if (bucket[i].role === "assistant") return i;
+  }
+  return -1;
+}
+
+// 确保气泡有 segments 数组,并返回它(用于按序追加思考/文本/工具段)。
+function ensureSegments(msg: ChatMessage): NonNullable<ChatMessage["segments"]> {
+  if (!msg.segments) msg.segments = [];
+  return msg.segments;
+}
+
+// 追加一段流式增量(思考或正文):若末段同类则并入,否则新开一段。
+// 这样「思考→工具→思考→回复」的交错顺序被如实记录为多个段。
+function appendDelta(msg: ChatMessage, kind: "reasoning" | "text", delta: string) {
+  const segs = ensureSegments(msg);
+  const last = segs[segs.length - 1];
+  if (last && last.kind === kind) {
+    last.text += delta;
+  } else {
+    segs.push({ kind, text: delta });
+  }
 }
 
 // 处理某会话的一条 SSE 事件。
@@ -82,6 +118,22 @@ function handleEvent(sessionId: string, data: string) {
       // 首个 delta 到达,清除可能的 pending/error 态,开始填内容。
       bucket[idx].error = false;
       bucket[idx].content += delta;
+      appendDelta(bucket[idx], "text", delta);
+      if (sessionId === activeId.value) streaming.value = true;
+      break;
+    }
+    case "reasoning_delta": {
+      // 思考内容增量:按序追加为 reasoning 段。工具执行后模型再次思考时,
+      // 因末段已是 tool,会自动新开一段 reasoning,从而保留多次思考。
+      const delta = ev.payload as string;
+      let idx = streamingIdx[sessionId] ?? -1;
+      if (idx < 0) {
+        bucket.push({ role: "assistant", content: "" });
+        idx = bucket.length - 1;
+        streamingIdx[sessionId] = idx;
+      }
+      bucket[idx].error = false;
+      appendDelta(bucket[idx], "reasoning", delta);
       if (sessionId === activeId.value) streaming.value = true;
       break;
     }
@@ -89,11 +141,82 @@ function handleEvent(sessionId: string, data: string) {
       const m = ev.payload as ChatMessage;
       const idx = streamingIdx[sessionId] ?? -1;
       if (m.role === "assistant" && idx >= 0) {
-        bucket[idx] = { ...m, error: false };
-        streamingIdx[sessionId] = -1;
-        if (sessionId === activeId.value) streaming.value = false;
+        // 内容以流式累积的 delta 为准;仅在无 delta 时用服务端 payload 兜底。
+        if (!bucket[idx].content && m.content) {
+          bucket[idx].content = m.content;
+          appendDelta(bucket[idx], "text", m.content);
+        }
+        // 思考内容兜底:流式未收到 reasoning 段但服务端 payload 有,则补一段。
+        if (m.reasoning && !bucket[idx].segments?.some((s) => s.kind === "reasoning")) {
+          ensureSegments(bucket[idx]).unshift({ kind: "reasoning", text: m.reasoning });
+        }
+        bucket[idx].error = false;
+        // 仅当本条消息不携带 tool_calls(即最终回复)时才释放流式槽位。
+        // 携带 tool_calls 时回合尚未结束:工具执行后模型会继续输出,
+        // 后续 delta 应追加到同一条气泡,而非新建气泡拆成两条消息。
+        // streaming 也不在此复位,由 turn_complete / error 统一负责。
+        if (!m.tool_calls) {
+          streamingIdx[sessionId] = -1;
+        }
       }
-      // user 消息回执已在 send 时乐观插入,忽略以免重复。
+      // user 消息回执已在 send 时乐观插入;tool 结果消息通过 tool_end 事件展示,不重复插入。
+      break;
+    }
+    case "tool_begin": {
+      const p = ev.payload as { id: string; name: string; input: string };
+      // 找到当前流式助手消息,挂上 tool_call 视图。
+      const asstIdx = findLastAssistantIdx(bucket);
+      if (asstIdx >= 0) {
+        const msg = bucket[asstIdx];
+        if (!msg.tool_calls) msg.tool_calls = [];
+        // 避免重复(消息回放时可能已存在)。
+        if (!msg.tool_calls.find((tc) => tc.id === p.id)) {
+          const tool = {
+            id: p.id,
+            name: p.name,
+            input: p.input,
+            status: "running" as const,
+          };
+          msg.tool_calls.push(tool);
+          // 按序追加为 tool 段:插在当前思考/文本之后,后续思考会另起新段。
+          ensureSegments(msg).push({ kind: "tool", tool });
+        }
+      }
+      break;
+    }
+    case "tool_end": {
+      const p = ev.payload as {
+        id: string;
+        name: string;
+        output: string;
+        is_error: boolean;
+      };
+      const asstIdx = findLastAssistantIdx(bucket);
+      if (asstIdx >= 0) {
+        const tc = bucket[asstIdx].tool_calls?.find((t) => t.id === p.id);
+        if (tc) {
+          tc.status = p.is_error ? "error" : "done";
+          tc.output = p.output;
+        }
+        // 同步更新 segments 中对应的 tool 段(与 tool_calls 是不同对象引用)。
+        const seg = bucket[asstIdx].segments?.find(
+          (s) => s.kind === "tool" && s.tool.id === p.id
+        );
+        if (seg && seg.kind === "tool") {
+          seg.tool.status = p.is_error ? "error" : "done";
+          seg.tool.output = p.output;
+        }
+      }
+      break;
+    }
+    case "approval_request": {
+      const p = ev.payload as PendingApproval;
+      pendingApprovals.value[p.id] = p;
+      break;
+    }
+    case "approval_resolved": {
+      const p = ev.payload as { id: string };
+      delete pendingApprovals.value[p.id];
       break;
     }
     case "turn_complete":
@@ -188,13 +311,73 @@ function newSession() {
   draft.approvalMode = DEFAULT_APPROVAL;
 }
 
+// 把后端扁平历史折叠成带有序 segments 的气泡序列。
+// 后端一个回合按步骤产生多条消息:assistant#1(思考+工具调用)→ tool(结果)
+// → assistant#2(思考+回复)……前端把「同一回合内连续的 assistant/tool 消息」
+// 合并为一个气泡,按真实顺序还原「思考→工具→思考→回复」的交错。
+// 回合边界:user 消息。
+function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let cur: ChatMessage | null = null; // 当前正在聚合的 assistant 气泡
+
+  for (const m of history) {
+    if (m.role === "user") {
+      out.push(m);
+      cur = null;
+      continue;
+    }
+    if (m.role === "assistant") {
+      if (!cur) {
+        cur = { role: "assistant", content: "", segments: [], tool_calls: [] };
+        out.push(cur);
+      }
+      const segs = cur.segments!;
+      if (m.reasoning) segs.push({ kind: "reasoning", text: m.reasoning });
+      if (m.content) {
+        segs.push({ kind: "text", text: m.content });
+        cur.content += m.content; // 供复制/滚动等仍读 content 的地方使用
+      }
+      if (m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          const tool = { ...tc, status: "running" as const };
+          cur.tool_calls!.push(tool);
+          segs.push({ kind: "tool", tool });
+        }
+      }
+      continue;
+    }
+    if (m.role === "tool") {
+      // 工具结果:回填到当前气泡对应 tool 段(按 tool_call_id 关联)。
+      if (cur) {
+        const seg = cur.segments!.find(
+          (s) => s.kind === "tool" && s.tool.id === m.tool_call_id
+        );
+        if (seg && seg.kind === "tool") {
+          seg.tool.output = m.content;
+          seg.tool.status = m.error ? "error" : "done";
+        }
+        const tc = cur.tool_calls!.find((t) => t.id === m.tool_call_id);
+        if (tc) {
+          tc.output = m.content;
+          tc.status = m.error ? "error" : "done";
+        }
+      }
+      continue;
+    }
+    // system 等其它角色:原样保留(通常不入历史)。
+    out.push(m);
+    cur = null;
+  }
+  return out;
+}
+
 // 切换到某会话:首次进入时加载历史并订阅。
 async function select(id: string) {
   activeId.value = id;
   streaming.value = (streamingIdx[id] ?? -1) >= 0;
   if (!messagesBySession.value[id] || messagesBySession.value[id].length === 0) {
     const history = await api.loadHistory(id);
-    messagesBySession.value[id] = history;
+    messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
 }
@@ -214,10 +397,31 @@ async function renameSession(id: string, title: string) {
   return updateSession(id, { title });
 }
 
+// 回执审批决策(批准/拒绝)。
+async function resolveApproval(sessionId: string, requestId: string, decision: string) {
+  await api.resolveApproval(sessionId, requestId, decision);
+  delete pendingApprovals.value[requestId];
+}
+
+// 中断当前会话正在运行的回合(用户点停止)。后端会传播 ctx 取消,
+// 中断 provider HTTP 请求、工具执行与审批等待;turn_complete 事件到达后
+// streaming 复位,UI 恢复可输入。
+async function cancelTurn() {
+  const id = activeId.value;
+  if (!id) return;
+  try {
+    await api.cancelTurn(id);
+  } catch (e) {
+    console.error("中断回合失败:", e);
+  }
+}
+
 // 发送一条消息(乐观插入用户消息)。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
 async function send(text: string) {
   if (!text.trim()) return;
+  // 回合进行中禁止再发消息(后端也会拒绝并发回合,这里提前拦避免乐观插入脏气泡)。
+  if (streaming.value) return;
 
   let id = activeId.value;
 
@@ -273,12 +477,15 @@ export function useKernel() {
     modelsLoading,
     modelsError,
     messages: activeMessages,
+    pendingApprovals,
     connect,
     newSession,
     select,
     send,
+    cancelTurn,
     updateSession,
     renameSession,
+    resolveApproval,
     refreshModels,
   };
 }

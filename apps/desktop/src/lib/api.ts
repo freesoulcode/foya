@@ -35,9 +35,29 @@ export type ApprovalMode = "explore" | "ask" | "bypass";
 
 // 对话消息(与 Go message.Message 对齐)。
 // error 为前端乐观态:发送失败时标记气泡,不进后端。
+export interface ToolCallView {
+  id: string;
+  name: string;
+  input: string;
+  status: "running" | "done" | "error";
+  output?: string;
+}
+
+// assistant 气泡内的有序段落:一个回合可能是「思考→工具→思考→回复」的交错序列,
+// 用有序 segments 表达真实顺序,渲染时逐段展示。
+export type MessageSegment =
+  | { kind: "reasoning"; text: string }
+  | { kind: "text"; text: string }
+  | { kind: "tool"; tool: ToolCallView };
+
 export interface ChatMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
+  reasoning?: string;
+  tool_calls?: ToolCallView[];
+  // 有序段落(仅 assistant)。存在时优先按其渲染;缺失时回退到 reasoning/tool_calls/content 扁平字段。
+  segments?: MessageSegment[];
+  tool_call_id?: string;
   error?: boolean;
 }
 
@@ -75,6 +95,10 @@ export const api = {
   submitTurn: (sessionId: string, message: string) =>
     invoke("submit_turn", { sessionId, message }),
 
+  // 中断当前回合(用户点停止)。
+  cancelTurn: (sessionId: string) =>
+    invoke("cancel_turn", { sessionId }),
+
   getProvider: () =>
     invoke<string>("get_provider").then((r) => JSON.parse(r) as ProviderConfig),
 
@@ -92,4 +116,8 @@ export const api = {
     channel.onmessage = onEvent;
     return invoke("subscribe_events", { sessionId, channel });
   },
+
+  // 回执审批决策(批准/拒绝)。
+  resolveApproval: (sessionId: string, requestId: string, decision: string) =>
+    invoke("resolve_approval", { sessionId, requestId, decision }),
 };

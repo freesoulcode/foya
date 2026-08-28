@@ -39,6 +39,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
 	s.mux.HandleFunc("GET /config/provider", s.handleGetProvider)
 	s.mux.HandleFunc("PUT /config/provider", s.handleSetProvider)
 	s.mux.HandleFunc("GET /config/models", s.handleListModels)
@@ -189,6 +191,28 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		_ = s.backend.SubmitTurn(context.Background(), id, req.Message)
 	}()
 	writeJSON(w, http.StatusOK, protocol.SubmitTurnResponse{RunID: id})
+}
+
+// handleCancelTurn 取消该会话当前正在运行的回合(用户点停止)。
+func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.backend.CancelTurn(id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleResolveApproval 接收客户端的审批决策(批准/拒绝)。
+func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
+	requestID := r.PathValue("request_id")
+	var req protocol.ApprovalDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if req.RequestID == "" {
+		req.RequestID = requestID
+	}
+	s.backend.ResolveApproval(req.RequestID, req.Decision)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleEvents 以 SSE 推送某会话的事件流。

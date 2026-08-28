@@ -10,6 +10,7 @@ import MessageList from "@/components/chat/MessageList.vue";
 import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import SettingsDialog from "@/components/chat/SettingsDialog.vue";
+import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 
 const { isMac } = usePlatform();
 
@@ -29,6 +30,7 @@ const {
   newSession,
   select,
   send,
+  cancelTurn,
   updateSession,
   renameSession,
   refreshModels,
@@ -138,6 +140,7 @@ onMounted(connect);
             :streaming="streaming"
           />
           <aside
+            v-if="turnPoints.length > 3"
             class="hidden w-8 shrink-0 items-center justify-center pr-0.5 md:flex"
           >
             <Timeline
@@ -157,6 +160,7 @@ onMounted(connect);
           :models-loading="modelsLoading"
           :models-error="modelsError"
           @send="send"
+          @stop="cancelTurn"
           @update:model="onModelChange"
           @update:workspace="onWorkspaceChange"
           @update:approval="onApprovalChange"
@@ -166,5 +170,6 @@ onMounted(connect);
     </SidebarInset>
 
     <SettingsDialog v-model:open="settingsOpen" />
+    <ApprovalDialog />
   </SidebarProvider>
 </template>

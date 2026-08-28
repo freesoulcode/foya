@@ -15,6 +15,7 @@ type Kind string
 
 const (
 	KindMessageDelta   Kind = "message_delta"    // 流式 token 增量
+	KindReasoningDelta Kind = "reasoning_delta"   // 流式思考内容增量(思考模型)
 	KindMessageEnd     Kind = "message_end"      // 一条消息完成
 	KindToolBegin      Kind = "tool_begin"       // 工具调用开始
 	KindToolUpdate     Kind = "tool_update"      // 工具执行中的部分输出

@@ -219,8 +219,24 @@
     margin: 0.5rem 0;
     padding-left: 1.5rem;
   }
+  /* Tailwind preflight 会重置 list-style,这里显式恢复无序/有序列表符号 */
+  .prose-chat ul {
+    list-style: disc;
+  }
+  .prose-chat ul ul {
+    list-style: circle;
+  }
+  .prose-chat ul ul ul {
+    list-style: square;
+  }
+  .prose-chat ol {
+    list-style: decimal;
+  }
   .prose-chat li {
     margin: 0.25rem 0;
+  }
+  .prose-chat li::marker {
+    color: var(--muted-foreground);
   }
   .prose-chat h1, .prose-chat h2, .prose-chat h3 {
     font-weight: 600;

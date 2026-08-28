@@ -1,0 +1,86 @@
+package tool
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/freesoulcode/foya/internal/approval"
+)
+
+// WriteParams 是 write 工具的参数。
+type WriteParams struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type writeTool struct {
+	gw approval.Gateway
+}
+
+// NewWriteTool 创建 write 工具:整体覆盖写入一个文件。
+func NewWriteTool(gw approval.Gateway) Tool {
+	return &writeTool{gw: gw}
+}
+
+func (t *writeTool) Name() string        { return "write" }
+func (t *writeTool) Exposure() Exposure  { return ExposureDirect }
+func (t *writeTool) Description() string { return "Write content to a file (creates or overwrites). Use for creating new files." }
+
+func (t *writeTool) Spec() []byte {
+	return []byte(`{
+		"type": "object",
+		"properties": {
+			"path": {"type": "string", "description": "Path to the file to write"},
+			"content": {"type": "string", "description": "Full content to write to the file"}
+		},
+		"required": ["path", "content"]
+	}`)
+}
+
+func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
+	var params WriteParams
+	if err := json.Unmarshal(call.Input, &params); err != nil {
+		return errResult("invalid arguments: " + err.Error()), nil
+	}
+	if strings.TrimSpace(params.Path) == "" {
+		return errResult("path is required"), nil
+	}
+
+	decision, err := t.gw.Request(ctx, approval.Request{
+		ToolName: "write",
+		Action:   "write",
+		Detail:   fmt.Sprintf("写入文件: %s", params.Path),
+	})
+	if err != nil {
+		return errResult("审批中断: " + err.Error()), nil
+	}
+	if decision == approval.DecisionDenied {
+		return errResult("用户拒绝写入文件"), nil
+	}
+
+	path := params.Path
+	if !filepath.IsAbs(path) {
+		if wd := WorkspaceFromContext(ctx); wd != "" {
+			path = filepath.Join(wd, path)
+		}
+	}
+
+	// 确保父目录存在。
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return errResult(fmt.Sprintf("创建目录失败: %v", err)), nil
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
+		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
+	}
+
+	return Result{
+		Content: []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
+	}, nil
+}

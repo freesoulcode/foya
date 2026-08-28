@@ -82,7 +82,17 @@ watch(
 );
 
 watch(
-  () => props.messages.map((m) => m.content).join(""),
+  () =>
+    props.messages
+      .map((m) => {
+        // 内容长度随正文/思考/工具输出增长而变化,任一变化都触发贴底滚动。
+        const segLen = (m.segments ?? []).reduce(
+          (n, s) => n + (s.kind === "tool" ? (s.tool.output?.length ?? 0) : s.text.length),
+          0
+        );
+        return m.content.length + segLen;
+      })
+      .join(","),
   async () => {
     if (!stickToBottom.value) return;
     await nextTick();

@@ -2,26 +2,30 @@
 //
 // BYOK:拿用户自带的 base_url + api_key 直连,token 流量不经任何第三方。
 // 适配任何 OpenAI 兼容端点(官方、本地 vLLM/MLX/Ollama、各类网关)。
+//
+// 底层用官方 openai-go SDK 处理线格式、SSE 解析与工具调用分片拼接;
+// 对于非标准扩展字段(如 vLLM/MLX 的 reasoning_content 思考内容),
+// 通过 SDK 的 ExtraFields 机制读取。
 package openai
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 
+	oai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
+
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 )
 
 // Provider 是 OpenAI 兼容 provider。
 type Provider struct {
-	baseURL string // 形如 http://127.0.0.1:8000/v1
-	apiKey  string
-	model   string
-	client  *http.Client
+	model  string
+	client oai.Client
 }
 
 // Config 是 provider 装配参数。
@@ -33,224 +37,217 @@ type Config struct {
 
 // New 创建一个 OpenAI 兼容 provider。
 func New(cfg Config) *Provider {
+	opts := []option.RequestOption{}
+	// SDK 要求 baseURL 指向 /v1 根(如 http://127.0.0.1:8000/v1)。
+	if cfg.BaseURL != "" {
+		opts = append(opts, option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")+"/"))
+	}
+	if cfg.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+	}
 	return &Provider{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:  cfg.APIKey,
-		model:   cfg.Model,
-		client:  &http.Client{}, // 流式请求不设整体超时,靠 ctx 取消
+		model:  cfg.Model,
+		client: oai.NewClient(opts...),
 	}
 }
 
 // Name 返回 provider 名。
 func (p *Provider) Name() string { return "openai" }
 
-// chatRequest 是 Chat Completions 请求体(仅用到的字段)。
-type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []chatMsg `json:"messages"`
-	Stream   bool      `json:"stream"`
+// ---- 类型转换 ----
+
+// toChatMsgs 把领域消息转为 SDK 消息参数,正确处理工具调用和工具结果。
+func toChatMsgs(msgs []message.Message) []oai.ChatCompletionMessageParamUnion {
+	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
+	for _, m := range msgs {
+		switch m.Role {
+		case message.RoleSystem:
+			out = append(out, oai.SystemMessage(m.Content))
+		case message.RoleUser:
+			out = append(out, oai.UserMessage(m.Content))
+		case message.RoleTool:
+			out = append(out, oai.ToolMessage(m.Content, m.ToolCallID))
+		case message.RoleAssistant:
+			asst := oai.ChatCompletionAssistantMessageParam{}
+			if m.Content != "" {
+				asst.Content.OfString = oai.String(m.Content)
+			}
+			if len(m.ToolCalls) > 0 {
+				calls := make([]oai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					calls = append(calls, oai.ChatCompletionMessageToolCallParam{
+						ID: tc.ID,
+						Function: oai.ChatCompletionMessageToolCallFunctionParam{
+							Name:      tc.Name,
+							Arguments: string(tc.Input),
+						},
+					})
+				}
+				asst.ToolCalls = calls
+			}
+			out = append(out, oai.ChatCompletionMessageParamUnion{OfAssistant: &asst})
+		}
+	}
+	return out
 }
 
-type chatMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+// toChatToolDefs 把 provider.ToolDef 转为 SDK 工具参数。
+func toChatToolDefs(tools []provider.ToolDef) []oai.ChatCompletionToolParam {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]oai.ChatCompletionToolParam, 0, len(tools))
+	for _, t := range tools {
+		var params shared.FunctionParameters
+		if len(t.Function.Parameters) > 0 {
+			_ = json.Unmarshal(t.Function.Parameters, &params)
+		}
+		out = append(out, oai.ChatCompletionToolParam{
+			Function: shared.FunctionDefinitionParam{
+				Name:        t.Function.Name,
+				Description: oai.String(t.Function.Description),
+				Parameters:  params,
+			},
+		})
+	}
+	return out
 }
 
-// chatChunk 是流式响应的一个 SSE data 块(仅用到的字段)。
-type chatChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content string `json:"content"`
-		} `json:"delta"`
-		FinishReason *string `json:"finish_reason"`
-	} `json:"choices"`
-}
-
-// chatResponse 是非流式响应(仅用到的字段)。
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
+// ---- 流式请求 ----
 
 // Stream 发起流式 Chat Completions 请求,把增量编码为 StreamEvent。
 // 错误一律编码进事件流,不 panic。
+// 除标准的 content / tool_calls 外,还提取非标准的 reasoning_content
+// (vLLM/MLX/Ollama 思考内容扩展),编码为 reasoning_delta 事件。
 func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
-	if p.baseURL == "" {
-		return nil, fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
-	}
-
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
-
-	msgs := make([]chatMsg, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		msgs = append(msgs, chatMsg{Role: string(m.Role), Content: m.Content})
+	if model == "" {
+		return nil, fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
 	}
 
-	body, err := json.Marshal(chatRequest{Model: model, Messages: msgs, Stream: true})
-	if err != nil {
-		return nil, err
+	params := oai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(model),
+		Messages: toChatMsgs(req.Messages),
+	}
+	if tools := toChatToolDefs(req.Tools); len(tools) > 0 {
+		params.Tools = tools
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		buf := new(bytes.Buffer)
-		_, _ = buf.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("provider 返回 %s: %s", resp.Status, strings.TrimSpace(buf.String()))
-	}
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 
 	ch := make(chan provider.StreamEvent)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			data, ok := strings.CutPrefix(line, "data: ")
-			if !ok {
-				continue // 跳过空行、注释、事件名行
+		var finishReason string
+		emit := func(ev provider.StreamEvent) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case ch <- ev:
+				return true
 			}
-			if data == "[DONE]" {
-				break
-			}
+		}
 
-			var chunk chatChunk
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue // 容错:忽略无法解析的块
-			}
+		for stream.Next() {
+			chunk := stream.Current()
 			for _, c := range chunk.Choices {
-				if c.Delta.Content != "" {
-					select {
-					case <-ctx.Done():
-						ch <- provider.StreamEvent{Type: "error", Text: ctx.Err().Error()}
+				// 非标准思考内容(reasoning_content):走 ExtraFields 提取。
+				if reasoning := extractReasoning(c.Delta); reasoning != "" {
+					if !emit(provider.StreamEvent{Type: "reasoning_delta", Text: reasoning}) {
 						return
-					case ch <- provider.StreamEvent{Type: "text_delta", Text: c.Delta.Content}:
 					}
+				}
+				// 文本增量
+				if c.Delta.Content != "" {
+					if !emit(provider.StreamEvent{Type: "text_delta", Text: c.Delta.Content}) {
+						return
+					}
+				}
+				// 工具调用增量(分片,按 Index 拼接由 engine 层完成)
+				for _, tc := range c.Delta.ToolCalls {
+					if !emit(provider.StreamEvent{
+						Type:        "tool_call_delta",
+						ToolIndex:   int(tc.Index),
+						ToolCallID:  tc.ID,
+						ToolName:    tc.Function.Name,
+						ToolArgsDlt: tc.Function.Arguments,
+					}) {
+						return
+					}
+				}
+				if c.FinishReason != "" {
+					finishReason = c.FinishReason
 				}
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := stream.Err(); err != nil {
+			// ctx 取消:交由上层按 ctx.Err() 静默处理。
 			ch <- provider.StreamEvent{Type: "error", Text: err.Error()}
 			return
 		}
-		ch <- provider.StreamEvent{Type: "done"}
+		ch <- provider.StreamEvent{Type: "done", FinishReason: finishReason}
 	}()
 
 	return ch, nil
 }
 
-// Complete 发起非流式 Chat Completions 请求,返回完整文本。
-// 用于标题生成等一次性短文本旁路任务。
-func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, error) {
-	if p.baseURL == "" {
-		return "", fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
+// extractReasoning 从流片 delta 中提取非标准的 reasoning_content 字段。
+// 该字段不属于 OpenAI 官方协议,由 vLLM/MLX/Ollama 等在思考模型上返回。
+// 注意:未建模字段落在 ExtraFields 中,其 respjson.Field.Valid() 对扩展字段
+// 恒为 false(SDK 不为其做类型校验),故只能据 Raw() 是否为空来判断存在性。
+func extractReasoning(delta oai.ChatCompletionChunkChoiceDelta) string {
+	f, ok := delta.JSON.ExtraFields["reasoning_content"]
+	if !ok {
+		return ""
 	}
+	raw := f.Raw()
+	if raw == "" || raw == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return ""
+	}
+	return s
+}
 
+// Complete 发起非流式 Chat Completions 请求,返回完整文本。
+// 用于标题生成等一次性短文本旁路任务。不携带工具定义。
+func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, error) {
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
-
-	msgs := make([]chatMsg, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		msgs = append(msgs, chatMsg{Role: string(m.Role), Content: m.Content})
+	if model == "" {
+		return "", fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
 	}
 
-	body, err := json.Marshal(chatRequest{Model: model, Messages: msgs, Stream: false})
+	resp, err := p.client.Chat.Completions.New(ctx, oai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(model),
+		Messages: toChatMsgs(req.Messages),
+	})
 	if err != nil {
 		return "", err
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		buf := new(bytes.Buffer)
-		_, _ = buf.ReadFrom(resp.Body)
-		return "", fmt.Errorf("provider 返回 %s: %s", resp.Status, strings.TrimSpace(buf.String()))
-	}
-
-	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if len(out.Choices) == 0 {
+	if len(resp.Choices) == 0 {
 		return "", nil
 	}
-	return out.Choices[0].Message.Content, nil
-}
-
-// modelsResponse 是 GET /models 的响应(仅取需要的字段)。
-type modelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
+	return resp.Choices[0].Message.Content, nil
 }
 
 // ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 列表。
-// 复用已配置的 baseURL 与 apiKey,直连用户自带端点(BYOK)。
+// 复用已配置的 baseURL 与 api_key,直连用户自带端点(BYOK)。
 func (p *Provider) ListModels(ctx context.Context) ([]string, error) {
-	if p.baseURL == "" {
-		return nil, fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL 和 API Key")
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/models", nil)
+	page, err := p.client.Models.List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		buf := new(bytes.Buffer)
-		_, _ = buf.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("provider 返回 %s: %s", resp.Status, strings.TrimSpace(buf.String()))
-	}
-
-	var mr modelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
-		return nil, fmt.Errorf("解析模型列表失败: %w", err)
-	}
-	ids := make([]string, 0, len(mr.Data))
-	for _, m := range mr.Data {
+	ids := make([]string, 0, len(page.Data))
+	for _, m := range page.Data {
 		if m.ID != "" {
 			ids = append(ids, m.ID)
 		}

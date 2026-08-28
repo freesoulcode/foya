@@ -230,6 +230,33 @@ fn subscribe_events(session_id: String, channel: Channel<String>) -> Result<(), 
     Ok(())
 }
 
+/// 回执审批决策(批准/拒绝)。
+#[cfg(unix)]
+#[tauri::command]
+async fn resolve_approval(
+    session_id: String,
+    request_id: String,
+    decision: String,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "request_id": request_id, "decision": decision }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/approvals/{request_id}"),
+        Some(&body),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 中断当前会话正在运行的回合(用户点停止)。
+#[cfg(unix)]
+#[tauri::command]
+async fn cancel_turn(session_id: String) -> Result<(), String> {
+    kernel::request("POST", &format!("/sessions/{session_id}/cancel"), None)
+        .await
+        .map(|_| ())
+}
+
 // Windows 占位。
 #[cfg(not(unix))]
 #[tauri::command]
@@ -285,6 +312,22 @@ fn subscribe_events(_session_id: String, _channel: Channel<String>) -> Result<()
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
+#[cfg(not(unix))]
+#[tauri::command]
+async fn resolve_approval(
+    _session_id: String,
+    _request_id: String,
+    _decision: String,
+) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn cancel_turn(_session_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -335,7 +378,9 @@ pub fn run() {
             get_provider,
             set_provider,
             list_models,
-            subscribe_events
+            subscribe_events,
+            resolve_approval,
+            cancel_turn
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

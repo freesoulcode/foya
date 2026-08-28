@@ -1,12 +1,14 @@
-// 回合引擎实现:驱动 provider 完成多轮对话闭环。
+// 回合引擎实现:驱动 provider 完成多轮对话与工具调用闭环。
 package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
@@ -14,68 +16,77 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/title"
+	"github.com/freesoulcode/foya/internal/tool"
 )
 
-// ctxKey 是会话级配置在 context 中的键类型。
-type ctxKey int
+const maxToolSteps = 50
 
-const (
-	ctxKeyWorkspace ctxKey = iota
-	ctxKeyApprovalMode
-)
-
-// stringResolver 从会话状态实时读取一个字符串配置,供工具层在执行动作前查询。
-// 用闭包而非静态值,保证用户在会话进行中切换审批档位/工作目录后,
-// 下一次工具调用立即生效(无需等下一回合)。
-type stringResolver func() string
-
-// SessionLookup 是引擎读取会话元数据所需的最小依赖(避免依赖完整 Manager)。
+// SessionLookup 是引擎读取会话元数据所需的最小依赖。
 type SessionLookup interface {
 	Get(id string) (*session.Session, bool)
 }
 
-// titleStore 是标题生成所需的会话存储:读元数据 + if-absent 写标题。
+// titleStore 是标题生成所需的会话存储。
 type titleStore interface {
 	SessionLookup
 	SetGeneratedTitle(id, t string) (bool, error)
 }
 
-// WorkspaceFromContext 从回合上下文实时取出绑定的工作目录(可能为空)。
-func WorkspaceFromContext(ctx context.Context) string {
-	if r, ok := ctx.Value(ctxKeyWorkspace).(stringResolver); ok {
-		return r()
-	}
-	return ""
+// pendingToolCall 在流式过程中累积一个工具调用的分片。
+type pendingToolCall struct {
+	ID        string
+	Name      string
+	argsBuf   string
+	argsReady bool
 }
 
-// ApprovalModeFromContext 从回合上下文实时取出审批档位(可能为空)。
-// 审批网关在每次工具执行前调用此函数,因此会话中切换档位对后续动作即时生效。
-func ApprovalModeFromContext(ctx context.Context) string {
-	if r, ok := ctx.Value(ctxKeyApprovalMode).(stringResolver); ok {
-		return r()
+func (p *pendingToolCall) input() json.RawMessage {
+	if p.argsBuf == "" {
+		return json.RawMessage("{}")
 	}
-	return ""
+	return json.RawMessage(p.argsBuf)
 }
 
-// Engine 是回合引擎的实现,驱动一轮对话:
-// 用户消息入日志 → 投影历史 → 调 provider 流式 → 增量发事件 →
-// 助手消息入日志 → 发 TurnComplete。历史累积即多轮上下文。
+// Engine 是回合引擎。
 type Engine struct {
 	log      *state.MemLog
 	bus      *broker.Broker[event.Event]
 	sessions titleStore
+	tools    tool.Registry
+	approval approval.Gateway
 
-	mu       sync.RWMutex // 保护 provider/model 的热替换
+	mu       sync.RWMutex
 	provider provider.Provider
 	model    string
+
+	// cancels 持有每个会话当前回合的取消函数。回合进行中时存在,
+	// 结束后删除。Cancel 据此中断正在跑的回合(provider HTTP、
+	// 工具执行、审批等待都会随 ctx 取消而终止)。
+	cancels sync.Map // sessionID -> context.CancelFunc
 }
 
 // NewEngine 组装回合引擎。
-func NewEngine(log *state.MemLog, bus *broker.Broker[event.Event], sessions titleStore, p provider.Provider, model string) *Engine {
-	return &Engine{log: log, bus: bus, sessions: sessions, provider: p, model: model}
+func NewEngine(
+	log *state.MemLog,
+	bus *broker.Broker[event.Event],
+	sessions titleStore,
+	p provider.Provider,
+	model string,
+	tools tool.Registry,
+	gw approval.Gateway,
+) *Engine {
+	return &Engine{
+		log:      log,
+		bus:      bus,
+		sessions: sessions,
+		provider: p,
+		model:    model,
+		tools:    tools,
+		approval: gw,
+	}
 }
 
-// SwitchProvider 运行时热替换 provider 与默认模型(供设置界面切换)。
+// SwitchProvider 运行时热替换 provider 与默认模型。
 func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -83,14 +94,12 @@ func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	e.model = model
 }
 
-// currentProvider 原子读取当前 provider 与默认模型。
 func (e *Engine) currentProvider() (provider.Provider, string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.provider, e.model
 }
 
-// currentModel 返回某会话应使用的模型:会话指定的模型优先,否则用全局默认。
 func (e *Engine) currentModel(sessionID string) string {
 	if e.sessions != nil {
 		if s, ok := e.sessions.Get(sessionID); ok && s.Model != "" {
@@ -102,8 +111,7 @@ func (e *Engine) currentModel(sessionID string) string {
 	return e.model
 }
 
-// ListModels 列出当前 provider 可用的模型(用已配置的 base_url + api_key 代求)。
-// 带超时,避免端点不可达时长时间挂起前端。
+// ListModels 列出当前 provider 可用的模型。
 func (e *Engine) ListModels(ctx context.Context) ([]string, error) {
 	prov, _ := e.currentProvider()
 	lister, ok := prov.(provider.ModelLister)
@@ -115,29 +123,38 @@ func (e *Engine) ListModels(ctx context.Context) ([]string, error) {
 	return lister.ListModels(ctx)
 }
 
-// RunTurn 同步执行一轮对话。事件通过 broker 按 session topic 广播。
+// toolCallPayload 是 tool_begin/tool_end 事件的负载。
+type toolCallPayload struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Input    string `json:"input,omitempty"`
+	Output   string `json:"output,omitempty"`
+	IsError  bool   `json:"is_error,omitempty"`
+}
+
+// RunTurn 同步执行一轮对话(可能含多步工具调用)。
+// 同一时刻一个会话只能有一个回合;重复提交返回错误。可用 Cancel 中断。
 func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error {
-	// 注入会话级配置的实时读取器:工作目录与审批档位供工具层在每次执行动作前查询,
-	// 用户在会话中随时切换会立即对后续工具调用生效。
+	// 注册 per-session cancel:同一会话只允许一个活跃回合。
+	turnCtx, cancel := context.WithCancel(ctx)
+	if _, loaded := e.cancels.LoadOrStore(sessionID, cancel); loaded {
+		cancel()
+		return fmt.Errorf("该会话已有回合正在运行")
+	}
+	defer e.cancels.Delete(sessionID)
+	defer cancel()
+	ctx = turnCtx
+
 	model := e.currentModel(sessionID)
+
+	// 注入会话级配置到 context:工作目录供工具读,审批档位供网关读。
 	if e.sessions != nil {
-		ctx = context.WithValue(ctx, ctxKeyWorkspace, stringResolver(func() string {
-			if s, ok := e.sessions.Get(sessionID); ok {
-				return s.Workspace
-			}
-			return ""
-		}))
-		ctx = context.WithValue(ctx, ctxKeyApprovalMode, stringResolver(func() string {
-			if s, ok := e.sessions.Get(sessionID); ok {
-				return s.ApprovalMode
-			}
-			return ""
-		}))
+		ctx = tool.WithWorkspace(ctx, e.resolveWorkspace(sessionID))
+		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
+		ctx = approval.WithSession(ctx, sessionID)
 	}
 
-	// 标题生成:仅当这是该会话第一条用户消息、标题仍为空且用户未手动改名时,
-	// 后台异步生成。必须在写入当前用户消息之前检查历史(否则守卫永远为真)。
-	// 用脱离回合取消的 context,使标题任务在回合结束后仍能完成。
+	// 标题生成(首条用户消息时后台触发)。
 	if e.sessions != nil {
 		if hist, err := e.log.History(ctx, sessionID); err == nil && !hasUserMessage(hist) {
 			if s, ok := e.sessions.Get(sessionID); ok && s.Title == "" && !s.TitleIsManual {
@@ -147,55 +164,223 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 		}
 	}
 
-	// 1. 用户消息写入日志(成为历史的一部分)。
+	// 用户消息入日志。
 	userMsg := message.Message{Role: message.RoleUser, Content: userText}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
-
-	// 2. 回合开始。
 	e.emit(ctx, sessionID, event.KindTurnStarted, nil, true)
 
-	// 3. 从日志投影完整历史(多轮上下文)。
-	history, err := e.log.History(ctx, sessionID)
-	if err != nil {
-		return err
-	}
+	// 多步循环:模型 → 工具 → 模型 ...
+	for step := 0; step < maxToolSteps; step++ {
+		history, err := e.log.History(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		toolDefs := e.tools.Specs()
 
-	// 4. 调 provider 流式(读取当前 provider,支持运行时热替换)。
-	prov, _ := e.currentProvider()
-	stream, err := prov.Stream(ctx, provider.Request{Model: model, Messages: history})
-	if err != nil {
-		e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-		return err
-	}
+		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
+		workspace := e.resolveWorkspace(sessionID)
+		messages := append([]message.Message{
+			{Role: message.RoleSystem, Content: buildSystemPrompt(workspace)},
+		}, history...)
 
-	// 5. 消费流:每个 delta 有损广播,累积成完整助手消息。
-	var acc string
-	for ev := range stream {
-		switch ev.Type {
-		case "text_delta":
-			acc += ev.Text
-			e.bus.Publish(topic(sessionID), event.Event{
-				Kind: event.KindMessageDelta, Session: sessionID,
-				Time: time.Now(), Payload: ev.Text,
+		prov, _ := e.currentProvider()
+		stream, err := prov.Stream(ctx, provider.Request{
+			Model:    model,
+			Messages: messages,
+			Tools:    toolDefs,
+		})
+		if err != nil {
+			// ctx 取消(用户点停止)不算错误,只安静结束回合。
+			if ctx.Err() != nil {
+				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+				return nil
+			}
+			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
+			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			return err
+		}
+
+		var accText string
+		var accReasoning string
+		pending := make(map[int]*pendingToolCall)
+		var pendingOrder []int
+		var finishReason string
+
+		for ev := range stream {
+			switch ev.Type {
+			case "text_delta":
+				accText += ev.Text
+				e.bus.Publish(topic(sessionID), event.Event{
+					Kind: event.KindMessageDelta, Session: sessionID,
+					Time: time.Now(), Payload: ev.Text,
+				})
+			case "reasoning_delta":
+				accReasoning += ev.Text
+				e.bus.Publish(topic(sessionID), event.Event{
+					Kind: event.KindReasoningDelta, Session: sessionID,
+					Time: time.Now(), Payload: ev.Text,
+				})
+			case "tool_call_delta":
+				pc, exists := pending[ev.ToolIndex]
+				if !exists {
+					pc = &pendingToolCall{ID: ev.ToolCallID, Name: ev.ToolName}
+					pending[ev.ToolIndex] = pc
+					pendingOrder = append(pendingOrder, ev.ToolIndex)
+				}
+				if ev.ToolCallID != "" {
+					pc.ID = ev.ToolCallID
+				}
+				if ev.ToolName != "" {
+					pc.Name = ev.ToolName
+				}
+				if ev.ToolArgsDlt != "" {
+					pc.argsBuf += ev.ToolArgsDlt
+				}
+			case "error":
+				// ctx 被取消(用户点停止):安静结束回合,不弹错误气泡。
+				if ctx.Err() != nil {
+					e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+					return nil
+				}
+				e.emit(ctx, sessionID, event.KindError, ev.Text, true)
+				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+				return nil
+			case "done":
+				finishReason = ev.FinishReason
+			}
+		}
+
+		// 组装助手消息(可能携带 tool_calls)。
+		asstMsg := message.Message{Role: message.RoleAssistant, Content: accText, Reasoning: accReasoning}
+		var toolCalls []message.ToolCall
+		for _, idx := range pendingOrder {
+			pc := pending[idx]
+			toolCalls = append(toolCalls, message.ToolCall{
+				ID:    pc.ID,
+				Name:  pc.Name,
+				Input: pc.input(),
 			})
-		case "error":
-			e.emit(ctx, sessionID, event.KindError, ev.Text, true)
-			return nil
-		case "done":
-			// 结束,落历史。
+		}
+		if len(toolCalls) > 0 {
+			asstMsg.ToolCalls = toolCalls
+		}
+		e.emit(ctx, sessionID, event.KindMessageEnd, asstMsg, true)
+
+		// 没有工具调用,回合结束。
+		if finishReason != "tool_calls" || len(toolCalls) == 0 {
+			break
+		}
+
+		// 执行每个工具调用,结果作为 tool 消息入日志。
+		for i, tc := range toolCalls {
+			e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
+				ID: tc.ID, Name: tc.Name, Input: string(tc.Input),
+			}, true)
+
+			// 回合被取消(用户点停止):正在执行的工具标记为「已中断」而非错误,
+			// 未开始的工具也补占位结果,保证日志中每个 tool_call 都有对应 tool 消息。
+			output := "已中断"
+			isErr := false
+			if ctx.Err() == nil {
+				result := e.executeTool(ctx, tc)
+				output = resultText(result)
+				isErr = result.IsError
+				if ctx.Err() != nil {
+					output = "已中断"
+					isErr = false
+				}
+			}
+			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
+				ID: tc.ID, Name: tc.Name, Output: output, IsError: isErr,
+			}, true)
+
+			toolMsg := message.Message{
+				Role:       message.RoleTool,
+				ToolCallID: tc.ID,
+				Content:    output,
+			}
+			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
+
+			if ctx.Err() != nil {
+				for _, rest := range toolCalls[i+1:] {
+					e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
+						ID: rest.ID, Name: rest.Name, Input: string(rest.Input),
+					}, true)
+					e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
+						ID: rest.ID, Name: rest.Name, Output: "已中断",
+					}, true)
+					e.emit(ctx, sessionID, event.KindMessageEnd, message.Message{
+						Role: message.RoleTool, ToolCallID: rest.ID, Content: "已中断",
+					}, true)
+				}
+				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+				return nil
+			}
 		}
 	}
 
-	// 6. 助手消息完成,写入日志(成为下一轮的上下文)。
-	asstMsg := message.Message{Role: message.RoleAssistant, Content: acc}
-	e.emit(ctx, sessionID, event.KindMessageEnd, asstMsg, true)
-
-	// 7. 回合结束(必达)。
 	e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
 	return nil
 }
 
-// emit 追加事件到日志并广播。mustDeliver 决定投递级别。
+// Cancel 中断指定会话当前正在运行的回合(若有)。
+// 取消会传播到 provider HTTP 请求、工具执行、审批等待。无活跃回合时 no-op。
+func (e *Engine) Cancel(sessionID string) {
+	if v, ok := e.cancels.Load(sessionID); ok {
+		v.(context.CancelFunc)()
+	}
+}
+
+// executeTool 查注册表并执行单个工具调用。
+func (e *Engine) executeTool(ctx context.Context, tc message.ToolCall) tool.Result {
+	t, ok := e.tools.Get(tc.Name)
+	if !ok {
+		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: "unknown tool: " + tc.Name}}}
+	}
+	call := tool.Call{ID: tc.ID, Name: tc.Name, Input: tc.Input}
+	result, err := t.Run(ctx, call)
+	if err != nil {
+		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: err.Error()}}}
+	}
+	return result
+}
+
+// resultText 把工具结果拼成文本,用于回灌模型和事件负载。
+func resultText(r tool.Result) string {
+	var sb string
+	for _, p := range r.Content {
+		if p.Type == "text" && p.Text != "" {
+			if sb != "" {
+				sb += "\n"
+			}
+			sb += p.Text
+		}
+	}
+	if sb == "" {
+		sb = "(no output)"
+	}
+	if r.IsError {
+		sb = "Error: " + sb
+	}
+	return sb
+}
+
+// resolveWorkspace / resolveApprovalMode 从会话状态读取实时配置。
+func (e *Engine) resolveWorkspace(sessionID string) string {
+	if s, ok := e.sessions.Get(sessionID); ok {
+		return s.Workspace
+	}
+	return ""
+}
+
+func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
+	if s, ok := e.sessions.Get(sessionID); ok && s.ApprovalMode != "" {
+		return approval.Mode(s.ApprovalMode)
+	}
+	return approval.ModeAsk
+}
+
+// emit 追加事件到日志并广播。
 func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, payload any, mustDeliver bool) {
 	ev := event.Event{Kind: kind, Session: sessionID, Time: time.Now(), Payload: payload}
 	seq, _ := e.log.Append(ctx, ev)
@@ -207,11 +392,8 @@ func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, pa
 	}
 }
 
-// topic 是某会话的事件 topic。
 func topic(sessionID string) string { return "session:" + sessionID }
 
-// hasUserMessage 判断历史中是否已有真实用户消息(排除系统/工具/助手)。
-// 用于标题生成的「仅首条触发」守卫。
 func hasUserMessage(msgs []message.Message) bool {
 	for _, m := range msgs {
 		if m.Role == message.RoleUser {
@@ -221,8 +403,7 @@ func hasUserMessage(msgs []message.Message) bool {
 	return false
 }
 
-// generateTitle 在后台生成会话标题并幂等落库,随后广播 session_updated。
-// provider 不支持非流式 Complete 时直接用截断兜底;任何失败都不影响主回合。
+// generateTitle 在后台生成会话标题。
 func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
 	prov, _ := e.currentProvider()
 	model := e.currentModel(sessionID)

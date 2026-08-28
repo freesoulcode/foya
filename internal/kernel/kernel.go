@@ -4,6 +4,7 @@ package kernel
 
 import (
 	"github.com/freesoulcode/foya/internal/agent"
+	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider/openai"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/tool"
 )
 
 // App 是内核组合根。
@@ -32,10 +34,18 @@ func New(cfg config.Config) *App {
 	log := state.NewMemLog()
 	bus := broker.New[event.Event]()
 
-	prov, model := buildProvider(cfg.Provider)
-	engine := agent.NewEngine(log, bus, sessions, prov, model)
+	// 审批网关与工具注册表。
+	gw := approval.NewGateway(bus, log)
+	tools := tool.NewRegistry()
+	tools.Register(tool.NewBashTool(gw))
+	tools.Register(tool.NewReadTool(gw))
+	tools.Register(tool.NewWriteTool(gw))
+	tools.Register(tool.NewEditTool(gw))
 
-	be := backend.New(sessions, log, bus, engine, buildProvider, cfg.Provider, cfg.DataDir)
+	prov, model := buildProvider(cfg.Provider)
+	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
+
+	be := backend.New(sessions, log, bus, engine, gw, buildProvider, cfg.Provider, cfg.DataDir)
 	return &App{cfg: cfg, backend: be}
 }
 

@@ -5,20 +5,43 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/freesoulcode/foya/internal/message"
 )
 
-// StreamEvent 是模型流式响应的一个增量。
-type StreamEvent struct {
-	Type string // text_delta / done / error
-	Text string
+// FunctionDef 是一个函数工具的定义。
+type FunctionDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// Request 是一次模型请求,携带完整对话历史(多轮上下文)。
+// ToolDef 是喂给模型的工具定义(OpenAI tool-calling 格式)。
+type ToolDef struct {
+	Type     string      `json:"type"` // 固定 "function"
+	Function FunctionDef `json:"function"`
+}
+
+// StreamEvent 是模型流式响应的一个增量。
+type StreamEvent struct {
+	Type string // text_delta / reasoning_delta / tool_call_delta / done / error
+	Text string
+
+	// tool_call_delta 字段
+	ToolIndex    int    // 该工具调用在本批次中的序号(用于分片拼接)
+	ToolCallID   string // 首片携带
+	ToolName     string // 首片携带
+	ToolArgsDlt  string // 参数 JSON 的增量片段
+
+	FinishReason string // stop / tool_calls / length / error(仅 done 事件)
+}
+
+// Request 是一次模型请求,携带完整对话历史(多轮上下文)与可用工具。
 type Request struct {
 	Model    string
 	Messages []message.Message
+	Tools    []ToolDef
 }
 
 // Provider 是统一的 LLM 接入点。
