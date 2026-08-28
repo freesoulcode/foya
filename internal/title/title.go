@@ -26,7 +26,8 @@ const (
 	generateTimeout = 15 * time.Second
 )
 
-// systemPrompt 是标题生成的系统提示:硬约束单行输出,并对 CJK 等语言给出长度指引。
+// systemPrompt 是标题生成的系统提示:硬约束输出为单行、无前后缀,
+// 并对 CJK 等语言给出与字母语言不同的长度指引。
 const systemPrompt = `You generate a short title for a conversation, based on the user's first message.
 
 <rules>

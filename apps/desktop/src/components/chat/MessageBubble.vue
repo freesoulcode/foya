@@ -62,6 +62,16 @@ const isPending = computed(
 
 const isError = computed(() => !isUser.value && props.message.error === true);
 
+// 回合中「工作中」空窗:纯派生自 streaming + segments,不依赖任何专用事件。
+// 各段各自的进行态已被覆盖(首 token 前=isPending 打字点、思考中=「正在思考…」、
+// 工具运行中=图标 pulse、正文流式=光标)。唯一没人管的空白是:某工具已结束、
+// 但回合仍在流式(streaming 为真)——此时模型正在为下一步生成内容,填一个指示。
+const showWorking = computed(() => {
+  if (isUser.value || props.message.error || !props.streaming) return false;
+  const last = segments.value[segments.value.length - 1];
+  return !!last && last.kind === "tool" && last.tool.status !== "running";
+});
+
 // 工具调用展开状态。
 const expandedTools = ref<Set<string>>(new Set());
 function toggleTool(id: string) {
@@ -264,6 +274,13 @@ async function copyAll() {
             @click="onBodyClick"
           />
         </template>
+
+        <!-- 工作中指示:工具已结束、回合仍在流式,模型正在为下一步生成 -->
+        <div v-if="showWorking" class="flex items-center gap-1 py-1">
+          <span class="typing-dot" />
+          <span class="typing-dot" />
+          <span class="typing-dot" />
+        </div>
 
         <!-- 流式光标:仍在流式且最后一段是正文时显示 -->
         <span

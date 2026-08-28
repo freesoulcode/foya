@@ -184,6 +184,32 @@ function handleEvent(sessionId: string, data: string) {
       }
       break;
     }
+    case "tool_update": {
+      // 执行前回填完整参数(tool_begin 在参数刚开始流式生成时已发出,
+      // 那时只有名称;此处补上完整 input)。若卡片因回放等原因不存在则兜底创建。
+      const p = ev.payload as { id: string; name: string; input: string };
+      const asstIdx = findLastAssistantIdx(bucket);
+      if (asstIdx < 0) break;
+      const msg = bucket[asstIdx];
+      let tc = msg.tool_calls?.find((t) => t.id === p.id);
+      if (!tc) {
+        if (!msg.tool_calls) msg.tool_calls = [];
+        tc = { id: p.id, name: p.name, input: p.input, status: "running" };
+        msg.tool_calls.push(tc);
+        ensureSegments(msg).push({ kind: "tool", tool: tc });
+      } else {
+        if (p.name) tc.name = p.name;
+        if (p.input) tc.input = p.input;
+      }
+      const seg = msg.segments?.find(
+        (s) => s.kind === "tool" && s.tool.id === p.id
+      );
+      if (seg && seg.kind === "tool") {
+        if (p.name) seg.tool.name = p.name;
+        if (p.input) seg.tool.input = p.input;
+      }
+      break;
+    }
     case "tool_end": {
       const p = ev.payload as {
         id: string;

@@ -12,6 +12,7 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/prompt"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
@@ -38,6 +39,10 @@ type pendingToolCall struct {
 	Name      string
 	argsBuf   string
 	argsReady bool
+	// uiNotified 标记是否已为该调用发出 tool_begin 事件。
+	// 首个携带 ID+名称的分片到达即通知 UI,让用户在模型还在流式生成参数时
+	// 就看到「正在调用某工具」,而非等参数全部流完才出现。
+	uiNotified bool
 }
 
 func (p *pendingToolCall) input() json.RawMessage {
@@ -125,11 +130,11 @@ func (e *Engine) ListModels(ctx context.Context) ([]string, error) {
 
 // toolCallPayload 是 tool_begin/tool_end 事件的负载。
 type toolCallPayload struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Input    string `json:"input,omitempty"`
-	Output   string `json:"output,omitempty"`
-	IsError  bool   `json:"is_error,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Input   string `json:"input,omitempty"`
+	Output  string `json:"output,omitempty"`
+	IsError bool   `json:"is_error,omitempty"`
 }
 
 // RunTurn 同步执行一轮对话(可能含多步工具调用)。
@@ -178,9 +183,13 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 		toolDefs := e.tools.Specs()
 
 		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
-		workspace := e.resolveWorkspace(sessionID)
+		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
+		sysPrompt := prompt.Assemble(prompt.Input{
+			Workspace:    e.resolveWorkspace(sessionID),
+			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
+		})
 		messages := append([]message.Message{
-			{Role: message.RoleSystem, Content: buildSystemPrompt(workspace)},
+			{Role: message.RoleSystem, Content: sysPrompt},
 		}, history...)
 
 		prov, _ := e.currentProvider()
@@ -236,6 +245,15 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 				if ev.ToolArgsDlt != "" {
 					pc.argsBuf += ev.ToolArgsDlt
 				}
+				// 首个 ID+名称齐全的分片:立即通知 UI「开始调用该工具」。
+				// 此时参数还在流式生成(write 的文件内容可能很长),用户可即时感知,
+				// 不必等到参数全部流完。
+				if !pc.uiNotified && pc.ID != "" && pc.Name != "" {
+					pc.uiNotified = true
+					e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
+						ID: pc.ID, Name: pc.Name,
+					}, true)
+				}
 			case "error":
 				// ctx 被取消(用户点停止):安静结束回合,不弹错误气泡。
 				if ctx.Err() != nil {
@@ -272,8 +290,10 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 		}
 
 		// 执行每个工具调用,结果作为 tool 消息入日志。
+		// tool_begin 已在参数流式生成的首个分片时发出(UI 即时感知);
+		// 此处执行前用 tool_update 回填完整参数,再执行、发 tool_end。
 		for i, tc := range toolCalls {
-			e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
+			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Input: string(tc.Input),
 			}, true)
 
