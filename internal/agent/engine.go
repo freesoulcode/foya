@@ -20,7 +20,10 @@ import (
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
-const maxToolSteps = 50
+// maxToolStepsUnlimited 表示不设步数上限(交互式桌面默认)。
+// 步数上限是可选的第三层兜底,只应由 CLI / eval 等非交互场景显式设置——
+// 交互式任务不该被武断的步数打断,失控由 loopGuard 的两层检测精准终止。
+const maxToolStepsUnlimited = 0
 
 // SessionLookup 是引擎读取会话元数据所需的最小依赖。
 type SessionLookup interface {
@@ -64,6 +67,10 @@ type Engine struct {
 	provider provider.Provider
 	model    string
 
+	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
+	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
+	maxSteps int
+
 	// cancels 持有每个会话当前回合的取消函数。回合进行中时存在,
 	// 结束后删除。Cancel 据此中断正在跑的回合(provider HTTP、
 	// 工具执行、审批等待都会随 ctx 取消而终止)。
@@ -97,6 +104,14 @@ func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	defer e.mu.Unlock()
 	e.provider = p
 	e.model = model
+}
+
+// SetMaxSteps 设置工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
+// 供 CLI / eval 等非交互场景显式限制;交互式桌面不应调用。
+func (e *Engine) SetMaxSteps(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.maxSteps = n
 }
 
 func (e *Engine) currentProvider() (provider.Provider, string) {
@@ -175,8 +190,17 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
 	e.emit(ctx, sessionID, event.KindTurnStarted, nil, true)
 
+	// 循环防护:跨本回合所有步骤,检测无意义重复(见 loopguard.go)。
+	guard := &loopGuard{}
+
+	// 步数上限快照:0 表示无限制。失控由 loopGuard 两层检测精准终止,
+	// 此上限仅作 CLI / eval 场景的可选兜底。
+	e.mu.RLock()
+	maxSteps := e.maxSteps
+	e.mu.RUnlock()
+
 	// 多步循环:模型 → 工具 → 模型 ...
-	for step := 0; step < maxToolSteps; step++ {
+	for step := 0; maxSteps == maxToolStepsUnlimited || step < maxSteps; step++ {
 		history, err := e.log.History(ctx, sessionID)
 		if err != nil {
 			return err
@@ -293,6 +317,8 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 		// 执行每个工具调用,结果作为 tool 消息入日志。
 		// tool_begin 已在参数流式生成的首个分片时发出(UI 即时感知);
 		// 此处执行前用 tool_update 回填完整参数,再执行、发 tool_end。
+		// 同时收集本步骤的工具交互,供第二层重复检测在步骤结束后判定。
+		var interactions []stepInteraction
 		for i, tc := range toolCalls {
 			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Input: string(tc.Input),
@@ -304,16 +330,28 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 			isErr := false
 			var diff string
 			if ctx.Err() == nil {
-				result := e.executeTool(ctx, tc)
-				output = resultText(result)
-				isErr = result.IsError
-				diff = result.Diff
-				if ctx.Err() != nil {
-					output = "已中断"
-					isErr = false
-					diff = ""
+				sig := callSig(tc.Name, tc.Input)
+				if guard.blockBeforeExec(sig) {
+					// 第一层:同一失败调用达阈值,软拦截——不执行,回灌引导文本,回合继续。
+					output = loopGateText(tc.Name)
+					isErr = true
+				} else {
+					result := e.executeTool(ctx, tc)
+					output = resultText(result)
+					isErr = result.IsError
+					diff = result.Diff
+					if ctx.Err() != nil {
+						output = "已中断"
+						isErr = false
+						diff = ""
+					} else {
+						guard.recordResult(sig, isErr)
+					}
 				}
 			}
+			interactions = append(interactions, stepInteraction{
+				name: tc.Name, input: tc.Input, output: output,
+			})
 			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Output: output, IsError: isErr, Diff: diff,
 			}, true)
@@ -341,6 +379,16 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
 				return nil
 			}
+		}
+
+		// 第二层:本步骤所有工具交互算一个签名,若近窗口内重复过多,判定为
+		// 无进展循环——硬终止回合并向用户说明原因(区别于第一层的软拦截)。
+		if guard.recordStep(stepSig(interactions)) {
+			e.emit(ctx, sessionID, event.KindError,
+				"检测到重复操作:agent 反复执行相同调用且无进展,已终止本回合。请调整指令或补充信息后重试。",
+				true)
+			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			return nil
 		}
 	}
 
