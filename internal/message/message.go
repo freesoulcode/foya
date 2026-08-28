@@ -34,4 +34,5 @@ type Message struct {
 	Reasoning  string     `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Diff       string     `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供展示,不回灌模型
 }

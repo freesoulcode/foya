@@ -39,6 +39,9 @@ type Result struct {
 	Content   []ContentPart
 	IsError   bool // 失败也结构化回灌给模型自我修正
 	Terminate bool // 是否提前结束该回合批次
+	// Diff 是文件变更的统一 diff 文本(仅 write/edit 等文件工具填充)。
+	// 仅供 UI 展示,不回灌模型(与 message.Reasoning 同样处理),避免浪费 token。
+	Diff string
 }
 
 // Tool 是模型可调用的执行单元。

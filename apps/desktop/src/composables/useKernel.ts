@@ -216,6 +216,7 @@ function handleEvent(sessionId: string, data: string) {
         name: string;
         output: string;
         is_error: boolean;
+        diff?: string;
       };
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx >= 0) {
@@ -223,6 +224,7 @@ function handleEvent(sessionId: string, data: string) {
         if (tc) {
           tc.status = p.is_error ? "error" : "done";
           tc.output = p.output;
+          if (p.diff) tc.diff = p.diff;
         }
         // 同步更新 segments 中对应的 tool 段(与 tool_calls 是不同对象引用)。
         const seg = bucket[asstIdx].segments?.find(
@@ -231,6 +233,7 @@ function handleEvent(sessionId: string, data: string) {
         if (seg && seg.kind === "tool") {
           seg.tool.status = p.is_error ? "error" : "done";
           seg.tool.output = p.output;
+          if (p.diff) seg.tool.diff = p.diff;
         }
       }
       break;
@@ -381,11 +384,13 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
         if (seg && seg.kind === "tool") {
           seg.tool.output = m.content;
           seg.tool.status = m.error ? "error" : "done";
+          if (m.diff) seg.tool.diff = m.diff;
         }
         const tc = cur.tool_calls!.find((t) => t.id === m.tool_call_id);
         if (tc) {
           tc.output = m.content;
           tc.status = m.error ? "error" : "done";
+          if (m.diff) tc.diff = m.diff;
         }
       }
       continue;

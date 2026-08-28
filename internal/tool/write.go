@@ -76,11 +76,18 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 		}
 	}
 
+	// 读取旧内容用于生成 diff(文件不存在视为新建,旧内容为空)。
+	var oldContent string
+	if data, err := os.ReadFile(path); err == nil {
+		oldContent = string(data)
+	}
+
 	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
 		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
 	}
 
 	return Result{
 		Content: []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
+		Diff:    unifiedDiff(path, oldContent, params.Content),
 	}, nil
 }

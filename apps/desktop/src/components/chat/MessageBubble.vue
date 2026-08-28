@@ -124,6 +124,58 @@ function formatInput(input: string): string {
   }
 }
 
+// 一行 diff:kind 决定行内着色(新增/删除/上下文/hunk 头)。
+interface DiffLine {
+  kind: "add" | "del" | "ctx" | "hunk";
+  text: string;
+}
+
+// 把统一 diff 文本解析成带类型的行,供行内着色渲染。
+// 跳过 ---/+++ 文件头(信息已由工具标题给出),保留 @@ hunk 头与增删/上下文行。
+function parseDiff(diff: string): DiffLine[] {
+  const out: DiffLine[] = [];
+  for (const raw of diff.split("\n")) {
+    if (raw === "" && out.length === 0) continue;
+    if (raw.startsWith("--- ") || raw.startsWith("+++ ")) continue;
+    if (raw.startsWith("@@")) {
+      out.push({ kind: "hunk", text: raw });
+    } else if (raw.startsWith("+")) {
+      out.push({ kind: "add", text: raw.slice(1) });
+    } else if (raw.startsWith("-")) {
+      out.push({ kind: "del", text: raw.slice(1) });
+    } else {
+      out.push({ kind: "ctx", text: raw.startsWith(" ") ? raw.slice(1) : raw });
+    }
+  }
+  // 去掉解析末尾可能的空上下文行。
+  while (out.length > 0 && out[out.length - 1].kind === "ctx" && out[out.length - 1].text === "") {
+    out.pop();
+  }
+  return out;
+}
+
+// diff 每行的行内样式:新增绿底、删除红底、hunk 头弱化、上下文常规。
+function diffLineClass(kind: DiffLine["kind"]): string {
+  switch (kind) {
+    case "add":
+      return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+    case "del":
+      return "bg-red-500/10 text-red-600 dark:text-red-400";
+    case "hunk":
+      return "text-muted-foreground/60 select-none";
+    default:
+      return "text-foreground/70";
+  }
+}
+
+// diff 行首标记(+/-/空格),对齐展示。
+function diffGutter(kind: DiffLine["kind"]): string {
+  if (kind === "add") return "+";
+  if (kind === "del") return "-";
+  if (kind === "hunk") return "";
+  return " ";
+}
+
 // 渲染单个文本段的 markdown。
 function renderSegment(text: string): string {
   return renderMarkdown(text);
@@ -255,6 +307,20 @@ async function copyAll() {
               v-if="isToolExpanded(seg.tool.id)"
               class="mt-1 border-l-2 border-border pl-3"
             >
+              <!-- 文件变更 diff:行内着色(新增绿/删除红) -->
+              <div v-if="seg.tool.diff" class="mb-2">
+                <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">变更</div>
+                <div class="overflow-x-auto rounded-md border border-border font-mono text-[11px] leading-relaxed">
+                  <div
+                    v-for="(line, li) in parseDiff(seg.tool.diff)"
+                    :key="li"
+                    :class="cn('flex whitespace-pre', diffLineClass(line.kind))"
+                  >
+                    <span class="w-4 shrink-0 select-none text-center opacity-60">{{ diffGutter(line.kind) }}</span>
+                    <span class="flex-1 break-all pr-2">{{ line.text }}</span>
+                  </div>
+                </div>
+              </div>
               <div v-if="seg.tool.input" class="mb-2">
                 <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">参数</div>
                 <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(seg.tool.input) }}</pre>

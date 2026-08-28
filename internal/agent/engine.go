@@ -135,6 +135,7 @@ type toolCallPayload struct {
 	Input   string `json:"input,omitempty"`
 	Output  string `json:"output,omitempty"`
 	IsError bool   `json:"is_error,omitempty"`
+	Diff    string `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
 }
 
 // RunTurn 同步执行一轮对话(可能含多步工具调用)。
@@ -301,23 +302,27 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 			// 未开始的工具也补占位结果,保证日志中每个 tool_call 都有对应 tool 消息。
 			output := "已中断"
 			isErr := false
+			var diff string
 			if ctx.Err() == nil {
 				result := e.executeTool(ctx, tc)
 				output = resultText(result)
 				isErr = result.IsError
+				diff = result.Diff
 				if ctx.Err() != nil {
 					output = "已中断"
 					isErr = false
+					diff = ""
 				}
 			}
 			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
-				ID: tc.ID, Name: tc.Name, Output: output, IsError: isErr,
+				ID: tc.ID, Name: tc.Name, Output: output, IsError: isErr, Diff: diff,
 			}, true)
 
 			toolMsg := message.Message{
 				Role:       message.RoleTool,
 				ToolCallID: tc.ID,
 				Content:    output,
+				Diff:       diff,
 			}
 			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
 

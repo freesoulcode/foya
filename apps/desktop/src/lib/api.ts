@@ -41,6 +41,8 @@ export interface ToolCallView {
   input: string;
   status: "running" | "done" | "error";
   output?: string;
+  // 文件变更 diff(仅 write/edit 工具),统一 diff 文本,前端行内着色展示。
+  diff?: string;
 }
 
 // assistant 气泡内的有序段落:一个回合可能是「思考→工具→思考→回复」的交错序列,
@@ -58,6 +60,8 @@ export interface ChatMessage {
   // 有序段落(仅 assistant)。存在时优先按其渲染;缺失时回退到 reasoning/tool_calls/content 扁平字段。
   segments?: MessageSegment[];
   tool_call_id?: string;
+  // 文件变更 diff(仅 tool 角色历史消息),用于历史回放时回填工具段。
+  diff?: string;
   error?: boolean;
 }
 

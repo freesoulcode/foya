@@ -95,6 +95,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult(fmt.Sprintf("读取失败: %v", err)), nil
 	}
 	content := string(data)
+	original := content
 
 	var applied int
 	for i, op := range params.Edits {
@@ -118,5 +119,6 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 
 	return Result{
 		Content: []ContentPart{{Type: "text", Text: fmt.Sprintf("已对 %s 应用 %d 处替换", path, applied)}},
+		Diff:    unifiedDiff(path, original, content),
 	}, nil
 }
