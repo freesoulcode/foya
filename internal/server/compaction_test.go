@@ -17,6 +17,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -61,7 +62,17 @@ func TestCompactSessionRoute(t *testing.T) {
 		tool.NewRegistry(),
 		gateway,
 	)
-	be := backend.New(sessions, log, bus, engine, gateway, nil, config.Provider{}, t.TempDir())
+	be := backend.New(
+		sessions,
+		log,
+		bus,
+		engine,
+		gateway,
+		terminal.NewManager(),
+		nil,
+		config.Provider{},
+		t.TempDir(),
+	)
 	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)

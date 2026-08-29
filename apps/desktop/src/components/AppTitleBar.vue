@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from "vue";
+import { PanelRightIcon } from "@lucide/vue";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
+import { useWorkbar } from "@/composables/useWorkbar";
 import type { Session } from "@/lib/api";
 
 const props = defineProps<{
@@ -15,6 +17,7 @@ const emit = defineEmits<{
 
 const { isMac, showCustomWindowControls } = usePlatform();
 const { state } = useSidebar();
+const { open: workbarOpen, toggle: toggleWorkbar } = useWorkbar();
 
 const isCollapsed = computed(() => state.value === "collapsed");
 
@@ -77,9 +80,17 @@ function cancel() {
       </button>
     </div>
 
-    <div v-if="showCustomWindowControls" class="no-drag">
-      <WindowControls />
+    <div v-if="!workbarOpen" class="no-drag flex h-full items-center">
+      <button
+        type="button"
+        class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        title="打开右侧工作区"
+        aria-label="打开右侧工作区"
+        @click="toggleWorkbar"
+      >
+        <PanelRightIcon class="size-4" />
+      </button>
+      <WindowControls v-if="showCustomWindowControls" />
     </div>
   </div>
 </template>
-

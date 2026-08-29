@@ -37,6 +37,7 @@ const props = withDefaults(
     contextUsage?: ContextUsageData;
     contextWindow?: number;
     hasSession?: boolean;
+    workspaceLocked?: boolean;
   }>(),
   {
     disabled: false,
@@ -51,6 +52,7 @@ const props = withDefaults(
     contextUsage: undefined,
     contextWindow: 0,
     hasSession: false,
+    workspaceLocked: false,
   }
 );
 
@@ -166,7 +168,7 @@ function selectModel(m: string) {
 
 // ---- 文件夹绑定 ----
 async function pickFolder() {
-  if (props.disabled) return;
+  if (props.disabled || props.workspaceLocked) return;
   try {
     const picked = await api.pickFolder();
     if (picked) emit("update:workspace", picked);
@@ -176,6 +178,7 @@ async function pickFolder() {
 }
 
 function clearWorkspace() {
+  if (props.workspaceLocked) return;
   emit("update:workspace", "");
 }
 
@@ -305,6 +308,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex items-center gap-0.5">
             <!-- 绑定文件夹(+) -->
             <button
+              v-if="!workspaceLocked"
               type="button"
               :disabled="disabled"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
@@ -458,7 +462,10 @@ function onKeydown(e: KeyboardEvent) {
       </div>
 
       <!-- 下方：工作文件夹 -->
-      <div class="mt-1 flex items-center gap-2 rounded-xl bg-muted/40 px-3 py-2">
+      <div
+        v-if="!workspaceLocked"
+        class="mt-1 flex items-center gap-2 rounded-xl bg-muted/40 px-3 py-2"
+      >
         <button
           type="button"
           :disabled="disabled"

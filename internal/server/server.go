@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/terminal"
 )
 
 // Server 承载 REST + SSE 路由。
@@ -52,6 +54,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}/queue/{message_id}", s.handleDeleteQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/queue/{message_id}/dispatch", s.handleDispatchQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
+	s.mux.HandleFunc("POST /sessions/{id}/terminals", s.handleStartTerminal)
+	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}", s.handleAttachTerminal)
+	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/input", s.handleWriteTerminal)
+	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
+	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
+	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
 	s.mux.HandleFunc("GET /config/provider", s.handleGetProvider)
 	s.mux.HandleFunc("PUT /config/provider", s.handleSetProvider)
 	s.mux.HandleFunc("GET /config/models", s.handleListModels)
@@ -129,6 +137,10 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		if errors.Is(err, session.ErrWorkspaceLocked) {
+			writeErr(w, http.StatusConflict, "workspace_locked", err.Error())
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "update_failed", err.Error())
@@ -433,6 +445,110 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleStartTerminal(w http.ResponseWriter, r *http.Request) {
+	var req protocol.TerminalStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	resource, err := s.backend.StartTerminal(
+		r.Context(),
+		r.PathValue("id"),
+		req.Cols,
+		req.Rows,
+	)
+	if err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, resource)
+}
+
+func (s *Server) handleAttachTerminal(w http.ResponseWriter, r *http.Request) {
+	resource, err := s.backend.AttachTerminal(r.PathValue("id"), r.PathValue("ref"))
+	if err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
+}
+
+func (s *Server) handleWriteTerminal(w http.ResponseWriter, r *http.Request) {
+	var req protocol.TerminalInputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.WriteTerminal(r.PathValue("id"), r.PathValue("ref"), req.Input); err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleResizeTerminal(w http.ResponseWriter, r *http.Request) {
+	var req protocol.TerminalResizeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.ResizeTerminal(
+		r.PathValue("id"),
+		r.PathValue("ref"),
+		req.Cols,
+		req.Rows,
+	); err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleStopTerminal(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.StopTerminal(r.PathValue("id"), r.PathValue("ref")); err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "no_flush", "streaming unsupported")
+		return
+	}
+	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+	ch, err := s.backend.SubscribeTerminal(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("ref"),
+		after,
+	)
+	if err != nil {
+		writeTerminalErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "id: %d\nevent: terminal\ndata: %s\n\n", ev.Seq, data)
+			flusher.Flush()
+		}
+	}
+}
+
 // handleEvents 以 SSE 推送某会话的事件流。
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -486,6 +602,17 @@ func writeQueueErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusBadRequest, "invalid_queue_message", err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, "queue_failed", err.Error())
+	}
+}
+
+func writeTerminalErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrNotFound), errors.Is(err, terminal.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "terminal_not_found", err.Error())
+	case errors.Is(err, terminal.ErrUnavailable):
+		writeErr(w, http.StatusNotImplemented, "terminal_unavailable", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "terminal_failed", err.Error())
 	}
 }
 

@@ -436,13 +436,13 @@ async function connect() {
 }
 
 // 进入新对话草稿态:不立即创建会话,直到用户发送第一条消息。
-// 同时重置草稿配置;模型自动选中列表第一个(无默认模型概念)。
-function newSession() {
+// 从项目分组发起时继承该工作目录;全局新建仍使用无项目草稿。
+function newSession(workspace = "") {
   activeId.value = "";
   ensureBucket("");
   streaming.value = false;
   draft.model = availableModels.value[0] ?? "";
-  draft.workspace = "";
+  draft.workspace = workspace;
   draft.approvalMode = DEFAULT_APPROVAL;
 }
 
@@ -599,6 +599,24 @@ async function cancelTurn() {
   }
 }
 
+// 确保草稿态拥有一个真实会话。工作台能力和发送消息共用这条创建路径，
+// 避免同一份草稿配置在不同入口重复组装。
+async function ensureSession(): Promise<string> {
+  if (activeId.value) return activeId.value;
+  const s = await api.createSession({
+    model: draft.model || undefined,
+    workspace: draft.workspace || undefined,
+    approval_mode: draft.approvalMode,
+  });
+  sessions.value.unshift(s);
+  messagesBySession.value[s.id] = messagesBySession.value[""] ?? [];
+  delete messagesBySession.value[""];
+  activeId.value = s.id;
+  await subscribe(s.id);
+  queuedBySession.value[s.id] = [];
+  return s.id;
+}
+
 // 发送一条消息。内核原子决定直接启动或进入队列;用户消息与运行态
 // 统一由 SSE 事件投影,从而让多个客户端保持一致。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
@@ -621,20 +639,7 @@ async function send(text: string) {
     return;
   }
 
-  if (!id) {
-    const s = await api.createSession({
-      model: draft.model || undefined,
-      workspace: draft.workspace || undefined,
-      approval_mode: draft.approvalMode,
-    });
-    sessions.value.unshift(s);
-    messagesBySession.value[s.id] = messagesBySession.value[""] ?? [];
-    delete messagesBySession.value[""];
-    id = s.id;
-    activeId.value = id;
-    await subscribe(id);
-    queuedBySession.value[id] = [];
-  }
+  if (!id) id = await ensureSession();
 
   ensureBucket(id);
 
@@ -785,6 +790,7 @@ export function useKernel() {
     confirmHistoryEdit,
     cancelHistoryEdit,
     cancelTurn,
+    ensureSession,
     updateSession,
     renameSession,
     pinSession,

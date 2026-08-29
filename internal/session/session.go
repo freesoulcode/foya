@@ -12,8 +12,12 @@ import (
 	"time"
 )
 
-// ErrNotFound 表示会话不存在。
-var ErrNotFound = errors.New("session not found")
+var (
+	// ErrNotFound 表示会话不存在。
+	ErrNotFound = errors.New("session not found")
+	// ErrWorkspaceLocked 表示已绑定项目的会话不能切换或清空工作目录。
+	ErrWorkspaceLocked = errors.New("session workspace is locked")
+)
 
 // Phase 是会话当前阶段。
 type Phase string
@@ -53,8 +57,8 @@ type Manager interface {
 	Create(opts CreateOptions) (*Session, error)
 	Get(id string) (*Session, bool)
 	List() []*Session
-	// Update 局部更新会话可变字段(模型、工作目录、审批档位)。
-	// 入参为指针,nil 表示该字段不变;空字符串指针表示清空。
+	// Update 局部更新会话配置。工作目录只能从空值绑定一次，绑定后不可更换。
+	// 入参为指针,nil 表示该字段不变。
 	Update(id string, model, workspace, approvalMode *string) (*Session, error)
 	// SetPhase 更新由内核控制的执行阶段。
 	SetPhase(id string, phase Phase) (*Session, error)
@@ -125,6 +129,9 @@ func (m *memManager) Update(id string, model, workspace, approvalMode *string) (
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, ErrNotFound
+	}
+	if workspace != nil && s.Workspace != "" && *workspace != s.Workspace {
+		return nil, ErrWorkspaceLocked
 	}
 	if model != nil {
 		s.Model = *model

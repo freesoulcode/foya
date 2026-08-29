@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { MoonIcon, SunIcon } from "@lucide/vue";
 import { api, type ProviderConfig } from "@/lib/api";
+import { useTheme, type Theme } from "@/composables/useTheme";
 import {
   Dialog,
   DialogContent,
@@ -14,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const open = defineModel<boolean>("open", { default: false });
+const { theme, setTheme } = useTheme();
 
 const baseUrl = ref("");
 const model = ref("");
@@ -22,6 +25,15 @@ const hasKey = ref(false);
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
+
+const themeOptions: Array<{
+  value: Theme;
+  label: string;
+  icon: typeof SunIcon;
+}> = [
+  { value: "light", label: "浅色", icon: SunIcon },
+  { value: "dark", label: "深色", icon: MoonIcon },
+];
 
 // 打开时加载当前配置(key 脱敏,只显示是否已配置)。
 watch(open, async (v) => {
@@ -68,13 +80,37 @@ async function save() {
   <Dialog v-model:open="open">
     <DialogContent class="sm:max-w-md">
       <DialogHeader>
-        <DialogTitle>模型设置</DialogTitle>
+        <DialogTitle>设置</DialogTitle>
         <DialogDescription>
-          配置 OpenAI 兼容的模型服务(BYOK),直连你的模型端点。
+          配置应用外观和 OpenAI 兼容的模型服务。
         </DialogDescription>
       </DialogHeader>
 
       <div class="space-y-4 py-2">
+        <div class="space-y-1.5">
+          <Label>外观</Label>
+          <div class="grid grid-cols-2 gap-1 rounded-md bg-muted p-1">
+            <button
+              v-for="option in themeOptions"
+              :key="option.value"
+              type="button"
+              :class="[
+                'flex h-8 items-center justify-center gap-2 rounded text-sm transition-colors',
+                theme === option.value
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              ]"
+              :aria-pressed="theme === option.value"
+              @click="setTheme(option.value)"
+            >
+              <component :is="option.icon" class="size-4" />
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="h-px bg-border" />
+
         <div class="space-y-1.5">
           <Label for="base-url">Base URL</Label>
           <Input

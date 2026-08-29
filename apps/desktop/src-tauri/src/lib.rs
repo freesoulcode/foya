@@ -1,9 +1,193 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use tauri::ipc::Channel;
+use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+
+const BROWSER_VIEW_PREFIX: &str = "foya-workbar-browser";
+const MAX_PROJECT_ENTRIES: usize = 10_000;
+const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
+const IGNORED_PROJECT_DIRS: &[&str] = &[
+    ".git",
+    ".idea",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "vendor",
+];
+
+#[derive(serde::Deserialize)]
+struct BrowserViewport {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BrowserPageLoad {
+    browser_id: String,
+    url: String,
+    status: &'static str,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BrowserTitleChanged {
+    browser_id: String,
+    title: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProjectEntry {
+    path: String,
+    name: String,
+    is_dir: bool,
+}
+
+fn browser_view_label(browser_id: &str) -> Result<String, String> {
+    if browser_id.is_empty()
+        || browser_id.len() > 64
+        || !browser_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("浏览器实例 ID 无效".into());
+    }
+    Ok(format!("{BROWSER_VIEW_PREFIX}-{browser_id}"))
+}
+
+fn workspace_root(workspace: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(workspace).map_err(|e| format!("无法访问项目目录: {e}"))?;
+    if !root.is_dir() {
+        return Err("项目路径不是目录".into());
+    }
+    Ok(root)
+}
+
+fn workspace_relative_path(relative_path: &str) -> Result<&Path, String> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("项目路径无效".into());
+    }
+    Ok(relative)
+}
+
+fn safe_workspace_entry(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = workspace_relative_path(relative_path)?;
+    let root = workspace_root(workspace)?;
+    let candidate = root.join(relative);
+    let metadata =
+        fs::symlink_metadata(&candidate).map_err(|e| format!("无法访问项目条目: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("不支持操作符号链接".into());
+    }
+    let entry = fs::canonicalize(candidate).map_err(|e| format!("无法访问项目条目: {e}"))?;
+    if !entry.starts_with(&root) {
+        return Err("项目条目不在当前项目中".into());
+    }
+    Ok(entry)
+}
+
+fn safe_workspace_file(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let file = safe_workspace_entry(workspace, relative_path)?;
+    if !file.is_file() {
+        return Err("项目条目不是文件".into());
+    }
+    Ok(file)
+}
+
+fn safe_workspace_destination(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = workspace_relative_path(relative_path)?;
+    let root = workspace_root(workspace)?;
+    let candidate = root.join(relative);
+    let file_name = candidate.file_name().ok_or("项目路径无效")?;
+    let parent = candidate.parent().ok_or("项目路径无效")?;
+    let parent = fs::canonicalize(parent).map_err(|e| format!("无法访问父目录: {e}"))?;
+    if !parent.starts_with(&root) || !parent.is_dir() {
+        return Err("父目录不在当前项目中".into());
+    }
+    let destination = parent.join(file_name);
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => Err("同名文件或文件夹已存在".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(destination),
+        Err(error) => Err(format!("无法检查目标路径: {error}")),
+    }
+}
+
+fn safe_entry_name(name: &str) -> Result<&str, String> {
+    let path = Path::new(name);
+    let mut components = path.components();
+    if name.is_empty()
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("名称不能包含路径分隔符".into());
+    }
+    Ok(name)
+}
+
+fn project_relative_string(root: &Path, path: &Path) -> Result<String, String> {
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| "项目条目不在当前项目中".into())
+}
+
+fn collect_project_entries(
+    root: &Path,
+    directory: &Path,
+    entries: &mut Vec<ProjectEntry>,
+) -> Result<(), String> {
+    if entries.len() >= MAX_PROJECT_ENTRIES {
+        return Ok(());
+    }
+    let mut children = fs::read_dir(directory)
+        .map_err(|e| format!("无法读取项目目录: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("无法读取项目目录项: {e}"))?;
+    children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+
+    for child in children {
+        if entries.len() >= MAX_PROJECT_ENTRIES {
+            break;
+        }
+        let file_type = child
+            .file_type()
+            .map_err(|e| format!("无法读取文件类型: {e}"))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let name = child.file_name().to_string_lossy().into_owned();
+        if file_type.is_dir() && IGNORED_PROJECT_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        let path = child.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        entries.push(ProjectEntry {
+            path: relative,
+            name,
+            is_dir: file_type.is_dir(),
+        });
+        if file_type.is_dir() {
+            collect_project_entries(root, &path, entries)?;
+        }
+    }
+    Ok(())
+}
 
 /// 内核 Unix socket 路径,须与 Go 端 config.DefaultSocketPath 保持一致。
 fn kernel_socket_path() -> Option<PathBuf> {
@@ -116,9 +300,17 @@ mod kernel {
         channel: Channel<String>,
         ready: oneshot::Sender<Result<(), String>>,
     ) -> Result<(), String> {
+        subscribe_path(&format!("/sessions/{session_id}/events"), channel, ready).await
+    }
+
+    /// Subscribe to an SSE endpoint and forward each data frame to the renderer.
+    pub async fn subscribe_path(
+        path: &str,
+        channel: Channel<String>,
+        ready: oneshot::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
         let setup = async {
-            let path = format!("/sessions/{session_id}/events");
-            let uri = socket_uri(&path)?;
+            let uri = socket_uri(path)?;
             let req = Request::builder()
                 .method(Method::GET)
                 .uri(uri)
@@ -359,6 +551,94 @@ async fn subscribe_events(session_id: String, channel: Channel<String>) -> Resul
         .map_err(|_| "事件订阅在连接前意外结束".to_string())?
 }
 
+#[cfg(unix)]
+#[tauri::command]
+async fn start_terminal(session_id: String, cols: u16, rows: u16) -> Result<String, String> {
+    let body = serde_json::json!({ "cols": cols, "rows": rows }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/terminals"),
+        Some(&body),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn attach_terminal(session_id: String, terminal_ref: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/sessions/{session_id}/terminals/{terminal_ref}"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn write_terminal(
+    session_id: String,
+    terminal_ref: String,
+    input: String,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "input": input }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/terminals/{terminal_ref}/input"),
+        Some(&body),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn resize_terminal(
+    session_id: String,
+    terminal_ref: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "cols": cols, "rows": rows }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/terminals/{terminal_ref}/resize"),
+        Some(&body),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn stop_terminal(session_id: String, terminal_ref: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/sessions/{session_id}/terminals/{terminal_ref}"),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn subscribe_terminal(
+    session_id: String,
+    terminal_ref: String,
+    after: u64,
+    channel: Channel<String>,
+) -> Result<(), String> {
+    let path = format!("/sessions/{session_id}/terminals/{terminal_ref}/events?after={after}");
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let _ = kernel::subscribe_path(&path, channel, ready_tx).await;
+    });
+    ready_rx
+        .await
+        .map_err(|_| "终端订阅在连接前意外结束".to_string())?
+}
+
 /// 回执审批决策(批准/拒绝)。
 #[cfg(unix)]
 #[tauri::command]
@@ -393,6 +673,256 @@ async fn delete_session(session_id: String) -> Result<(), String> {
     kernel::request("DELETE", &format!("/sessions/{session_id}"), None)
         .await
         .map(|_| ())
+}
+
+#[tauri::command]
+async fn list_project_files(workspace: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = workspace_root(&workspace)?;
+        let mut entries = Vec::new();
+        collect_project_entries(&root, &root, &mut entries)?;
+        serde_json::to_string(&entries).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_project_file(workspace: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = safe_workspace_file(&workspace, &path)?;
+        let metadata = fs::metadata(&file).map_err(|e| format!("无法读取文件信息: {e}"))?;
+        if metadata.len() > MAX_PREVIEW_BYTES {
+            return Err("文件超过 2 MiB，无法预览".into());
+        }
+        let bytes = fs::read(file).map_err(|e| format!("无法读取文件: {e}"))?;
+        String::from_utf8(bytes).map_err(|_| "二进制文件暂不支持预览".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_project_file(workspace: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = workspace_root(&workspace)?;
+        let file = safe_workspace_destination(&workspace, &path)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file)
+            .map_err(|e| format!("无法创建文件: {e}"))?;
+        project_relative_string(&root, &file)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_project_directory(workspace: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = workspace_root(&workspace)?;
+        let directory = safe_workspace_destination(&workspace, &path)?;
+        fs::create_dir(&directory).map_err(|e| format!("无法创建文件夹: {e}"))?;
+        project_relative_string(&root, &directory)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn rename_project_entry(
+    workspace: String,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = workspace_root(&workspace)?;
+        let entry = safe_workspace_entry(&workspace, &path)?;
+        let new_name = safe_entry_name(&new_name)?;
+        let destination = entry.with_file_name(new_name);
+
+        if destination != entry {
+            if let Ok(existing) = fs::canonicalize(&destination) {
+                if existing != entry {
+                    return Err("同名文件或文件夹已存在".into());
+                }
+            }
+            fs::rename(&entry, &destination).map_err(|e| format!("无法重命名: {e}"))?;
+        }
+
+        project_relative_string(&root, &destination)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn delete_project_entry(workspace: String, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = safe_workspace_entry(&workspace, &path)?;
+        if entry.is_dir() {
+            fs::remove_dir_all(entry).map_err(|e| format!("无法删除文件夹: {e}"))
+        } else {
+            fs::remove_file(entry).map_err(|e| format!("无法删除文件: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn resolve_project_path(workspace: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = if path.is_empty() {
+            workspace_root(&workspace)?
+        } else {
+            safe_workspace_entry(&workspace, &path)?
+        };
+        Ok(entry.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn navigate_browser(
+    app: tauri::AppHandle,
+    browser_id: String,
+    url: String,
+    viewport: BrowserViewport,
+) -> Result<(), String> {
+    let parsed = url.parse::<tauri::Url>().map_err(|e| e.to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("只允许打开 HTTP 或 HTTPS 地址".into());
+    }
+    if viewport.width <= 0.0 || viewport.height <= 0.0 {
+        return Err("浏览器预览区域尺寸无效".into());
+    }
+    let position = tauri::LogicalPosition::new(viewport.x, viewport.y);
+    let size = tauri::LogicalSize::new(viewport.width, viewport.height);
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.navigate(parsed).map_err(|e| e.to_string())?;
+        webview
+            .set_bounds(tauri::Rect {
+                position: tauri::Position::Logical(position),
+                size: tauri::Size::Logical(size),
+            })
+            .map_err(|e| e.to_string())?;
+        webview.show().map_err(|e| e.to_string())?;
+        webview.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let window = app.get_window("main").ok_or("主窗口不可用")?;
+    let load_browser_id = browser_id.clone();
+    let title_browser_id = browser_id.clone();
+    let builder = tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed))
+        .on_navigation(|target| matches!(target.scheme(), "http" | "https" | "about"))
+        .on_page_load(move |webview, payload| {
+            let status = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "started",
+                tauri::webview::PageLoadEvent::Finished => "finished",
+            };
+            let _ = webview.app_handle().emit_to(
+                "main",
+                "browser-page-load",
+                BrowserPageLoad {
+                    browser_id: load_browser_id.clone(),
+                    url: payload.url().to_string(),
+                    status,
+                },
+            );
+        })
+        .on_document_title_changed(move |webview, title| {
+            let _ = webview.app_handle().emit_to(
+                "main",
+                "browser-title-changed",
+                BrowserTitleChanged {
+                    browser_id: title_browser_id.clone(),
+                    title,
+                },
+            );
+        });
+    let webview = window
+        .add_child(builder, position, size)
+        .map_err(|e| e.to_string())?;
+    webview.show().map_err(|e| e.to_string())?;
+    webview.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_browser_viewport(
+    app: tauri::AppHandle,
+    browser_id: String,
+    viewport: Option<BrowserViewport>,
+) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    let Some(webview) = app.get_webview(&label) else {
+        return Ok(());
+    };
+    let Some(viewport) = viewport else {
+        return webview.hide().map_err(|e| e.to_string());
+    };
+    if viewport.width <= 0.0 || viewport.height <= 0.0 {
+        return webview.hide().map_err(|e| e.to_string());
+    }
+    webview
+        .set_bounds(tauri::Rect {
+            position: tauri::Position::Logical(tauri::LogicalPosition::new(viewport.x, viewport.y)),
+            size: tauri::Size::Logical(tauri::LogicalSize::new(viewport.width, viewport.height)),
+        })
+        .map_err(|e| e.to_string())?;
+    webview.show().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn browser_back(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.eval("history.back()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_forward(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview
+            .eval("history.forward()")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_reload(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.reload().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_browser(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn close_browser(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // Windows 占位。
@@ -510,6 +1040,56 @@ fn subscribe_events(_session_id: String, _channel: Channel<String>) -> Result<()
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn start_terminal(_session_id: String, _cols: u16, _rows: u16) -> Result<String, String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn attach_terminal(_session_id: String, _terminal_ref: String) -> Result<String, String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn write_terminal(
+    _session_id: String,
+    _terminal_ref: String,
+    _input: String,
+) -> Result<(), String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn resize_terminal(
+    _session_id: String,
+    _terminal_ref: String,
+    _cols: u16,
+    _rows: u16,
+) -> Result<(), String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn stop_terminal(_session_id: String, _terminal_ref: String) -> Result<(), String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn subscribe_terminal(
+    _session_id: String,
+    _terminal_ref: String,
+    _after: u64,
+    _channel: Channel<String>,
+) -> Result<(), String> {
+    Err("Windows 终端尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn resolve_approval(
     _session_id: String,
     _request_id: String,
@@ -589,6 +1169,26 @@ pub fn run() {
             set_provider,
             list_models,
             subscribe_events,
+            start_terminal,
+            attach_terminal,
+            write_terminal,
+            resize_terminal,
+            stop_terminal,
+            subscribe_terminal,
+            navigate_browser,
+            set_browser_viewport,
+            browser_back,
+            browser_forward,
+            browser_reload,
+            hide_browser,
+            close_browser,
+            list_project_files,
+            read_project_file,
+            create_project_file,
+            create_project_directory,
+            rename_project_entry,
+            delete_project_entry,
+            resolve_project_path,
             resolve_approval,
             cancel_turn,
             delete_session

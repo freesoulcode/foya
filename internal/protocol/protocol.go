@@ -24,8 +24,8 @@ type CreateSessionRequest struct {
 	ApprovalMode string `json:"approval_mode,omitempty"`
 }
 
-// UpdateSessionRequest 局部更新会话可变字段。
-// 指针为 nil 表示不变;空字符串表示清空。
+// UpdateSessionRequest 局部更新会话配置。
+// Workspace 只能首次绑定，已有非空值后不可更换或清空。
 type UpdateSessionRequest struct {
 	Model        *string `json:"model,omitempty"`
 	Workspace    *string `json:"workspace,omitempty"`
@@ -90,6 +90,24 @@ type CompactSessionResponse struct {
 	ThroughSeq            uint64 `json:"through_seq"`
 	EstimatedTokensBefore int64  `json:"estimated_tokens_before"`
 	EstimatedTokensAfter  int64  `json:"estimated_tokens_after"`
+}
+
+// TerminalStartRequest supplies the viewport size before the shell emits its
+// first prompt, keeping the PTY and terminal renderer in sync from byte one.
+type TerminalStartRequest struct {
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
+}
+
+// TerminalInputRequest forwards an input chunk to one terminal resource.
+type TerminalInputRequest struct {
+	Input string `json:"input"`
+}
+
+// TerminalResizeRequest updates terminal rows and columns.
+type TerminalResizeRequest struct {
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
 }
 
 // ApprovalDecisionRequest 是客户端回执一个审批决策。

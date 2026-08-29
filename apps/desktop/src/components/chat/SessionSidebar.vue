@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, nextTick } from "vue";
+import { computed, ref } from "vue";
 import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  FolderIcon,
   PlusIcon,
-  MessageSquareIcon,
   SettingsIcon,
-  PinIcon,
-  PinOffIcon,
   Trash2Icon,
-  Loader2Icon,
 } from "@lucide/vue";
 import {
   Sidebar,
@@ -32,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import type { Session } from "@/lib/api";
+import SessionSidebarItem from "./SessionSidebarItem.vue";
 
 const props = defineProps<{
   isMac: boolean;
@@ -47,7 +47,7 @@ function isRunning(id: string) {
 }
 
 const emit = defineEmits<{
-  (e: "new"): void;
+  (e: "new", workspace?: string): void;
   (e: "select", id: string): void;
   (e: "rename", id: string, title: string): void;
   (e: "pin", id: string, pinned: boolean): void;
@@ -59,40 +59,10 @@ function title(s: Session) {
   return s.title || "新对话";
 }
 
-// 双击改名:本地维护编辑态,回车提交、Esc 取消。
-const editingId = ref("");
-const editingText = ref("");
-const editInput = ref<HTMLInputElement | null>(null);
-
-async function startRename(s: Session) {
-  editingId.value = s.id;
-  editingText.value = s.title || "";
-  await nextTick();
-  editInput.value?.focus();
-  editInput.value?.select();
-}
-
-function commitRename() {
-  const id = editingId.value;
-  const text = editingText.value.trim();
-  editingId.value = "";
-  if (id && text) emit("rename", id, text);
-}
-
-function cancelRename() {
-  editingId.value = "";
-}
-
-function onPin(s: Session, e: Event) {
-  e.stopPropagation();
-  emit("pin", s.id, !s.pinned);
-}
-
 // 删除确认:点击删除只是打开应用内 Dialog,确认后才真正发出 delete 事件。
 const pendingDelete = ref<Session | null>(null);
 
-function onDelete(s: Session, e: Event) {
-  e.stopPropagation();
+function onDelete(s: Session) {
   pendingDelete.value = s;
 }
 
@@ -101,42 +71,96 @@ function confirmDelete() {
   pendingDelete.value = null;
 }
 
-function isSameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+function normalizedWorkspace(workspace?: string): string {
+  return workspace?.replace(/[\\/]+$/, "") ?? "";
 }
 
-function groupLabel(date: Date): string {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const weekAgo = new Date(today.getTime() - 7 * 86400000);
-
-  if (isSameDay(date, today)) return "今天";
-  if (isSameDay(date, yesterday)) return "昨天";
-  if (date >= weekAgo) return "前 7 天";
-  return "更早";
+function projectBaseName(workspace: string): string {
+  const parts = normalizedWorkspace(workspace).split(/[\\/]/);
+  return parts[parts.length - 1] || workspace;
 }
 
-const groups = computed(() => {
-  const byUpdated = (a: Session, b: Session) =>
-    b.updated_at.localeCompare(a.updated_at);
-  const pinned = props.sessions
-    .filter((s) => s.pinned)
-    .sort((a, b) =>
-      (b.pinned_at ?? b.updated_at).localeCompare(a.pinned_at ?? a.updated_at)
-    );
-  const map = new Map<string, Session[]>();
-  if (pinned.length > 0) map.set("置顶", pinned);
-  for (const s of [...props.sessions].filter((s) => !s.pinned).sort(byUpdated)) {
-    const label = groupLabel(new Date(s.updated_at));
-    if (!map.has(label)) map.set(label, []);
-    map.get(label)!.push(s);
+function projectParentName(workspace: string): string {
+  const parts = normalizedWorkspace(workspace).split(/[\\/]/);
+  return parts.length > 1 ? parts[parts.length - 2] : "";
+}
+
+function sortSessions(items: Session[]): Session[] {
+  return [...items].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    const aTime = a.pinned ? a.pinned_at ?? a.updated_at : a.updated_at;
+    const bTime = b.pinned ? b.pinned_at ?? b.updated_at : b.updated_at;
+    return bTime.localeCompare(aTime);
+  });
+}
+
+const ungroupedSessions = computed(() =>
+  sortSessions(props.sessions.filter((session) => !session.workspace))
+);
+
+interface ProjectGroup {
+  workspace: string;
+  label: string;
+  sessions: Session[];
+  updatedAt: string;
+}
+
+const collapsedProjects = ref<Set<string>>(new Set());
+
+function toggleProject(workspace: string) {
+  const next = new Set(collapsedProjects.value);
+  if (next.has(workspace)) next.delete(workspace);
+  else next.add(workspace);
+  collapsedProjects.value = next;
+}
+
+function newProjectSession(workspace: string) {
+  const next = new Set(collapsedProjects.value);
+  next.delete(workspace);
+  collapsedProjects.value = next;
+  emit("new", workspace);
+}
+
+function projectIsActive(project: ProjectGroup): boolean {
+  return project.sessions.some((session) => session.id === props.activeId);
+}
+
+const projectGroups = computed<ProjectGroup[]>(() => {
+  const grouped = new Map<string, Session[]>();
+  for (const session of props.sessions) {
+    const workspace = normalizedWorkspace(session.workspace);
+    if (!workspace) continue;
+    const items = grouped.get(workspace) ?? [];
+    items.push(session);
+    grouped.set(workspace, items);
   }
-  return Array.from(map.entries());
+
+  const baseNameCounts = new Map<string, number>();
+  for (const workspace of grouped.keys()) {
+    const name = projectBaseName(workspace);
+    baseNameCounts.set(name, (baseNameCounts.get(name) ?? 0) + 1);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([workspace, items]) => {
+      const sorted = sortSessions(items);
+      const baseName = projectBaseName(workspace);
+      const parentName = projectParentName(workspace);
+      return {
+        workspace,
+        label:
+          (baseNameCounts.get(baseName) ?? 0) > 1 && parentName
+            ? `${parentName}/${baseName}`
+            : baseName,
+        sessions: sorted,
+        updatedAt: sorted.reduce(
+          (latest, session) =>
+            session.updated_at > latest ? session.updated_at : latest,
+          ""
+        ),
+      };
+    })
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 });
 </script>
 
@@ -168,73 +192,87 @@ const groups = computed(() => {
                 <span>新建对话</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            <SessionSidebarItem
+              v-for="session in ungroupedSessions"
+              :key="session.id"
+              :session="session"
+              :active="session.id === activeId"
+              :running="isRunning(session.id)"
+              @select="emit('select', $event)"
+              @rename="(id, value) => emit('rename', id, value)"
+              @pin="(id, value) => emit('pin', id, value)"
+              @delete="onDelete"
+            />
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarGroup v-for="[label, items] in groups" :key="label" class="p-2 pt-1">
-        <SidebarGroupLabel class="h-6 text-[11px]">{{ label }}</SidebarGroupLabel>
-        <SidebarGroupContent>
-          <SidebarMenu>
-            <SidebarMenuItem
-              v-for="s in items"
-              :key="s.id"
-              class="group/menu-item"
+      <SidebarGroup v-if="projectGroups.length" class="gap-1 p-2 pt-3">
+        <SidebarGroupLabel class="h-6 px-2 text-[11px]">
+          项目
+        </SidebarGroupLabel>
+        <SidebarGroupContent class="space-y-2">
+          <div
+            v-for="project in projectGroups"
+            :key="project.workspace"
+            class="min-w-0"
+          >
+            <div
+              :class="[
+                'group/project flex h-8 min-w-0 items-center rounded-md transition-colors',
+                projectIsActive(project)
+                  ? 'bg-sidebar-accent/70 text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
+              ]"
             >
-              <SidebarMenuButton
-                :is-active="s.id === activeId"
-                :tooltip="title(s)"
-                @click="emit('select', s.id)"
+              <button
+                type="button"
+                class="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left text-sm font-medium"
+                :title="project.workspace"
+                :aria-expanded="!collapsedProjects.has(project.workspace)"
+                @click="toggleProject(project.workspace)"
               >
-                <MessageSquareIcon />
-                <input
-                  v-if="editingId === s.id"
-                  ref="editInput"
-                  v-model="editingText"
-                  class="w-full bg-transparent outline-none"
-                  @click.stop
-                  @keydown.enter.prevent="commitRename"
-                  @keydown.esc.prevent="cancelRename"
-                  @blur="commitRename"
+                <ChevronRightIcon
+                  v-if="collapsedProjects.has(project.workspace)"
+                  class="size-3.5 shrink-0 text-sidebar-foreground/60"
                 />
-                <span
+                <ChevronDownIcon
                   v-else
-                  class="min-w-0 flex-1 truncate"
-                  @dblclick.stop="startRename(s)"
-                  >{{ title(s) }}</span
-                >
-                <span
-                  v-if="editingId !== s.id"
-                  class="relative flex h-6 w-12 shrink-0 items-center justify-end"
-                >
-                  <Loader2Icon
-                    v-if="isRunning(s.id)"
-                    class="mr-1 size-3.5 animate-spin text-primary transition-opacity group-hover/menu-item:opacity-0"
-                    aria-label="AI 正在运行"
-                  />
-                  <span
-                    class="absolute right-0 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/menu-item:opacity-100"
-                  >
-                    <button
-                      class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                      :title="s.pinned ? '取消置顶' : '置顶'"
-                      @click="onPin(s, $event)"
-                    >
-                      <PinIcon v-if="!s.pinned" class="size-3.5" />
-                      <PinOffIcon v-else class="size-3.5 text-primary" />
-                    </button>
-                    <button
-                      class="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/15 hover:text-destructive"
-                      title="删除"
-                      @click="onDelete(s, $event)"
-                    >
-                      <Trash2Icon class="size-3.5" />
-                    </button>
-                  </span>
-                </span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+                  class="size-3.5 shrink-0 text-sidebar-foreground/60"
+                />
+                <FolderIcon class="size-4 shrink-0" />
+                <span class="truncate">{{ project.label }}</span>
+              </button>
+              <button
+                type="button"
+                class="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                :title="`在 ${project.label} 中新建对话`"
+                :aria-label="`在 ${project.label} 中新建对话`"
+                @click="newProjectSession(project.workspace)"
+              >
+                <PlusIcon class="size-3.5" />
+              </button>
+            </div>
+
+            <div
+              v-if="!collapsedProjects.has(project.workspace)"
+              class="ml-[18px] border-l border-sidebar-border pb-1 pl-2 pt-1"
+            >
+              <SidebarMenu>
+                <SessionSidebarItem
+                  v-for="session in project.sessions"
+                  :key="session.id"
+                  :session="session"
+                  :active="session.id === activeId"
+                  :running="isRunning(session.id)"
+                  @select="emit('select', $event)"
+                  @rename="(id, value) => emit('rename', id, value)"
+                  @pin="(id, value) => emit('pin', id, value)"
+                  @delete="onDelete"
+                />
+              </SidebarMenu>
+            </div>
+          </div>
         </SidebarGroupContent>
       </SidebarGroup>
       <p

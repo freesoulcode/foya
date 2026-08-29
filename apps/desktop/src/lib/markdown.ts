@@ -1,4 +1,5 @@
 import { Marked, type Tokens } from "marked";
+import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
 
 import javascript from "highlight.js/lib/languages/javascript";
@@ -55,7 +56,7 @@ import plaintext from "highlight.js/lib/languages/plaintext";
   plaintext,
 ].forEach((lang) => hljs.registerLanguage(lang.name, lang));
 
-function highlightCode(code: string, lang?: string): string {
+export function highlightCode(code: string, lang?: string): string {
   if (lang && hljs.getLanguage(lang)) {
     try {
       return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
@@ -117,5 +118,6 @@ marked.use({
 });
 
 export function renderMarkdown(src: string): string {
-  return marked.parse(src, { async: false }) as string;
+  const html = marked.parse(src, { async: false }) as string;
+  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 }

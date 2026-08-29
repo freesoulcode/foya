@@ -13,6 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider/openai"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -33,6 +34,7 @@ func New(cfg config.Config) *App {
 	sessions := session.NewMemManager()
 	log := state.NewMemLog()
 	bus := broker.New[event.Event]()
+	terminalManager := terminal.NewManager()
 
 	// 审批网关与工具注册表。
 	gw := approval.NewGateway(bus, log)
@@ -45,7 +47,17 @@ func New(cfg config.Config) *App {
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
 
-	be := backend.New(sessions, log, bus, engine, gw, buildProvider, cfg.Provider, cfg.DataDir)
+	be := backend.New(
+		sessions,
+		log,
+		bus,
+		engine,
+		gw,
+		terminalManager,
+		buildProvider,
+		cfg.Provider,
+		cfg.DataDir,
+	)
 	return &App{cfg: cfg, backend: be}
 }
 

@@ -24,7 +24,7 @@ export interface CreateSessionOptions {
   approval_mode?: string;
 }
 
-// 局部更新会话的可变字段(undefined 表示不变)。
+// 局部更新会话配置(undefined 表示不变)。workspace 绑定后不可更换。
 export interface UpdateSessionPatch {
   model?: string;
   workspace?: string;
@@ -82,6 +82,37 @@ export interface CompactSessionResult {
 export interface ModelCatalog {
   models: string[];
   context_windows: Record<string, number>;
+}
+
+export interface TerminalResource {
+  ref: string;
+  session_id: string;
+  running: boolean;
+  exit_code?: number;
+  buffer?: string;
+  seq: number;
+}
+
+export interface TerminalDataEvent {
+  session_id: string;
+  ref: string;
+  seq: number;
+  data?: string;
+  exited?: boolean;
+  exit_code?: number;
+}
+
+export interface BrowserViewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ProjectEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
 }
 
 // 审批档位(与 Go approval.Mode 对齐)。
@@ -146,6 +177,29 @@ export const api = {
 
   pickFolder: () =>
     open({ directory: true, multiple: false, title: "选择工作文件夹" }),
+
+  listProjectFiles: (workspace: string) =>
+    invoke<string>("list_project_files", { workspace }).then(
+      (result) => (JSON.parse(result) as ProjectEntry[]) ?? []
+    ),
+
+  readProjectFile: (workspace: string, path: string) =>
+    invoke<string>("read_project_file", { workspace, path }),
+
+  createProjectFile: (workspace: string, path: string) =>
+    invoke<string>("create_project_file", { workspace, path }),
+
+  createProjectDirectory: (workspace: string, path: string) =>
+    invoke<string>("create_project_directory", { workspace, path }),
+
+  renameProjectEntry: (workspace: string, path: string, newName: string) =>
+    invoke<string>("rename_project_entry", { workspace, path, newName }),
+
+  deleteProjectEntry: (workspace: string, path: string) =>
+    invoke("delete_project_entry", { workspace, path }),
+
+  resolveProjectPath: (workspace: string, path = "") =>
+    invoke<string>("resolve_project_path", { workspace, path }),
 
   listSessions: () =>
     invoke<string>("list_sessions").then((r) => (JSON.parse(r) as Session[]) ?? []),
@@ -239,6 +293,70 @@ export const api = {
     channel.onmessage = onEvent;
     return invoke("subscribe_events", { sessionId, channel });
   },
+
+  startTerminal: (sessionId: string, cols: number, rows: number) =>
+    invoke<string>("start_terminal", { sessionId, cols, rows }).then(
+      (r) => JSON.parse(r) as TerminalResource
+    ),
+
+  attachTerminal: (sessionId: string, terminalRef: string) =>
+    invoke<string>("attach_terminal", { sessionId, terminalRef }).then(
+      (r) => JSON.parse(r) as TerminalResource
+    ),
+
+  writeTerminal: (sessionId: string, terminalRef: string, input: string) =>
+    invoke("write_terminal", { sessionId, terminalRef, input }),
+
+  resizeTerminal: (
+    sessionId: string,
+    terminalRef: string,
+    cols: number,
+    rows: number
+  ) => invoke("resize_terminal", { sessionId, terminalRef, cols, rows }),
+
+  stopTerminal: (sessionId: string, terminalRef: string) =>
+    invoke("stop_terminal", { sessionId, terminalRef }),
+
+  subscribeTerminal: (
+    sessionId: string,
+    terminalRef: string,
+    after: number,
+    onEvent: (data: string) => void
+  ) => {
+    const channel = new Channel<string>();
+    channel.onmessage = onEvent;
+    return invoke("subscribe_terminal", {
+      sessionId,
+      terminalRef,
+      after,
+      channel,
+    });
+  },
+
+  setBrowserViewport: (
+    browserId: string,
+    viewport: BrowserViewport | null
+  ) => invoke("set_browser_viewport", { browserId, viewport }),
+
+  navigateBrowser: (
+    browserId: string,
+    url: string,
+    viewport: BrowserViewport
+  ) => invoke("navigate_browser", { browserId, url, viewport }),
+
+  browserBack: (browserId: string) => invoke("browser_back", { browserId }),
+
+  browserForward: (browserId: string) =>
+    invoke("browser_forward", { browserId }),
+
+  browserReload: (browserId: string) =>
+    invoke("browser_reload", { browserId }),
+
+  hideBrowser: (browserId: string) =>
+    invoke("hide_browser", { browserId }),
+
+  closeBrowser: (browserId: string) =>
+    invoke("close_browser", { browserId }),
 
   // 回执审批决策(批准/拒绝)。
   resolveApproval: (sessionId: string, requestId: string, decision: string) =>

@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { useKernel } from "@/composables/useKernel";
 import { usePlatform } from "@/composables/usePlatform";
+import { useWorkbar } from "@/composables/useWorkbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import type { ApprovalMode, UpdateSessionPatch } from "@/lib/api";
 import AppTitleBar from "@/components/AppTitleBar.vue";
@@ -12,8 +13,10 @@ import Composer from "@/components/chat/Composer.vue";
 import SettingsDialog from "@/components/chat/SettingsDialog.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
+import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
 
 const { isMac } = usePlatform();
+const { open: workbarOpen } = useWorkbar();
 
 const {
   ready,
@@ -32,10 +35,13 @@ const {
   messages,
   queuedMessages,
   contextUsage,
+  pendingApprovals,
+  pendingHistoryEdit,
   connect,
   newSession,
   select,
   send,
+  ensureSession,
   editSentMessage,
   cancelTurn,
   updateSession,
@@ -93,6 +99,9 @@ const composerModel = computed(() =>
 const composerWorkspace = computed(() =>
   isDraft.value ? draft.workspace : activeSession.value?.workspace ?? ""
 );
+const workspaceLocked = computed(
+  () => !isDraft.value && Boolean(activeSession.value?.workspace)
+);
 const composerApproval = computed<ApprovalMode>(
   () =>
     (isDraft.value
@@ -108,6 +117,12 @@ const composerContextUsage = computed(() =>
 const activeCompacting = computed(
   () => Boolean(activeId.value && compactingSessions.value[activeId.value])
 );
+const workbarObscured = computed(
+  () =>
+    settingsOpen.value ||
+    Object.keys(pendingApprovals.value).length > 0 ||
+    pendingHistoryEdit.value !== null
+);
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelChange(value: string) {
@@ -116,9 +131,14 @@ function onModelChange(value: string) {
 }
 
 function onWorkspaceChange(value: string) {
+  if (workspaceLocked.value) return;
   if (isDraft.value) draft.workspace = value;
   else if (activeId.value)
     void updateSession(activeId.value, { workspace: value });
+}
+
+function onNewSession(workspace?: string) {
+  newSession(workspace);
 }
 
 function onApprovalChange(value: ApprovalMode) {
@@ -155,7 +175,7 @@ onMounted(connect);
       :running="runningSessions"
       :active-id="activeId"
       :is-draft="isDraft"
-      @new="newSession"
+      @new="onNewSession"
       @select="select"
       @rename="onRename"
       @pin="onPin"
@@ -163,56 +183,68 @@ onMounted(connect);
       @open-settings="settingsOpen = true"
     />
 
-    <SidebarInset class="min-w-0">
-      <AppTitleBar :session="activeSession" @rename="onRename" />
+    <SidebarInset class="min-w-0 flex-row overflow-hidden">
+      <div class="flex min-w-[350px] flex-1 flex-col">
+        <AppTitleBar :session="activeSession" @rename="onRename" />
 
-      <main class="flex min-h-0 flex-1 flex-col">
-        <div class="flex min-h-0 flex-1">
-          <aside
-            v-if="turnPoints.length > 3"
-            class="hidden w-8 shrink-0 items-center justify-center pl-0.5 md:flex"
-          >
-            <Timeline
-              :turns="turnPoints"
-              :active="activeTurn"
-              @select="onTurnSelect"
+        <main class="flex min-w-0 flex-1 flex-col">
+          <div class="flex min-h-0 flex-1">
+            <aside
+              v-if="turnPoints.length > 3"
+              class="hidden w-8 shrink-0 items-center justify-center pl-0.5 md:flex"
+            >
+              <Timeline
+                :turns="turnPoints"
+                :active="activeTurn"
+                @select="onTurnSelect"
+              />
+            </aside>
+            <MessageList
+              ref="messageListRef"
+              v-model:active-turn="activeTurn"
+              :messages="messages"
+              :streaming="streaming"
+              :compacting="activeCompacting"
+              :editable="queuedMessages.length === 0"
+              @edit-message="editSentMessage"
             />
-          </aside>
-          <MessageList
-            ref="messageListRef"
-            v-model:active-turn="activeTurn"
-            :messages="messages"
+          </div>
+          <Composer
+            :disabled="!ready"
             :streaming="streaming"
-            :compacting="activeCompacting"
-            :editable="queuedMessages.length === 0"
-            @edit-message="editSentMessage"
+            :model="composerModel"
+            :workspace="composerWorkspace"
+            :workspace-locked="workspaceLocked"
+            :approval="composerApproval"
+            :available-models="availableModels"
+            :models-loading="modelsLoading"
+            :models-error="modelsError"
+            :queued-messages="queuedMessages"
+            :context-usage="composerContextUsage"
+            :context-window="composerContextWindow"
+            :has-session="!isDraft"
+            @send="send"
+            @stop="cancelTurn"
+            @edit-queued="editQueuedMessage"
+            @reorder-queued="reorderQueuedMessage"
+            @dispatch-queued="dispatchQueuedMessage"
+            @delete-queued="deleteQueuedMessage"
+            @update:model="onModelChange"
+            @update:workspace="onWorkspaceChange"
+            @update:approval="onApprovalChange"
+            @refresh-models="refreshModels"
           />
-        </div>
-        <Composer
-          :disabled="!ready"
-          :streaming="streaming"
-          :model="composerModel"
-          :workspace="composerWorkspace"
-          :approval="composerApproval"
-          :available-models="availableModels"
-          :models-loading="modelsLoading"
-          :models-error="modelsError"
-          :queued-messages="queuedMessages"
-          :context-usage="composerContextUsage"
-          :context-window="composerContextWindow"
-          :has-session="!isDraft"
-          @send="send"
-          @stop="cancelTurn"
-          @edit-queued="editQueuedMessage"
-          @reorder-queued="reorderQueuedMessage"
-          @dispatch-queued="dispatchQueuedMessage"
-          @delete-queued="deleteQueuedMessage"
-          @update:model="onModelChange"
-          @update:workspace="onWorkspaceChange"
-          @update:approval="onApprovalChange"
-          @refresh-models="refreshModels"
-        />
-      </main>
+        </main>
+      </div>
+
+      <WorkbarPanel
+        v-show="workbarOpen"
+        :session-id="activeId || undefined"
+        :workspace="composerWorkspace"
+        :messages="messages"
+        :obscured="workbarObscured"
+        :ensure-session="ensureSession"
+      />
     </SidebarInset>
 
     <SettingsDialog v-model:open="settingsOpen" />

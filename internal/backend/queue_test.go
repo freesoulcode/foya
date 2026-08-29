@@ -16,6 +16,7 @@ import (
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -63,7 +64,17 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 	gateway := approval.NewGateway(bus, log)
 	prov := newControlledProvider()
 	engine := agent.NewEngine(log, bus, sessions, prov, "test-model", tool.NewRegistry(), gateway)
-	be := New(sessions, log, bus, engine, gateway, nil, config.Provider{}, t.TempDir())
+	be := New(
+		sessions,
+		log,
+		bus,
+		engine,
+		gateway,
+		terminal.NewManager(),
+		nil,
+		config.Provider{},
+		t.TempDir(),
+	)
 	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model", ApprovalMode: "ask"})
 	if err != nil {
 		t.Fatal(err)

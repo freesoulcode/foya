@@ -22,6 +22,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/terminal"
 )
 
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
@@ -34,6 +35,7 @@ type Backend struct {
 	bus      *broker.Broker[event.Event]
 	engine   *agent.Engine
 	approval approval.Gateway
+	terminal terminal.Manager
 
 	buildProvider ProviderBuilder
 	dataDir       string
@@ -49,6 +51,7 @@ func New(
 	bus *broker.Broker[event.Event],
 	engine *agent.Engine,
 	gw approval.Gateway,
+	terminalManager terminal.Manager,
 	build ProviderBuilder,
 	provCfg config.Provider,
 	dataDir string,
@@ -59,6 +62,7 @@ func New(
 		bus:           bus,
 		engine:        engine,
 		approval:      gw,
+		terminal:      terminalManager,
 		buildProvider: build,
 		dataDir:       dataDir,
 		provCfg:       provCfg,
@@ -114,6 +118,7 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		return session.ErrNotFound
 	}
 	b.stopSessionAndWait(id, deleteTurnGrace)
+	b.terminal.CloseSession(id)
 	if err := b.sessions.Delete(id); err != nil {
 		return err
 	}
@@ -151,6 +156,51 @@ func (b *Backend) CancelTurn(sessionID string) {
 func (b *Backend) ResolveApproval(requestID string, decision string) {
 	d := approval.Decision(decision)
 	b.approval.Resolve(requestID, d)
+}
+
+// StartTerminal starts an interactive shell in the session workspace.
+func (b *Backend) StartTerminal(
+	ctx context.Context,
+	sessionID string,
+	cols, rows uint16,
+) (terminal.Snapshot, error) {
+	s, ok := b.sessions.Get(sessionID)
+	if !ok {
+		return terminal.Snapshot{}, session.ErrNotFound
+	}
+	return b.terminal.Start(ctx, sessionID, s.Workspace, cols, rows)
+}
+
+// AttachTerminal returns the current recoverable terminal snapshot.
+func (b *Backend) AttachTerminal(sessionID, ref string) (terminal.Snapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return terminal.Snapshot{}, session.ErrNotFound
+	}
+	return b.terminal.Attach(sessionID, ref)
+}
+
+// WriteTerminal forwards user input to an interactive shell.
+func (b *Backend) WriteTerminal(sessionID, ref, input string) error {
+	return b.terminal.Write(sessionID, ref, input)
+}
+
+// ResizeTerminal updates the PTY geometry.
+func (b *Backend) ResizeTerminal(sessionID, ref string, cols, rows uint16) error {
+	return b.terminal.Resize(sessionID, ref, cols, rows)
+}
+
+// StopTerminal terminates one interactive shell.
+func (b *Backend) StopTerminal(sessionID, ref string) error {
+	return b.terminal.Stop(sessionID, ref)
+}
+
+// SubscribeTerminal streams ordered PTY output independently from chat events.
+func (b *Backend) SubscribeTerminal(
+	ctx context.Context,
+	sessionID, ref string,
+	after uint64,
+) (<-chan terminal.DataEvent, error) {
+	return b.terminal.Subscribe(ctx, sessionID, ref, after)
 }
 
 // Subscribe 订阅某会话的事件流。
