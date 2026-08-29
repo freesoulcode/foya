@@ -21,7 +21,9 @@ func TestUpdateLocksBoundWorkspace(t *testing.T) {
 
 	_, err = manager.Update(
 		created.ID,
+		nil,
 		stringPointer("model-b"),
+		nil,
 		stringPointer("/projects/beta"),
 		nil,
 	)
@@ -39,7 +41,9 @@ func TestUpdateLocksBoundWorkspace(t *testing.T) {
 
 	updated, err := manager.Update(
 		created.ID,
+		nil,
 		stringPointer("model-b"),
+		nil,
 		stringPointer("/projects/alpha"),
 		nil,
 	)
@@ -61,6 +65,8 @@ func TestUpdateAllowsFirstWorkspaceBinding(t *testing.T) {
 	updated, err := manager.Update(
 		created.ID,
 		nil,
+		nil,
+		nil,
 		stringPointer("/projects/alpha"),
 		nil,
 	)
@@ -71,8 +77,36 @@ func TestUpdateAllowsFirstWorkspaceBinding(t *testing.T) {
 		t.Fatalf("Workspace = %q, want /projects/alpha", updated.Workspace)
 	}
 
-	_, err = manager.Update(created.ID, nil, stringPointer(""), nil)
+	_, err = manager.Update(created.ID, nil, nil, nil, stringPointer(""), nil)
 	if !errors.Is(err, ErrWorkspaceLocked) {
 		t.Fatalf("Clear workspace error = %v, want %v", err, ErrWorkspaceLocked)
+	}
+}
+
+func TestUpdateReasoningEffort(t *testing.T) {
+	manager := NewMemManager()
+	created, err := manager.Create(CreateOptions{Model: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := manager.Update(
+		created.ID,
+		nil,
+		nil,
+		stringPointer(string(ReasoningEffortHigh)),
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ReasoningEffort != ReasoningEffortHigh {
+		t.Fatalf("ReasoningEffort = %q, want %q", updated.ReasoningEffort, ReasoningEffortHigh)
+	}
+
+	_, err = manager.Update(created.ID, nil, nil, stringPointer("maximum"), nil, nil)
+	if !errors.Is(err, ErrInvalidReasoningEffort) {
+		t.Fatalf("invalid effort error = %v, want %v", err, ErrInvalidReasoningEffort)
 	}
 }

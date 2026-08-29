@@ -19,19 +19,23 @@ type SubmitTurnRequest struct {
 // CreateSessionRequest 新建会话时的可选参数。
 // 留空的字段由内核用当前 provider 默认值/默认审批档位填充。
 type CreateSessionRequest struct {
-	Model        string `json:"model,omitempty"`
-	Workspace    string `json:"workspace,omitempty"`
-	ApprovalMode string `json:"approval_mode,omitempty"`
+	ConnectionID    string `json:"connection_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Workspace       string `json:"workspace,omitempty"`
+	ApprovalMode    string `json:"approval_mode,omitempty"`
 }
 
 // UpdateSessionRequest 局部更新会话配置。
 // Workspace 只能首次绑定，已有非空值后不可更换或清空。
 type UpdateSessionRequest struct {
-	Model        *string `json:"model,omitempty"`
-	Workspace    *string `json:"workspace,omitempty"`
-	ApprovalMode *string `json:"approval_mode,omitempty"`
-	Title        *string `json:"title,omitempty"`  // 手动改名;置 TitleIsManual=true
-	Pinned       *bool   `json:"pinned,omitempty"` // 置顶/取消置顶
+	ConnectionID    *string `json:"connection_id,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	Workspace       *string `json:"workspace,omitempty"`
+	ApprovalMode    *string `json:"approval_mode,omitempty"`
+	Title           *string `json:"title,omitempty"`  // 手动改名;置 TitleIsManual=true
+	Pinned          *bool   `json:"pinned,omitempty"` // 置顶/取消置顶
 }
 
 // SubmitTurnResponse 表示消息已直接启动或进入待发送队列。
@@ -67,6 +71,25 @@ type QueueMessageRequest struct {
 type UpdateQueuedMessageRequest struct {
 	Message  *string `json:"message,omitempty"`
 	Position *int    `json:"position,omitempty"`
+}
+
+// ConnectionConfig is the public, redacted Connection representation.
+// APIKey is accepted only on writes; reads expose HasAPIKey instead.
+type ConnectionConfig struct {
+	ID           string `json:"id,omitempty"`
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	AuthKind     string `json:"auth_kind"`
+	BaseURL      string `json:"base_url"`
+	APIKey       string `json:"api_key,omitempty"`
+	HasAPIKey    bool   `json:"has_api_key,omitempty"`
+	DefaultModel string `json:"default_model"`
+	SortOrder    int    `json:"sort_order"`
+}
+
+type ConnectionModelsResponse struct {
+	Models         []string         `json:"models"`
+	ContextWindows map[string]int64 `json:"context_windows,omitempty"`
 }
 
 // ProviderConfig 是 provider 配置的线格式(读写设置界面用)。

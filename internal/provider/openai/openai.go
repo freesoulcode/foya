@@ -135,6 +135,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 		Messages:      toChatMsgs(req.Messages),
 		StreamOptions: oai.ChatCompletionStreamOptionsParam{IncludeUsage: oai.Bool(true)},
 	}
+	if req.ReasoningEffort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
+	}
 	if tools := toChatToolDefs(req.Tools); len(tools) > 0 {
 		params.Tools = tools
 	}
@@ -241,10 +244,14 @@ func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, 
 		return "", fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
 	}
 
-	resp, err := p.client.Chat.Completions.New(ctx, oai.ChatCompletionNewParams{
+	params := oai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(model),
 		Messages: toChatMsgs(req.Messages),
-	})
+	}
+	if req.ReasoningEffort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
+	}
+	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return "", err
 	}

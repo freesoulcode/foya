@@ -25,12 +25,6 @@ type App struct {
 
 // New 按配置装配内核。
 func New(cfg config.Config) *App {
-	// 持久化的 provider 配置优先于环境变量(BYOK):用户在设置界面保存后,
-	// 下次启动自动加载,无需重新 export 环境变量。
-	if saved, ok, err := config.LoadProvider(cfg.DataDir); err == nil && ok {
-		cfg.Provider = saved
-	}
-
 	sessions := session.NewMemManager()
 	log := state.NewMemLog()
 	bus := broker.New[event.Event]()
@@ -58,7 +52,34 @@ func New(cfg config.Config) *App {
 		cfg.Provider,
 		cfg.DataDir,
 	)
+	// Connection catalog takes precedence. Existing installations with only
+	// provider.json or environment variables are migrated into one default
+	// Connection so no configured endpoint is lost.
+	connections := loadConnections(cfg)
+	be.SetConnections(connections)
 	return &App{cfg: cfg, backend: be}
+}
+
+func loadConnections(cfg config.Config) []config.Connection {
+	if saved, ok, err := config.LoadConnections(cfg.DataDir); err == nil && ok {
+		return saved
+	}
+	legacy := cfg.Provider
+	if saved, ok, err := config.LoadProvider(cfg.DataDir); err == nil && ok {
+		legacy = saved
+	}
+	if legacy.BaseURL == "" && legacy.APIKey == "" && legacy.Model == "" {
+		return nil
+	}
+	return []config.Connection{{
+		ID:           "default",
+		Name:         "已导入连接",
+		Kind:         legacy.Kind,
+		AuthKind:     "api_key",
+		BaseURL:      legacy.BaseURL,
+		APIKey:       legacy.APIKey,
+		DefaultModel: legacy.Model,
+	}}
 }
 
 // buildProvider 按配置构造 OpenAI 兼容 provider,返回 provider 与默认模型名。

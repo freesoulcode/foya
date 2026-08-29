@@ -6,7 +6,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 export interface Session {
   id: string;
   phase: string;
+  connection_id: string;
   model: string;
+  reasoning_effort?: ReasoningEffort;
   workspace?: string;
   approval_mode?: string;
   title?: string;
@@ -17,16 +19,23 @@ export interface Session {
   updated_at: string;
 }
 
+// 推理强度与内核 session.ReasoningEffort 对齐。未设置时跟随模型默认值。
+export type ReasoningEffort = "" | "low" | "medium" | "high";
+
 // 新建对话时可由用户指定的选项。
 export interface CreateSessionOptions {
+  connection_id?: string;
   model?: string;
+  reasoning_effort?: ReasoningEffort;
   workspace?: string;
   approval_mode?: string;
 }
 
 // 局部更新会话配置(undefined 表示不变)。workspace 绑定后不可更换。
 export interface UpdateSessionPatch {
+  connection_id?: string;
   model?: string;
+  reasoning_effort?: ReasoningEffort;
   workspace?: string;
   approval_mode?: string;
   title?: string;
@@ -79,9 +88,15 @@ export interface CompactSessionResult {
   estimated_tokens_after: number;
 }
 
-export interface ModelCatalog {
+export interface ConnectionModelCatalog {
   models: string[];
   context_windows: Record<string, number>;
+}
+
+export interface ConnectionModelGroup extends ConnectionConfig {
+  models: string[];
+  context_windows: Record<string, number>;
+  models_error?: string;
 }
 
 export interface TerminalResource {
@@ -151,13 +166,17 @@ export interface ChatMessage {
   error?: boolean;
 }
 
-// provider 配置(与 Go protocol.ProviderConfig 对齐)。
-export interface ProviderConfig {
+// Connection 是一个独立模型账号或端点。API Key 仅在写入时携带。
+export interface ConnectionConfig {
+  id?: string;
+  name: string;
   kind: string;
+  auth_kind: "api_key";
   base_url: string;
-  model: string;
+  default_model: string;
   api_key?: string;
   has_api_key?: boolean;
+  sort_order: number;
 }
 
 export const api = {
@@ -270,21 +289,32 @@ export const api = {
   cancelTurn: (sessionId: string) =>
     invoke("cancel_turn", { sessionId }),
 
-  getProvider: () =>
-    invoke<string>("get_provider").then((r) => JSON.parse(r) as ProviderConfig),
+  listConnections: () =>
+    invoke<string>("list_connections").then(
+      (r) => (JSON.parse(r) as ConnectionConfig[]) ?? []
+    ),
 
-  setProvider: (config: ProviderConfig) =>
-    invoke<string>("set_provider", { config }).then((r) => JSON.parse(r) as ProviderConfig),
+  createConnection: (config: ConnectionConfig) =>
+    invoke<string>("create_connection", { config }).then(
+      (r) => JSON.parse(r) as ConnectionConfig
+    ),
 
-  // 用已配置的 base_url + api_key 拉取 provider 可用模型列表。
-  listModels: () =>
-    invoke<string>("list_models").then(
+  updateConnection: (connectionId: string, config: ConnectionConfig) =>
+    invoke<string>("update_connection", { connectionId, config }).then(
+      (r) => JSON.parse(r) as ConnectionConfig
+    ),
+
+  deleteConnection: (connectionId: string) =>
+    invoke("delete_connection", { connectionId }),
+
+  listConnectionModels: (connectionId: string) =>
+    invoke<string>("list_connection_models", { connectionId }).then(
       (r) => {
-        const result = JSON.parse(r) as Partial<ModelCatalog>;
+        const result = JSON.parse(r) as Partial<ConnectionModelCatalog>;
         return {
           models: result.models ?? [],
           context_windows: result.context_windows ?? {},
-        } satisfies ModelCatalog;
+        } satisfies ConnectionModelCatalog;
       }
     ),
 

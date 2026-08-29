@@ -40,12 +40,16 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 			StreamOptions struct {
 				IncludeUsage bool `json:"include_usage"`
 			} `json:"stream_options"`
+			ReasoningEffort string `json:"reasoning_effort"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
 		if !body.StreamOptions.IncludeUsage {
 			t.Error("stream_options.include_usage was not enabled")
+		}
+		if body.ReasoningEffort != "high" {
+			t.Fatalf("reasoning_effort = %q, want high", body.ReasoningEffort)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -59,7 +63,8 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 
 	p := New(Config{BaseURL: server.URL + "/v1", APIKey: "test", Model: "test-model"})
 	stream, err := p.Stream(context.Background(), provider.Request{
-		Messages: []message.Message{{Role: message.RoleUser, Content: "hello"}},
+		ReasoningEffort: "high",
+		Messages:        []message.Message{{Role: message.RoleUser, Content: "hello"}},
 	})
 	if err != nil {
 		t.Fatal(err)

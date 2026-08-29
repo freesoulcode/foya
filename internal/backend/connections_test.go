@@ -1,0 +1,108 @@
+package backend
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/freesoulcode/foya/internal/agent"
+	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/provider"
+	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/terminal"
+	"github.com/freesoulcode/foya/internal/tool"
+)
+
+func TestSessionBindsConfiguredConnection(t *testing.T) {
+	sessions := session.NewMemManager()
+	log := state.NewMemLog()
+	bus := broker.New[event.Event]()
+	gateway := approval.NewGateway(bus, log)
+	fallback := newControlledProvider()
+	engine := agent.NewEngine(log, bus, sessions, fallback, "fallback", tool.NewRegistry(), gateway)
+	be := New(
+		sessions, log, bus, engine, gateway, terminal.NewManager(),
+		func(connection config.Provider) (provider.Provider, string) {
+			return fallback, connection.Model
+		},
+		config.Provider{}, t.TempDir(),
+	)
+	be.SetConnections([]config.Connection{
+		{ID: "openai", Name: "OpenAI", Kind: "openai", AuthKind: "api_key", DefaultModel: "gpt-5"},
+		{ID: "deepseek", Name: "DeepSeek", Kind: "openai", AuthKind: "api_key", DefaultModel: "deepseek-chat"},
+	})
+
+	created, err := be.CreateSession(session.CreateOptions{ConnectionID: "deepseek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ConnectionID != "deepseek" || created.Model != "deepseek-chat" {
+		t.Fatalf("session target = %#v", created)
+	}
+
+	if err := be.DeleteConnection("deepseek"); !errors.Is(err, ErrConnectionInUse) {
+		t.Fatalf("delete active connection error = %v, want %v", err, ErrConnectionInUse)
+	}
+
+	if _, err := be.UpdateSession(
+		context.Background(),
+		created.ID,
+		stringPointer("openai"),
+		stringPointer("gpt-5"),
+		nil,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	updated, ok := sessions.Get(created.ID)
+	if !ok || updated.ConnectionID != "openai" || updated.Model != "gpt-5" {
+		t.Fatalf("updated session target = %#v", updated)
+	}
+
+	if err := be.DeleteConnection("deepseek"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConnectionOrderSelectsNewSessionConnection(t *testing.T) {
+	sessions := session.NewMemManager()
+	log := state.NewMemLog()
+	bus := broker.New[event.Event]()
+	gateway := approval.NewGateway(bus, log)
+	fallback := newControlledProvider()
+	engine := agent.NewEngine(log, bus, sessions, fallback, "fallback", tool.NewRegistry(), gateway)
+	be := New(
+		sessions, log, bus, engine, gateway, terminal.NewManager(),
+		func(connection config.Provider) (provider.Provider, string) {
+			return fallback, connection.Model
+		},
+		config.Provider{}, t.TempDir(),
+	)
+	be.SetConnections([]config.Connection{
+		{ID: "openai", Name: "OpenAI", AuthKind: "api_key", DefaultModel: "gpt-5"},
+		{ID: "deepseek", Name: "DeepSeek", AuthKind: "api_key", DefaultModel: "deepseek-chat"},
+	})
+
+	if _, err := be.UpdateConnection("deepseek", config.Connection{SortOrder: 0}); err != nil {
+		t.Fatal(err)
+	}
+	ordered := be.Connections()
+	if len(ordered) != 2 || ordered[0].ID != "deepseek" || ordered[0].SortOrder != 0 {
+		t.Fatalf("connection order = %#v", ordered)
+	}
+
+	created, err := be.CreateSession(session.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ConnectionID != "deepseek" || created.Model != "deepseek-chat" {
+		t.Fatalf("new session target = %#v", created)
+	}
+}
+
+func stringPointer(value string) *string { return &value }

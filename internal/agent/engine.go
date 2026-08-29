@@ -66,11 +66,14 @@ type Engine struct {
 	tools    tool.Registry
 	approval approval.Gateway
 
-	mu            sync.RWMutex
-	provider      provider.Provider
-	model         string
-	modelWindows  map[string]int64
-	catalogLoaded bool
+	mu       sync.RWMutex
+	provider provider.Provider
+	model    string
+	// providerResolver binds a Session to its configured Connection. It is
+	// optional so focused engine tests can continue using the default provider.
+	providerResolver func(sessionID string) (provider.Provider, string)
+	modelWindows     map[string]int64
+	catalogLoaded    bool
 
 	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
@@ -148,6 +151,14 @@ func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	e.catalogLoaded = false
 }
 
+// SetProviderResolver installs the Connection-aware provider lookup owned by
+// Backend. Each running Session resolves its own provider and default model.
+func (e *Engine) SetProviderResolver(resolve func(sessionID string) (provider.Provider, string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.providerResolver = resolve
+}
+
 // SetMaxSteps 设置工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 // 供 CLI / eval 等非交互场景显式限制;交互式桌面不应调用。
 func (e *Engine) SetMaxSteps(n int) {
@@ -156,10 +167,17 @@ func (e *Engine) SetMaxSteps(n int) {
 	e.maxSteps = n
 }
 
-func (e *Engine) currentProvider() (provider.Provider, string) {
+func (e *Engine) currentProvider(sessionID string) (provider.Provider, string) {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.provider, e.model
+	resolve := e.providerResolver
+	p, model := e.provider, e.model
+	e.mu.RUnlock()
+	if resolve != nil {
+		if resolved, defaultModel := resolve(sessionID); resolved != nil {
+			return resolved, defaultModel
+		}
+	}
+	return p, model
 }
 
 func (e *Engine) currentModel(sessionID string) string {
@@ -168,9 +186,8 @@ func (e *Engine) currentModel(sessionID string) string {
 			return s.Model
 		}
 	}
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.model
+	_, model := e.currentProvider(sessionID)
+	return model
 }
 
 func (e *Engine) contextWindow(ctx context.Context, model string) int64 {
@@ -195,7 +212,7 @@ func (e *Engine) contextWindow(ctx context.Context, model string) int64 {
 
 // ListModels 列出当前 provider 可用的模型。
 func (e *Engine) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
-	prov, _ := e.currentProvider()
+	prov, _ := e.currentProvider("")
 	lister, ok := prov.(provider.ModelLister)
 	if !ok {
 		return nil, fmt.Errorf("当前 provider 不支持列出模型")
@@ -316,7 +333,7 @@ func (e *Engine) compactHistory(
 	if !ok {
 		return nil, ErrNothingToCompact
 	}
-	prov, _ := e.currentProvider()
+	prov, _ := e.currentProvider(sessionID)
 	completer, ok := prov.(provider.Completer)
 	if !ok {
 		return nil, ErrCompactionUnavailable
@@ -340,7 +357,11 @@ func (e *Engine) compactHistory(
 		Content: "Produce the continuation checkpoint now.",
 	})
 
-	summary, err := completer.Complete(ctx, provider.Request{Model: model, Messages: input})
+	summary, err := completer.Complete(ctx, provider.Request{
+		Model:           model,
+		ReasoningEffort: e.resolveReasoningEffort(sessionID),
+		Messages:        input,
+	})
 	if err != nil {
 		e.emit(context.WithoutCancel(ctx), sessionID, event.KindCompactionFailed, err.Error(), true)
 		return nil, err
@@ -537,11 +558,12 @@ Inspect the current workspace before modifying files; do not assume it matches t
 			return err
 		}
 
-		prov, _ := e.currentProvider()
+		prov, _ := e.currentProvider(sessionID)
 		stream, err := prov.Stream(ctx, provider.Request{
-			Model:    model,
-			Messages: messages,
-			Tools:    toolDefs,
+			Model:           model,
+			ReasoningEffort: e.resolveReasoningEffort(sessionID),
+			Messages:        messages,
+			Tools:           toolDefs,
 		})
 		if err != nil {
 			// ctx 取消(用户点停止)不算错误,只安静结束回合。
@@ -826,6 +848,15 @@ func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
 	return approval.ModeAsk
 }
 
+// resolveReasoningEffort returns the Session-level override. The empty value
+// deliberately leaves the provider's model default untouched.
+func (e *Engine) resolveReasoningEffort(sessionID string) string {
+	if s, ok := e.sessions.Get(sessionID); ok {
+		return string(s.ReasoningEffort)
+	}
+	return ""
+}
+
 // emit 追加事件到日志并广播。
 func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, payload any, mustDeliver bool) {
 	ev := event.Event{Kind: kind, Session: sessionID, Time: time.Now(), Payload: payload}
@@ -851,11 +882,11 @@ func hasUserMessage(msgs []message.Message) bool {
 
 // generateTitle 在后台生成会话标题。
 func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
-	prov, _ := e.currentProvider()
+	prov, _ := e.currentProvider(sessionID)
 	model := e.currentModel(sessionID)
 	var generated string
 	if c, ok := prov.(provider.Completer); ok {
-		generated = title.Generate(ctx, c, model, userText)
+		generated = title.Generate(ctx, c, model, e.resolveReasoningEffort(sessionID), userText)
 	}
 	if generated == "" {
 		generated = title.Fallback(userText)

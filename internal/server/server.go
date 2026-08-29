@@ -37,6 +37,11 @@ func New(cfg config.Config, be *backend.Backend) *Server {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
+	s.mux.HandleFunc("GET /connections", s.handleListConnections)
+	s.mux.HandleFunc("POST /connections", s.handleCreateConnection)
+	s.mux.HandleFunc("PATCH /connections/{id}", s.handleUpdateConnection)
+	s.mux.HandleFunc("DELETE /connections/{id}", s.handleDeleteConnection)
+	s.mux.HandleFunc("GET /connections/{id}/models", s.handleListConnectionModels)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
@@ -60,9 +65,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
 	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
-	s.mux.HandleFunc("GET /config/provider", s.handleGetProvider)
-	s.mux.HandleFunc("PUT /config/provider", s.handleSetProvider)
-	s.mux.HandleFunc("GET /config/models", s.handleListModels)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -70,28 +72,33 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleCreateSession 新建会话。可在请求体中指定模型、工作目录、审批档位;
-// 未指定模型时回退到当前 provider 的默认模型,未指定审批档位时默认为 ask。
+// handleCreateSession 新建会话。未指定模型时回退到默认 Connection 的模型。
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req protocol.CreateSessionRequest
 	// 兼容空 body(旧客户端):忽略解码错误。
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	model := req.Model
-	if model == "" {
-		model = s.backend.ProviderConfig().Model
-	}
 	approval := req.ApprovalMode
 	if approval == "" {
 		approval = "ask"
 	}
 
 	sess, err := s.backend.CreateSession(session.CreateOptions{
-		Model:        model,
-		Workspace:    req.Workspace,
-		ApprovalMode: approval,
+		ConnectionID:    req.ConnectionID,
+		Model:           req.Model,
+		ReasoningEffort: session.ReasoningEffort(req.ReasoningEffort),
+		Workspace:       req.Workspace,
+		ApprovalMode:    approval,
 	})
 	if err != nil {
+		if errors.Is(err, session.ErrInvalidReasoningEffort) {
+			writeErr(w, http.StatusBadRequest, "invalid_reasoning_effort", err.Error())
+			return
+		}
+		if errors.Is(err, backend.ErrConnectionNotFound) {
+			writeErr(w, http.StatusBadRequest, "connection_not_found", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "create_failed", err.Error())
 		return
 	}
@@ -133,7 +140,15 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 其余字段走局部更新;无字段时直接返回当前会话。
-	sess, err := s.backend.UpdateSession(id, req.Model, req.Workspace, req.ApprovalMode)
+	sess, err := s.backend.UpdateSession(
+		r.Context(),
+		id,
+		req.ConnectionID,
+		req.Model,
+		req.ReasoningEffort,
+		req.Workspace,
+		req.ApprovalMode,
+	)
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
@@ -143,10 +158,133 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusConflict, "workspace_locked", err.Error())
 			return
 		}
+		if errors.Is(err, session.ErrInvalidReasoningEffort) {
+			writeErr(w, http.StatusBadRequest, "invalid_reasoning_effort", err.Error())
+			return
+		}
+		if errors.Is(err, backend.ErrConnectionNotFound) {
+			writeErr(w, http.StatusBadRequest, "connection_not_found", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
+}
+
+func publicConnection(connection config.Connection) protocol.ConnectionConfig {
+	return protocol.ConnectionConfig{
+		ID:           connection.ID,
+		Name:         connection.Name,
+		Kind:         connection.Kind,
+		AuthKind:     connection.AuthKind,
+		BaseURL:      connection.BaseURL,
+		HasAPIKey:    connection.APIKey != "",
+		DefaultModel: connection.DefaultModel,
+		SortOrder:    connection.SortOrder,
+	}
+}
+
+func toConnection(input protocol.ConnectionConfig) config.Connection {
+	return config.Connection{
+		ID:           input.ID,
+		Name:         input.Name,
+		Kind:         input.Kind,
+		AuthKind:     input.AuthKind,
+		BaseURL:      input.BaseURL,
+		APIKey:       input.APIKey,
+		DefaultModel: input.DefaultModel,
+		SortOrder:    input.SortOrder,
+	}
+}
+
+func (s *Server) handleListConnections(w http.ResponseWriter, _ *http.Request) {
+	connections := s.backend.Connections()
+	result := make([]protocol.ConnectionConfig, 0, len(connections))
+	for _, connection := range connections {
+		result = append(result, publicConnection(connection))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) {
+	var input protocol.ConnectionConfig
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	connection, err := s.backend.CreateConnection(toConnection(input))
+	if err != nil {
+		if errors.Is(err, backend.ErrUnsupportedAuth) {
+			writeErr(w, http.StatusBadRequest, "unsupported_auth_kind", err.Error())
+			return
+		}
+		writeErr(w, http.StatusConflict, "connection_create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, publicConnection(connection))
+}
+
+func (s *Server) handleUpdateConnection(w http.ResponseWriter, r *http.Request) {
+	var input protocol.ConnectionConfig
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	connection, err := s.backend.UpdateConnection(r.PathValue("id"), toConnection(input))
+	if err != nil {
+		if errors.Is(err, backend.ErrConnectionNotFound) {
+			writeErr(w, http.StatusNotFound, "connection_not_found", err.Error())
+			return
+		}
+		if errors.Is(err, backend.ErrUnsupportedAuth) {
+			writeErr(w, http.StatusBadRequest, "unsupported_auth_kind", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "connection_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, publicConnection(connection))
+}
+
+func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.DeleteConnection(r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, backend.ErrConnectionNotFound):
+			writeErr(w, http.StatusNotFound, "connection_not_found", err.Error())
+		case errors.Is(err, backend.ErrConnectionInUse):
+			writeErr(w, http.StatusConflict, "connection_in_use", err.Error())
+		default:
+			writeErr(w, http.StatusBadRequest, "connection_delete_failed", err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListConnectionModels(w http.ResponseWriter, r *http.Request) {
+	models, err := s.backend.ListModels(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, backend.ErrConnectionNotFound) {
+			writeErr(w, http.StatusNotFound, "connection_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "models_failed", err.Error())
+		return
+	}
+	ids := make([]string, 0, len(models))
+	contextWindows := make(map[string]int64)
+	for _, model := range models {
+		ids = append(ids, model.ID)
+		if model.ContextWindow > 0 {
+			contextWindows[model.ID] = model.ContextWindow
+		}
+	}
+	writeJSON(w, http.StatusOK, protocol.ConnectionModelsResponse{
+		Models:         ids,
+		ContextWindows: contextWindows,
+	})
 }
 
 // handleDeleteSession 删除会话:中断正在跑的回合、清除元数据与事件日志,
@@ -192,64 +330,6 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, usage)
-}
-
-// handleGetProvider 返回当前 provider 配置(key 脱敏)。
-func (s *Server) handleGetProvider(w http.ResponseWriter, r *http.Request) {
-	pc := s.backend.ProviderConfig()
-	writeJSON(w, http.StatusOK, protocol.ProviderConfig{
-		Kind:      pc.Kind,
-		BaseURL:   pc.BaseURL,
-		Model:     pc.Model,
-		HasAPIKey: pc.APIKey != "",
-	})
-}
-
-// handleSetProvider 热替换 provider 配置。
-// 未携带 api_key 时保留原有 key(避免脱敏读取后回写清空)。
-func (s *Server) handleSetProvider(w http.ResponseWriter, r *http.Request) {
-	var req protocol.ProviderConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	cur := s.backend.ProviderConfig()
-	key := req.APIKey
-	if key == "" {
-		key = cur.APIKey // 保留原 key
-	}
-	kind := "openai"
-	s.backend.SetProviderConfig(config.Provider{
-		Kind:    kind,
-		BaseURL: req.BaseURL,
-		APIKey:  key,
-		Model:   req.Model,
-	})
-	writeJSON(w, http.StatusOK, protocol.ProviderConfig{
-		Kind: kind, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: key != "",
-	})
-}
-
-// handleListModels 用当前配置的 base_url + api_key 代求 provider 的 /models 接口,
-// 返回统一的模型 ID 列表。失败时回传明确错误(如端点不支持、未配置 key)。
-func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	models, err := s.backend.ListModels(r.Context())
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "models_failed", err.Error())
-		return
-	}
-	ids := make([]string, 0, len(models))
-	contextWindows := make(map[string]int64)
-	for _, model := range models {
-		ids = append(ids, model.ID)
-		if model.ContextWindow > 0 {
-			contextWindows[model.ID] = model.ContextWindow
-		}
-	}
-	writeJSON(w, http.StatusOK, protocol.ModelsResponse{
-		Models:         ids,
-		ContextWindows: contextWindows,
-	})
 }
 
 // handleSubmitTurn 原子提交消息:空闲时立即启动,运行时进入 FIFO 队列。

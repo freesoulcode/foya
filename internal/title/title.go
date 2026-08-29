@@ -53,7 +53,11 @@ var (
 
 // Generate 调模型生成标题。任何失败(超时、provider 不支持、返回空)都返回空串,
 // 由调用方走 Fallback。
-func Generate(ctx context.Context, c provider.Completer, model, userText string) string {
+func Generate(
+	ctx context.Context,
+	c provider.Completer,
+	model, reasoningEffort, userText string,
+) string {
 	if c == nil || strings.TrimSpace(userText) == "" {
 		return ""
 	}
@@ -66,7 +70,8 @@ func Generate(ctx context.Context, c provider.Completer, model, userText string)
 	defer cancel()
 
 	text, err := c.Complete(ctx, provider.Request{
-		Model: model,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
 		Messages: []message.Message{
 			{Role: message.RoleSystem, Content: systemPrompt},
 			{Role: message.RoleUser, Content: fmt.Sprintf(userPromptTpl, source)},

@@ -517,25 +517,53 @@ async fn load_usage(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/usage"), None).await
 }
 
-/// 读取当前 provider 配置(key 脱敏)。
+/// 列出已配置的模型连接(key 脱敏)。
 #[cfg(unix)]
 #[tauri::command]
-async fn get_provider() -> Result<String, String> {
-    kernel::request("GET", "/config/provider", None).await
+async fn list_connections() -> Result<String, String> {
+    kernel::request("GET", "/connections", None).await
 }
 
-/// 保存 provider 配置(热替换)。
+/// 新建一个 API Key 模型连接。
 #[cfg(unix)]
 #[tauri::command]
-async fn set_provider(config: serde_json::Value) -> Result<String, String> {
-    kernel::request("PUT", "/config/provider", Some(&config.to_string())).await
+async fn create_connection(config: serde_json::Value) -> Result<String, String> {
+    kernel::request("POST", "/connections", Some(&config.to_string())).await
 }
 
-/// 拉取当前 provider 可用模型列表(内核用已配置的 base_url + api_key 代求 /models)。
+/// 局部更新一个模型连接。
 #[cfg(unix)]
 #[tauri::command]
-async fn list_models() -> Result<String, String> {
-    kernel::request("GET", "/config/models", None).await
+async fn update_connection(
+    connection_id: String,
+    config: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "PATCH",
+        &format!("/connections/{connection_id}"),
+        Some(&config.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_connection(connection_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/connections/{connection_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+/// 拉取指定连接可用的模型目录。
+#[cfg(unix)]
+#[tauri::command]
+async fn list_connection_models(connection_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/connections/{connection_id}/models"),
+        None,
+    )
+    .await
 }
 
 /// 订阅会话事件流。在后台异步任务持续把 SSE 事件经 Channel 推给前端。
@@ -1016,19 +1044,34 @@ fn load_usage(_session_id: String) -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn get_provider() -> Result<String, String> {
+fn list_connections() -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn set_provider(_config: serde_json::Value) -> Result<String, String> {
+fn create_connection(_config: serde_json::Value) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn list_models() -> Result<String, String> {
+fn update_connection(
+    _connection_id: String,
+    _config: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn delete_connection(_connection_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn list_connection_models(_connection_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -1165,9 +1208,11 @@ pub fn run() {
             list_sessions,
             load_history,
             load_usage,
-            get_provider,
-            set_provider,
-            list_models,
+            list_connections,
+            create_connection,
+            update_connection,
+            delete_connection,
+            list_connection_models,
             subscribe_events,
             start_terminal,
             attach_terminal,

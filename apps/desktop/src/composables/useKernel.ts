@@ -5,6 +5,8 @@ import {
   type ChatMessage,
   type UpdateSessionPatch,
   type ApprovalMode,
+  type ReasoningEffort,
+  type ConnectionModelGroup,
   type QueuedMessage,
   type ContextUsage,
   type BranchEffect,
@@ -12,7 +14,9 @@ import {
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、绑定文件夹、设定审批档位。
 export interface DraftConfig {
+  connectionID: string;
   model: string;
+  reasoningEffort: ReasoningEffort;
   workspace: string;
   approvalMode: ApprovalMode;
 }
@@ -42,14 +46,15 @@ const compactingSessions = ref<Record<string, boolean>>({});
 
 // 新对话草稿态的配置(activeId === "" 时生效)。
 const draft = reactive<DraftConfig>({
+  connectionID: "",
   model: "",
+  reasoningEffort: "",
   workspace: "",
   approvalMode: DEFAULT_APPROVAL,
 });
 
-// 从 provider 的标准 /models 接口拉取的可用模型列表(应用级共享,不随会话变化)。
-const availableModels = ref<string[]>([]);
-const modelContextWindows = ref<Record<string, number>>({});
+// 连接目录及其模型清单。模型按 Connection 分组，避免同名模型歧义。
+const connectionModels = ref<ConnectionModelGroup[]>([]);
 const modelsLoading = ref(false);
 const modelsError = ref("");
 
@@ -389,20 +394,36 @@ async function subscribe(sessionId: string) {
   }
 }
 
-// 拉取可用模型列表(标准 /models 协议)。草稿态且尚未选模型时自动选中第一个。
-async function refreshModels() {
+// 拉取所有连接及其模型目录。单个连接的目录失败不阻塞其它连接。
+async function refreshConnections() {
   modelsLoading.value = true;
   modelsError.value = "";
   try {
-    const catalog = await api.listModels();
-    availableModels.value = catalog.models;
-    modelContextWindows.value = catalog.context_windows;
-    if (isDraft.value && !draft.model && availableModels.value.length > 0) {
-      draft.model = availableModels.value[0];
+    const connections = await api.listConnections();
+    connectionModels.value = await Promise.all(
+      connections.map(async (connection) => {
+        try {
+          const catalog = await api.listConnectionModels(connection.id ?? "");
+          return { ...connection, ...catalog };
+        } catch (cause) {
+          return {
+            ...connection,
+            models: connection.default_model ? [connection.default_model] : [],
+            context_windows: {},
+            models_error: String(cause),
+          };
+        }
+      })
+    );
+    if (isDraft.value && !draft.connectionID) {
+      const first = connectionModels.value.find((connection) => connection.models.length > 0);
+      if (first) {
+        draft.connectionID = first.id ?? "";
+        draft.model = first.default_model || first.models[0] || "";
+      }
     }
   } catch (e) {
-    availableModels.value = [];
-    modelContextWindows.value = {};
+    connectionModels.value = [];
     modelsError.value = String(e);
   } finally {
     modelsLoading.value = false;
@@ -424,8 +445,8 @@ async function connect() {
       ensureBucket("");
     }
     ready.value = true;
-    // 连接就绪后拉取模型列表(供模型选择器使用)。
-    void refreshModels();
+    // 连接就绪后拉取连接目录与模型列表。
+    void refreshConnections();
   } catch (e) {
     // 不再静默吞错:把失败原因暴露到界面,便于定位(如内核未就绪、命令缺失)。
     connectError.value = String(e);
@@ -441,7 +462,10 @@ function newSession(workspace = "") {
   activeId.value = "";
   ensureBucket("");
   streaming.value = false;
-  draft.model = availableModels.value[0] ?? "";
+  const first = connectionModels.value.find((connection) => connection.models.length > 0);
+  draft.connectionID = first?.id ?? "";
+  draft.model = first?.default_model || first?.models[0] || "";
+  draft.reasoningEffort = "";
   draft.workspace = workspace;
   draft.approvalMode = DEFAULT_APPROVAL;
 }
@@ -604,7 +628,9 @@ async function cancelTurn() {
 async function ensureSession(): Promise<string> {
   if (activeId.value) return activeId.value;
   const s = await api.createSession({
+    connection_id: draft.connectionID || undefined,
     model: draft.model || undefined,
+    reasoning_effort: draft.reasoningEffort || undefined,
     workspace: draft.workspace || undefined,
     approval_mode: draft.approvalMode,
   });
@@ -773,8 +799,7 @@ export function useKernel() {
     activeSession,
     isDraft,
     draft,
-    availableModels,
-    modelContextWindows,
+    connectionModels,
     modelsLoading,
     modelsError,
     messages: activeMessages,
@@ -800,6 +825,6 @@ export function useKernel() {
     deleteQueuedMessage,
     dispatchQueuedMessage,
     resolveApproval,
-    refreshModels,
+    refreshConnections,
   };
 }

@@ -31,15 +31,42 @@ type Config struct {
 	Addr       string // 监听地址(TransportTCP 时)
 	DataDir    string // 事件日志、SQLite 索引所在目录
 
-	Provider Provider // 模型 provider 配置(BYOK)
+	// Provider 是旧的单连接启动配置，仅用于从环境变量迁移初始 Connection。
+	Provider Provider
 }
 
-// Provider 是模型 provider 配置(BYOK:用户自带 base_url + key + model)。
+// Provider 是旧版单连接启动配置(BYOK:用户自带 base_url + key + model)。
 type Provider struct {
 	Kind    string `json:"kind"`
 	BaseURL string `json:"base_url"`
 	APIKey  string `json:"api_key"`
 	Model   string `json:"model"`
+}
+
+// Connection 是一个可独立使用的模型账号或端点。
+// 本阶段 AuthKind 固定为 api_key；后续可扩展 oauth_subscription 而不影响
+// Session 的 connection_id + model 绑定关系。
+type Connection struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Kind         string `json:"kind"`
+	AuthKind     string `json:"auth_kind"`
+	BaseURL      string `json:"base_url"`
+	APIKey       string `json:"api_key,omitempty"`
+	DefaultModel string `json:"default_model"`
+	SortOrder    int    `json:"sort_order"`
+	// LegacyDefault is read only to migrate older connection catalogs. The
+	// first connection by SortOrder is now the new-session preference.
+	LegacyDefault bool `json:"is_default,omitempty"`
+}
+
+func (c Connection) Provider() Provider {
+	return Provider{
+		Kind:    c.Kind,
+		BaseURL: c.BaseURL,
+		APIKey:  c.APIKey,
+		Model:   c.DefaultModel,
+	}
 }
 
 // Default 返回本地桌面场景的默认配置。
@@ -82,6 +109,48 @@ func DefaultSocketPath() string {
 // providerConfigPath 返回持久化 provider 配置文件路径。
 func providerConfigPath(dataDir string) string {
 	return filepath.Join(dataDir, "provider.json")
+}
+
+func connectionsConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, "connections.json")
+}
+
+// LoadConnections reads the Connection catalog. If it is absent, callers may
+// migrate the legacy provider.json or environment configuration into one entry.
+func LoadConnections(dataDir string) ([]Connection, bool, error) {
+	b, err := os.ReadFile(connectionsConfigPath(dataDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var connections []Connection
+	if err := json.Unmarshal(b, &connections); err != nil {
+		return nil, false, err
+	}
+	for i := range connections {
+		if connections[i].Kind == "" {
+			connections[i].Kind = "openai"
+		}
+		if connections[i].AuthKind == "" {
+			connections[i].AuthKind = "api_key"
+		}
+	}
+	return connections, true, nil
+}
+
+// SaveConnections persists the full Connection catalog. Keys remain protected
+// by the user-private data directory until the Keychain migration lands.
+func SaveConnections(dataDir string, connections []Connection) error {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(connections, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(connectionsConfigPath(dataDir), b, 0o600)
 }
 
 // LoadProvider 从 dataDir 读取持久化的 provider 配置。

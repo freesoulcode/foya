@@ -56,9 +56,10 @@ type StreamEvent struct {
 
 // Request 是一次模型请求,携带完整对话历史(多轮上下文)与可用工具。
 type Request struct {
-	Model    string
-	Messages []message.Message
-	Tools    []ToolDef
+	Model           string
+	ReasoningEffort string
+	Messages        []message.Message
+	Tools           []ToolDef
 }
 
 // Provider 是统一的 LLM 接入点。

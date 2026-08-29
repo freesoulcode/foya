@@ -4,13 +4,13 @@ import { useKernel } from "@/composables/useKernel";
 import { usePlatform } from "@/composables/usePlatform";
 import { useWorkbar } from "@/composables/useWorkbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import type { ApprovalMode, UpdateSessionPatch } from "@/lib/api";
+import type { ApprovalMode, ReasoningEffort, UpdateSessionPatch } from "@/lib/api";
 import AppTitleBar from "@/components/AppTitleBar.vue";
 import SessionSidebar from "@/components/chat/SessionSidebar.vue";
 import MessageList from "@/components/chat/MessageList.vue";
 import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
-import SettingsDialog from "@/components/chat/SettingsDialog.vue";
+import SettingsWorkspace from "@/components/settings/SettingsWorkspace.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
@@ -28,8 +28,7 @@ const {
   activeSession,
   isDraft,
   draft,
-  availableModels,
-  modelContextWindows,
+  connectionModels,
   modelsLoading,
   modelsError,
   messages,
@@ -52,10 +51,10 @@ const {
   reorderQueuedMessage,
   deleteQueuedMessage,
   dispatchQueuedMessage,
-  refreshModels,
+  refreshConnections,
 } = useKernel();
 
-const settingsOpen = ref(false);
+const settingsActive = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
 
@@ -87,17 +86,23 @@ function onTurnSelect(i: number) {
   messageListRef.value?.scrollToTurn(i);
 }
 
-// 设置弹窗关闭后刷新模型列表(provider 配置可能已变更)。
-watch(settingsOpen, (open) => {
-  if (!open) void refreshModels();
+// 退出设置工作区后刷新 Connection 目录，使新建连接立即出现在模型选择器。
+watch(settingsActive, (active) => {
+  if (!active) void refreshConnections();
 });
 
 // 输入框当前展示的模型/工作目录/审批档位:草稿态读 draft,已建会话读 activeSession。
 const composerModel = computed(() =>
   isDraft.value ? draft.model : activeSession.value?.model ?? ""
 );
+const composerConnectionID = computed(() =>
+  isDraft.value ? draft.connectionID : activeSession.value?.connection_id ?? ""
+);
 const composerWorkspace = computed(() =>
   isDraft.value ? draft.workspace : activeSession.value?.workspace ?? ""
+);
+const composerReasoningEffort = computed<ReasoningEffort>(
+  () => (isDraft.value ? draft.reasoningEffort : activeSession.value?.reasoning_effort) ?? ""
 );
 const workspaceLocked = computed(
   () => !isDraft.value && Boolean(activeSession.value?.workspace)
@@ -109,7 +114,9 @@ const composerApproval = computed<ApprovalMode>(
       : (activeSession.value?.approval_mode as ApprovalMode)) || "ask"
 );
 const composerContextWindow = computed(
-  () => modelContextWindows.value[composerModel.value] ?? 0
+  () =>
+    connectionModels.value.find((connection) => connection.id === composerConnectionID.value)
+      ?.context_windows[composerModel.value] ?? 0
 );
 const composerContextUsage = computed(() =>
   contextUsage.value?.model === composerModel.value ? contextUsage.value : undefined
@@ -119,15 +126,28 @@ const activeCompacting = computed(
 );
 const workbarObscured = computed(
   () =>
-    settingsOpen.value ||
+    settingsActive.value ||
     Object.keys(pendingApprovals.value).length > 0 ||
     pendingHistoryEdit.value !== null
 );
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
-function onModelChange(value: string) {
-  if (isDraft.value) draft.model = value;
-  else if (activeId.value) void updateSession(activeId.value, { model: value });
+function onModelConfigChange(value: {
+  connectionID: string;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+}) {
+  if (isDraft.value) {
+    draft.connectionID = value.connectionID;
+    draft.model = value.model;
+    draft.reasoningEffort = value.reasoningEffort;
+  } else if (activeId.value) {
+    void updateSession(activeId.value, {
+      connection_id: value.connectionID,
+      model: value.model,
+      reasoning_effort: value.reasoningEffort,
+    });
+  }
 }
 
 function onWorkspaceChange(value: string) {
@@ -168,7 +188,13 @@ onMounted(connect);
 </script>
 
 <template>
-  <SidebarProvider class="h-svh">
+  <SettingsWorkspace
+    v-if="settingsActive"
+    :active="settingsActive"
+    @close="settingsActive = false"
+  />
+
+  <SidebarProvider v-else class="h-svh">
     <SessionSidebar
       :is-mac="isMac"
       :sessions="sessions"
@@ -180,14 +206,14 @@ onMounted(connect);
       @rename="onRename"
       @pin="onPin"
       @delete="onDelete"
-      @open-settings="settingsOpen = true"
+      @open-settings="settingsActive = true"
     />
 
     <SidebarInset class="min-w-0 flex-row overflow-hidden">
-      <div class="flex min-w-[350px] flex-1 flex-col">
+      <div class="flex min-h-0 min-w-[350px] flex-1 flex-col">
         <AppTitleBar :session="activeSession" @rename="onRename" />
 
-        <main class="flex min-w-0 flex-1 flex-col">
+        <main class="flex min-h-0 min-w-0 flex-1 flex-col">
           <div class="flex min-h-0 flex-1">
             <aside
               v-if="turnPoints.length > 3"
@@ -213,10 +239,12 @@ onMounted(connect);
             :disabled="!ready"
             :streaming="streaming"
             :model="composerModel"
+            :connection-id="composerConnectionID"
+            :reasoning-effort="composerReasoningEffort"
             :workspace="composerWorkspace"
             :workspace-locked="workspaceLocked"
             :approval="composerApproval"
-            :available-models="availableModels"
+            :connections="connectionModels"
             :models-loading="modelsLoading"
             :models-error="modelsError"
             :queued-messages="queuedMessages"
@@ -229,10 +257,10 @@ onMounted(connect);
             @reorder-queued="reorderQueuedMessage"
             @dispatch-queued="dispatchQueuedMessage"
             @delete-queued="deleteQueuedMessage"
-            @update:model="onModelChange"
+            @update:model-config="onModelConfigChange"
             @update:workspace="onWorkspaceChange"
             @update:approval="onApprovalChange"
-            @refresh-models="refreshModels"
+            @refresh-models="refreshConnections"
           />
         </main>
       </div>
@@ -246,9 +274,8 @@ onMounted(connect);
         :ensure-session="ensureSession"
       />
     </SidebarInset>
-
-    <SettingsDialog v-model:open="settingsOpen" />
-    <ApprovalDialog />
-    <HistoryEditDialog />
   </SidebarProvider>
+
+  <ApprovalDialog />
+  <HistoryEditDialog />
 </template>

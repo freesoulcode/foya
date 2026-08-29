@@ -22,6 +22,7 @@ type compactionProvider struct {
 	overflowFirst bool
 	streamCalls   int
 	captured      [][]message.Message
+	efforts       []string
 }
 
 func (p *compactionProvider) Name() string { return "test" }
@@ -54,6 +55,7 @@ func (p *compactionProvider) Stream(
 	p.streamCalls++
 	call := p.streamCalls
 	p.captured = append(p.captured, append([]message.Message(nil), req.Messages...))
+	p.efforts = append(p.efforts, req.ReasoningEffort)
 	p.mu.Unlock()
 
 	ch := make(chan provider.StreamEvent, 2)
@@ -100,6 +102,31 @@ func TestRunTurnCompactsBeforeOversizedRequest(t *testing.T) {
 	}
 	if !strings.Contains(wire, "continue") {
 		t.Fatal("latest user turn was not preserved")
+	}
+}
+
+func TestRunTurnForwardsSessionReasoningEffort(t *testing.T) {
+	sessions := session.NewMemManager()
+	sess, err := sessions.Create(session.CreateOptions{
+		Model:           "test-model",
+		ReasoningEffort: session.ReasoningEffortHigh,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := state.NewMemLog()
+	bus := broker.New[event.Event]()
+	gateway := approval.NewGateway(bus, log)
+	prov := &compactionProvider{contextWindow: 100_000}
+	engine := NewEngine(log, bus, sessions, prov, "test-model", tool.NewRegistry(), gateway)
+
+	if err := engine.RunTurn(context.Background(), sess.ID, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.efforts) != 1 || prov.efforts[0] != "high" {
+		t.Fatalf("reasoning efforts = %#v, want one high value", prov.efforts)
 	}
 }
 

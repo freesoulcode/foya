@@ -7,6 +7,7 @@ import {
   PlusIcon,
   ShieldIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   FolderOpenIcon,
   XIcon,
   CheckIcon,
@@ -17,6 +18,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   api,
   type ApprovalMode,
+  type ConnectionModelGroup,
+  type ReasoningEffort,
   type ContextUsage as ContextUsageData,
   type QueuedMessage,
 } from "@/lib/api";
@@ -27,10 +30,12 @@ const props = withDefaults(
   defineProps<{
     disabled?: boolean;
     streaming?: boolean;
+    connectionId?: string;
     model?: string;
+    reasoningEffort?: ReasoningEffort;
     workspace?: string;
     approval?: ApprovalMode;
-    availableModels?: string[];
+    connections?: ConnectionModelGroup[];
     modelsLoading?: boolean;
     modelsError?: string;
     queuedMessages?: QueuedMessage[];
@@ -42,10 +47,12 @@ const props = withDefaults(
   {
     disabled: false,
     streaming: false,
+    connectionId: "",
     model: "",
+    reasoningEffort: "",
     workspace: "",
     approval: "ask",
-    availableModels: () => [],
+    connections: () => [],
     modelsLoading: false,
     modelsError: "",
     queuedMessages: () => [],
@@ -63,7 +70,10 @@ const emit = defineEmits<{
   (e: "reorder-queued", id: string, position: number): void;
   (e: "dispatch-queued", id: string): void;
   (e: "delete-queued", id: string): void;
-  (e: "update:model", value: string): void;
+  (
+    e: "update:model-config",
+    value: { connectionID: string; model: string; reasoningEffort: ReasoningEffort }
+  ): void;
   (e: "update:workspace", value: string): void;
   (e: "update:approval", value: ApprovalMode): void;
   (e: "refresh-models"): void;
@@ -148,22 +158,83 @@ function selectApproval(m: ApprovalMode) {
   approvalOpen.value = false;
 }
 
-// ---- 模型选择(只从标准 /models 列表中选) ----
-const modelOpen = ref(false);
+// ---- 模型与推理强度选择 ----
+// 两步选择共用一个浮层：先选择模型，再选择该会话的推理强度。
+// 最终触发器统一展示为“模型名 + 强度”，避免两个独立设置分散注意力。
+const modelPickerOpen = ref(false);
+const modelPickerStep = ref<"model" | "reasoning">("model");
+const pickerModel = ref<string | null>(null);
+const pickerConnectionID = ref<string | null>(null);
+const pickerReasoningEffort = ref<ReasoningEffort | null>(null);
 const modelRef = ref<HTMLElement | null>(null);
-onClickOutside(modelRef, () => (modelOpen.value = false));
-watch(modelOpen, (v) => {
+onClickOutside(modelRef, () => (modelPickerOpen.value = false));
+watch(modelPickerOpen, (v) => {
   if (v) {
+    pickerModel.value = null;
+    pickerConnectionID.value = null;
+    pickerReasoningEffort.value = null;
+    modelPickerStep.value = "model";
     // 列表为空时触发上层拉取;已有列表则直接展示。
-    if (props.availableModels.length === 0 && !props.modelsLoading) {
+    if (props.connections.length === 0 && !props.modelsLoading) {
       emit("refresh-models");
     }
   }
 });
 
-function selectModel(m: string) {
-  emit("update:model", m);
-  modelOpen.value = false;
+function selectModel(connectionID: string, m: string) {
+  pickerModel.value = m;
+  // 切换模型时默认清除旧强度覆盖，然后直接下钻至强度选择。
+  pickerReasoningEffort.value = "";
+  pickerConnectionID.value = connectionID;
+  modelPickerStep.value = "reasoning";
+}
+
+// ---- 推理强度 ----
+const reasoningOptions: {
+  value: ReasoningEffort;
+  label: string;
+  hint: string;
+}[] = [
+  { value: "", label: "默认推理", hint: "跟随模型服务默认设置" },
+  { value: "low", label: "低推理", hint: "更快，适合简单任务" },
+  { value: "medium", label: "中推理", hint: "平衡速度与深度" },
+  { value: "high", label: "高推理", hint: "更深入，可能更慢" },
+];
+const reasoningDisplayLabel = computed(
+  () =>
+    reasoningOptions
+      .find((option) => option.value === (pickerReasoningEffort.value ?? props.reasoningEffort))
+      ?.label ?? "默认推理"
+);
+const pickerConnectionName = computed(() => {
+  const id = pickerConnectionLabel.value;
+  return props.connections.find((connection) => connection.id === id)?.name ?? "";
+});
+const modelPickerLabel = computed(() =>
+  [
+    pickerConnectionName.value,
+    (pickerModel.value ?? props.model) || "选择模型",
+    reasoningDisplayLabel.value,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+);
+const pickerModelLabel = computed(() => pickerModel.value ?? props.model);
+const pickerConnectionLabel = computed(
+  () => pickerConnectionID.value ?? props.connectionId
+);
+const pickerReasoningLabel = computed(
+  () => pickerReasoningEffort.value ?? props.reasoningEffort
+);
+
+function selectReasoningEffort(value: ReasoningEffort) {
+  pickerReasoningEffort.value = value;
+  emit("update:model-config", {
+    connectionID: pickerConnectionLabel.value,
+    model: pickerModelLabel.value,
+    reasoningEffort: value,
+  });
+  modelPickerOpen.value = false;
 }
 
 // ---- 文件夹绑定 ----
@@ -362,31 +433,49 @@ function onKeydown(e: KeyboardEvent) {
             </div>
           </div>
 
-          <div class="flex items-center gap-1">
+          <div class="flex shrink-0 items-center gap-1">
             <ContextUsage
               :usage="contextUsage"
               :context-window="contextWindow"
             />
 
-            <!-- 模型下拉(从标准 /models 列表中选择) -->
+            <!-- 两步模型选择器：模型 → 推理强度。 -->
             <div ref="modelRef" class="relative">
               <button
                 type="button"
                 :disabled="disabled"
-                class="flex max-w-[220px] items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-                @click="modelOpen = !modelOpen"
+                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                @click="modelPickerOpen = !modelPickerOpen"
               >
-                <span class="truncate">{{ model || "选择模型" }}</span>
+                <span>{{ modelPickerLabel }}</span>
                 <ChevronDownIcon class="size-3.5 shrink-0 opacity-60" />
               </button>
 
               <div
-                v-if="modelOpen"
+                v-if="modelPickerOpen"
                 class="absolute bottom-full right-0 z-10 mb-1 w-64 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-lg"
               >
-                <div class="flex items-center justify-between px-2.5 pt-2">
-                  <span class="text-xs font-medium text-muted-foreground">选择模型</span>
+                <div class="flex items-center justify-between gap-2 px-2.5 pb-1 pt-2">
                   <button
+                    v-if="modelPickerStep === 'reasoning'"
+                    type="button"
+                    class="flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    @click="modelPickerStep = 'model'"
+                  >
+                    <ChevronLeftIcon class="size-3.5" />
+                    <span class="truncate">模型</span>
+                  </button>
+                  <span
+                    v-if="modelPickerStep === 'reasoning'"
+                    class="min-w-0 flex-1 truncate text-right text-xs font-medium text-muted-foreground"
+                  >
+                    推理强度
+                  </span>
+                  <span v-else class="text-xs font-medium text-muted-foreground">
+                    选择模型
+                  </span>
+                  <button
+                    v-if="modelPickerStep === 'model'"
                     type="button"
                     class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     title="刷新模型列表"
@@ -400,7 +489,10 @@ function onKeydown(e: KeyboardEvent) {
                   </button>
                 </div>
 
-                <div class="max-h-64 overflow-y-auto p-1">
+                <div
+                  v-if="modelPickerStep === 'model'"
+                  class="max-h-64 overflow-y-auto p-1"
+                >
                   <div
                     v-if="modelsLoading"
                     class="flex items-center gap-2 px-2.5 py-2 text-[13px] text-muted-foreground"
@@ -416,24 +508,76 @@ function onKeydown(e: KeyboardEvent) {
                     加载失败：{{ modelsError }}
                   </div>
 
-                  <button
-                    v-for="m in availableModels"
-                    v-else
-                    :key="m"
-                    type="button"
-                    class="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-muted"
-                    @click="selectModel(m)"
-                  >
-                    <span class="truncate">{{ m }}</span>
-                    <CheckIcon v-if="m === model" class="size-4 shrink-0 text-primary" />
-                  </button>
+                  <template v-else>
+                    <section
+                      v-for="connection in connections"
+                      :key="connection.id"
+                      class="mb-2 last:mb-0"
+                    >
+                      <div class="px-2.5 pb-1 pt-1">
+                        <p class="truncate text-xs font-medium text-muted-foreground">
+                          {{ connection.name }}
+                        </p>
+                        <p class="truncate text-[11px] text-muted-foreground/80">
+                          {{ connection.kind }}
+                        </p>
+                      </div>
+                      <button
+                        v-for="m in connection.models"
+                        :key="`${connection.id}:${m}`"
+                        type="button"
+                        class="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-muted"
+                        @click="selectModel(connection.id ?? '', m)"
+                      >
+                        <span class="truncate">{{ m }}</span>
+                        <span class="flex shrink-0 items-center gap-1 text-muted-foreground">
+                          <CheckIcon
+                            v-if="m === pickerModelLabel && connection.id === pickerConnectionLabel"
+                            class="size-4 text-primary"
+                          />
+                          <ChevronDownIcon class="size-4 -rotate-90" />
+                        </span>
+                      </button>
+                      <p
+                        v-if="connection.models.length === 0"
+                        class="px-2.5 py-1 text-[11px] text-muted-foreground"
+                      >
+                        {{ connection.models_error || "该连接没有可用模型" }}
+                      </p>
+                    </section>
+                  </template>
 
                   <p
-                    v-if="!modelsLoading && !modelsError && availableModels.length === 0"
+                    v-if="!modelsLoading && !modelsError && connections.length === 0"
                     class="px-2.5 py-2 text-[12px] text-muted-foreground"
                   >
-                    端点未返回可用模型，请检查 Base URL 与 API Key。
+                    尚未添加模型连接，请先在设置中添加 API 连接。
                   </p>
+                </div>
+
+                <div
+                  v-else
+                  class="p-1"
+                >
+                  <p class="px-2.5 pb-1 text-xs text-muted-foreground">
+                    {{ pickerModelLabel || "当前模型" }}
+                  </p>
+                  <button
+                    v-for="option in reasoningOptions"
+                    :key="option.value || 'default'"
+                    type="button"
+                    class="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-muted"
+                    @click="selectReasoningEffort(option.value)"
+                  >
+                    <span class="flex min-w-0 flex-col">
+                      <span class="font-medium">{{ option.label }}</span>
+                      <span class="truncate text-xs text-muted-foreground">{{ option.hint }}</span>
+                    </span>
+                    <CheckIcon
+                      v-if="option.value === pickerReasoningLabel"
+                      class="size-4 shrink-0 text-primary"
+                    />
+                  </button>
                 </div>
               </div>
             </div>
