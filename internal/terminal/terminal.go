@@ -33,7 +33,7 @@ type DataEvent struct {
 
 // Manager owns terminal processes independently from connected clients.
 type Manager interface {
-	Start(ctx context.Context, sessionID, workspace string, cols, rows uint16) (Snapshot, error)
+	Start(ctx context.Context, sessionID, cwd string, cols, rows uint16) (Snapshot, error)
 	Attach(sessionID, ref string) (Snapshot, error)
 	Write(sessionID, ref, input string) error
 	Resize(sessionID, ref string, cols, rows uint16) error

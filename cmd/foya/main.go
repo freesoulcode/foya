@@ -1,26 +1,53 @@
 // Command foya 是内核入口:默认启动常驻内核 daemon,exec 子命令用于
 // 无头一次性执行(供 CLI / 外部 harness 调用)。
 //
-// 脚手架阶段:daemon 启动 HTTP server,本地默认监听 Unix domain socket
-// (私有目录 + 0600,靠 OS 权限做单用户信任);exec 为占位。
+// daemon 启动 HTTP server,本地默认监听 Unix domain socket
+// (私有目录 + 0600,靠 OS 权限做单用户信任);exec 执行一次性无头任务。
 package main
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
 
+	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/kernel"
+	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/server"
+	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/websearch"
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "exec" {
-		runExec(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "exec":
+			runExec(os.Args[2:])
+			return
+		case "skills":
+			runSkills(os.Args[2:])
+			return
+		case "projects":
+			runProjects(os.Args[2:])
+			return
+		case "mcp":
+			runMCP(os.Args[2:])
+			return
+		case "web-search":
+			runWebSearch(os.Args[2:])
+			return
+		}
 	}
 	runDaemon()
 }
@@ -28,7 +55,12 @@ func main() {
 // runDaemon 启动常驻内核。
 func runDaemon() {
 	cfg := config.Default()
-	app := kernel.New(cfg)
+	app, err := kernel.New(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kernel initialization failed:", err)
+		os.Exit(1)
+	}
+	defer app.Close()
 	srv := server.New(cfg, app.Backend())
 
 	ln, desc, err := listen(cfg)
@@ -77,7 +109,209 @@ func listenUnix(path string) (net.Listener, string, error) {
 	return ln, "unix:" + path, nil
 }
 
-// runExec 无头执行一次性任务(占位)。
+func newApp() *kernel.App {
+	app, err := kernel.New(config.Default())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return app
+}
+
+// runExec 无头执行一次性任务。
 func runExec(args []string) {
-	fmt.Println("foya exec: 尚未实现 (脚手架阶段)")
+	flags := flag.NewFlagSet("foya exec", flag.ExitOnError)
+	projectID := flags.String("project", "", "project id")
+	connection := flags.String("connection", "", "model connection id")
+	model := flags.String("model", "", "model id")
+	mode := flags.String("approval", "ask", "explore, ask, or bypass")
+	_ = flags.Parse(args)
+	prompt := strings.TrimSpace(strings.Join(flags.Args(), " "))
+	if prompt == "" {
+		data, _ := io.ReadAll(os.Stdin)
+		prompt = strings.TrimSpace(string(data))
+	}
+	if prompt == "" {
+		fmt.Fprintln(os.Stderr, "usage: foya exec [flags] <prompt>")
+		os.Exit(2)
+	}
+	app := newApp()
+	defer app.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	sess, err := app.Backend().CreateSession(session.CreateOptions{
+		ConnectionID: *connection, Model: *model, ProjectID: *projectID, ApprovalMode: *mode,
+	})
+	if err != nil {
+		fatal(err)
+	}
+	events := app.Backend().Subscribe(ctx, sess.ID)
+	if _, err := app.Backend().SubmitTurn(ctx, sess.ID, prompt); err != nil {
+		fatal(err)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for item := range events {
+		switch item.Kind {
+		case event.KindMessageDelta:
+			if text, ok := item.Payload.(string); ok {
+				fmt.Print(text)
+			}
+		case event.KindApprovalReq:
+			request, ok := item.Payload.(approval.Request)
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "\nApprove %s: %s? [y/N] ", request.ToolName, request.Detail)
+			answer, _ := reader.ReadString('\n')
+			decision := approval.DecisionDenied
+			if strings.EqualFold(strings.TrimSpace(answer), "y") {
+				decision = approval.DecisionApproved
+			}
+			app.Backend().ResolveApproval(request.ID, string(decision))
+		case event.KindError:
+			fmt.Fprintln(os.Stderr, "\n", item.Payload)
+		case event.KindTurnComplete:
+			fmt.Println()
+			return
+		}
+	}
+}
+
+func runSkills(args []string) {
+	app := newApp()
+	defer app.Close()
+	if len(args) == 0 || args[0] == "list" {
+		flags := flag.NewFlagSet("foya skills list", flag.ExitOnError)
+		projectID := flags.String("project", "", "project id")
+		if len(args) > 0 {
+			_ = flags.Parse(args[1:])
+		}
+		if flags.NArg() != 0 {
+			fatal(fmt.Errorf("usage: foya skills list [--project <id>]|enable <ref>|disable <ref>"))
+		}
+		var (
+			items any
+			err   error
+		)
+		if *projectID == "" {
+			items, err = app.Backend().AllSkills(context.Background())
+		} else {
+			items, err = app.Backend().ProjectSkills(context.Background(), *projectID)
+		}
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(items)
+		return
+	}
+	if len(args) != 2 || (args[0] != "enable" && args[0] != "disable") {
+		fatal(fmt.Errorf("usage: foya skills list [--project <id>]|enable <ref>|disable <ref>"))
+	}
+	if err := app.Backend().SetSkillEnabled(args[1], args[0] == "enable"); err != nil {
+		fatal(err)
+	}
+}
+
+func runProjects(args []string) {
+	app := newApp()
+	defer app.Close()
+	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+		items, err := app.Backend().Projects()
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(items)
+		return
+	}
+	if len(args) == 2 && args[0] == "add" {
+		item, err := app.Backend().RegisterProject(args[1], "")
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(item)
+		return
+	}
+	if len(args) == 2 && args[0] == "delete" {
+		if err := app.Backend().DeleteProject(args[1]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	fatal(fmt.Errorf("usage: foya projects list|add <path>|delete <id>"))
+}
+
+func runMCP(args []string) {
+	app := newApp()
+	defer app.Close()
+	if len(args) == 0 || args[0] == "list" {
+		statuses, err := app.Backend().MCPStatuses()
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(statuses)
+		return
+	}
+	if len(args) == 2 && args[0] == "apply" {
+		data, err := os.ReadFile(args[1])
+		if err != nil {
+			fatal(err)
+		}
+		var next mcpclient.Config
+		if err := json.Unmarshal(data, &next); err != nil {
+			fatal(err)
+		}
+		if err := app.Backend().ReplaceMCPConfig(context.Background(), next); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	fatal(fmt.Errorf("usage: foya mcp list|apply <config.json>"))
+}
+
+func runWebSearch(args []string) {
+	app := newApp()
+	defer app.Close()
+	if len(args) == 0 || args[0] == "show" {
+		settings, err := app.Backend().WebSearchSettings()
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(settings)
+		return
+	}
+	if len(args) >= 2 && args[0] == "test" {
+		results, source, err := app.Backend().SearchWeb(context.Background(), strings.Join(args[1:], " "))
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(struct {
+			Provider string `json:"provider"`
+			Results  any    `json:"results"`
+		}{source, results})
+		return
+	}
+	if len(args) == 4 && args[0] == "set-google" {
+		settings := websearch.Settings{
+			Enabled: true, DefaultProvider: args[1],
+			Providers: []websearch.ProviderConfig{{
+				ID: args[1], Name: "Google Custom Search (legacy)", Kind: "google_cse",
+				Enabled: true, SearchEngineID: args[2], APIKey: args[3],
+			}},
+		}
+		if err := app.Backend().UpdateWebSearchSettings(settings); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	fatal(fmt.Errorf("usage: foya web-search show|test <query>|set-google <id> <cx> <api-key>"))
+}
+
+func printJSON(value any) {
+	data, _ := json.MarshalIndent(value, "", "  ")
+	fmt.Println(string(data))
+}
+
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }

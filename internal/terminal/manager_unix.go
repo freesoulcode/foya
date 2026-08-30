@@ -50,7 +50,7 @@ func NewManager() Manager {
 
 func (m *manager) Start(
 	_ context.Context,
-	sessionID, workspace string,
+	sessionID, cwd string,
 	cols, rows uint16,
 ) (Snapshot, error) {
 	shell := os.Getenv("SHELL")
@@ -58,8 +58,8 @@ func (m *manager) Start(
 		shell = "/bin/sh"
 	}
 	cmd := exec.Command(shell)
-	if workspace != "" {
-		cmd.Dir = workspace
+	if cwd != "" {
+		cmd.Dir = cwd
 	} else {
 		home, err := os.UserHomeDir()
 		if err != nil {

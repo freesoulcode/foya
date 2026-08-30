@@ -69,7 +69,7 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 
 	path := params.Path
 	if !filepath.IsAbs(path) {
-		if wd := WorkspaceFromContext(ctx); wd != "" {
+		if wd := CWDFromContext(ctx); wd != "" {
 			path = filepath.Join(wd, path)
 		}
 	}

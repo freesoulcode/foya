@@ -71,7 +71,7 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("用户拒绝执行命令"), nil
 	}
 
-	workDir := WorkspaceFromContext(ctx)
+	workDir := CWDFromContext(ctx)
 	cmdCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 

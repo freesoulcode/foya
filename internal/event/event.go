@@ -35,7 +35,7 @@ const (
 	KindError               Kind = "error"
 )
 
-// BranchEffect summarizes a potentially persistent workspace side effect in a
+// BranchEffect summarizes a potentially persistent project side effect in a
 // superseded history suffix. It is advisory: external effects are not rolled back.
 type BranchEffect struct {
 	Tool   string `json:"tool"`

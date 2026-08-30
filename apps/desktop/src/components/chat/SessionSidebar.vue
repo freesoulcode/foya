@@ -3,11 +3,17 @@ import { computed, ref } from "vue";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  EllipsisIcon,
   FolderIcon,
+  FolderOpenIcon,
+  PencilIcon,
+  PinIcon,
+  PinOffIcon,
   PlusIcon,
   SettingsIcon,
   Trash2Icon,
 } from "@lucide/vue";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Sidebar,
   SidebarContent,
@@ -30,12 +36,21 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import type { Session } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { ProjectInfo, Session } from "@/lib/api";
 import SessionSidebarItem from "./SessionSidebarItem.vue";
 
 const props = defineProps<{
   isMac: boolean;
   sessions: Session[];
+  projects: ProjectInfo[];
   activeId: string;
   isDraft?: boolean;
   // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
@@ -47,11 +62,14 @@ function isRunning(id: string) {
 }
 
 const emit = defineEmits<{
-  (e: "new", workspace?: string): void;
+  (e: "new", projectID?: string): void;
   (e: "select", id: string): void;
   (e: "rename", id: string, title: string): void;
   (e: "pin", id: string, pinned: boolean): void;
   (e: "delete", id: string): void;
+  (e: "delete-project", id: string): void;
+  (e: "rename-project", id: string, name: string): void;
+  (e: "pin-project", id: string, pinned: boolean): void;
   (e: "open-settings"): void;
 }>();
 
@@ -61,6 +79,9 @@ function title(s: Session) {
 
 // 删除确认:点击删除只是打开应用内 Dialog,确认后才真正发出 delete 事件。
 const pendingDelete = ref<Session | null>(null);
+const pendingProjectDelete = ref<ProjectGroup | null>(null);
+const pendingProjectRename = ref<ProjectInfo | null>(null);
+const projectRename = ref("");
 
 function onDelete(s: Session) {
   pendingDelete.value = s;
@@ -71,18 +92,32 @@ function confirmDelete() {
   pendingDelete.value = null;
 }
 
-function normalizedWorkspace(workspace?: string): string {
-  return workspace?.replace(/[\\/]+$/, "") ?? "";
+function confirmProjectDelete() {
+  if (pendingProjectDelete.value) {
+    emit("delete-project", pendingProjectDelete.value.project.id);
+  }
+  pendingProjectDelete.value = null;
 }
 
-function projectBaseName(workspace: string): string {
-  const parts = normalizedWorkspace(workspace).split(/[\\/]/);
-  return parts[parts.length - 1] || workspace;
+function openProjectRename(project: ProjectInfo) {
+  pendingProjectRename.value = project;
+  projectRename.value = project.name;
 }
 
-function projectParentName(workspace: string): string {
-  const parts = normalizedWorkspace(workspace).split(/[\\/]/);
-  return parts.length > 1 ? parts[parts.length - 2] : "";
+function confirmProjectRename() {
+  const project = pendingProjectRename.value;
+  const name = projectRename.value.trim();
+  if (!project || !name) return;
+  emit("rename-project", project.id, name);
+  pendingProjectRename.value = null;
+}
+
+async function revealProject(project: ProjectInfo) {
+  try {
+    await revealItemInDir(project.path);
+  } catch (error) {
+    console.error("在访达中打开项目失败:", error);
+  }
 }
 
 function sortSessions(items: Session[]): Session[] {
@@ -95,30 +130,35 @@ function sortSessions(items: Session[]): Session[] {
 }
 
 const ungroupedSessions = computed(() =>
-  sortSessions(props.sessions.filter((session) => !session.workspace))
+  sortSessions(
+    props.sessions.filter(
+      (session) =>
+        !session.project_id ||
+        !props.projects.some((project) => project.id === session.project_id)
+    )
+  )
 );
 
 interface ProjectGroup {
-  workspace: string;
-  label: string;
+  project: ProjectInfo;
   sessions: Session[];
   updatedAt: string;
 }
 
 const collapsedProjects = ref<Set<string>>(new Set());
 
-function toggleProject(workspace: string) {
+function toggleProject(projectID: string) {
   const next = new Set(collapsedProjects.value);
-  if (next.has(workspace)) next.delete(workspace);
-  else next.add(workspace);
+  if (next.has(projectID)) next.delete(projectID);
+  else next.add(projectID);
   collapsedProjects.value = next;
 }
 
-function newProjectSession(workspace: string) {
+function newProjectSession(projectID: string) {
   const next = new Set(collapsedProjects.value);
-  next.delete(workspace);
+  next.delete(projectID);
   collapsedProjects.value = next;
-  emit("new", workspace);
+  emit("new", projectID);
 }
 
 function projectIsActive(project: ProjectGroup): boolean {
@@ -126,41 +166,43 @@ function projectIsActive(project: ProjectGroup): boolean {
 }
 
 const projectGroups = computed<ProjectGroup[]>(() => {
-  const grouped = new Map<string, Session[]>();
+  const grouped = new Map<string, Session[]>(
+    props.projects.map((project) => [project.id, []])
+  );
   for (const session of props.sessions) {
-    const workspace = normalizedWorkspace(session.workspace);
-    if (!workspace) continue;
-    const items = grouped.get(workspace) ?? [];
+    const projectID = session.project_id;
+    if (!projectID || !grouped.has(projectID)) continue;
+    const items = grouped.get(projectID) ?? [];
     items.push(session);
-    grouped.set(workspace, items);
+    grouped.set(projectID, items);
   }
 
-  const baseNameCounts = new Map<string, number>();
-  for (const workspace of grouped.keys()) {
-    const name = projectBaseName(workspace);
-    baseNameCounts.set(name, (baseNameCounts.get(name) ?? 0) + 1);
-  }
-
-  return Array.from(grouped.entries())
-    .map(([workspace, items]) => {
+  return props.projects
+    .map((project) => {
+      const items = grouped.get(project.id) ?? [];
       const sorted = sortSessions(items);
-      const baseName = projectBaseName(workspace);
-      const parentName = projectParentName(workspace);
       return {
-        workspace,
-        label:
-          (baseNameCounts.get(baseName) ?? 0) > 1 && parentName
-            ? `${parentName}/${baseName}`
-            : baseName,
+        project,
         sessions: sorted,
         updatedAt: sorted.reduce(
           (latest, session) =>
             session.updated_at > latest ? session.updated_at : latest,
-          ""
+          project.updated_at
         ),
       };
     })
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    .sort((a, b) => {
+      if (Boolean(a.project.pinned) !== Boolean(b.project.pinned)) {
+        return a.project.pinned ? -1 : 1;
+      }
+      const aTime = a.project.pinned
+        ? a.project.pinned_at ?? a.updatedAt
+        : a.updatedAt;
+      const bTime = b.project.pinned
+        ? b.project.pinned_at ?? b.updatedAt
+        : b.updatedAt;
+      return bTime.localeCompare(aTime);
+    });
 });
 </script>
 
@@ -214,7 +256,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
         <SidebarGroupContent class="space-y-2">
           <div
             v-for="project in projectGroups"
-            :key="project.workspace"
+            :key="project.project.id"
             class="min-w-0"
           >
             <div
@@ -228,12 +270,12 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               <button
                 type="button"
                 class="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left text-sm font-medium"
-                :title="project.workspace"
-                :aria-expanded="!collapsedProjects.has(project.workspace)"
-                @click="toggleProject(project.workspace)"
+                :title="project.project.path"
+                :aria-expanded="!collapsedProjects.has(project.project.id)"
+                @click="toggleProject(project.project.id)"
               >
                 <ChevronRightIcon
-                  v-if="collapsedProjects.has(project.workspace)"
+                  v-if="collapsedProjects.has(project.project.id)"
                   class="size-3.5 shrink-0 text-sidebar-foreground/60"
                 />
                 <ChevronDownIcon
@@ -241,21 +283,74 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   class="size-3.5 shrink-0 text-sidebar-foreground/60"
                 />
                 <FolderIcon class="size-4 shrink-0" />
-                <span class="truncate">{{ project.label }}</span>
+                <span class="truncate">{{ project.project.name }}</span>
               </button>
+              <PinIcon
+                v-if="project.project.pinned"
+                class="size-3 shrink-0 text-sidebar-foreground/50"
+                aria-label="已置顶"
+              />
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <button
+                    type="button"
+                    class="flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+                    :aria-label="`${project.project.name} 项目操作`"
+                    title="项目操作"
+                  >
+                    <EllipsisIcon class="size-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" class="w-40">
+                  <DropdownMenuItem @select="openProjectRename(project.project)">
+                    <PencilIcon />
+                    重命名
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    @select="
+                      emit(
+                        'pin-project',
+                        project.project.id,
+                        !project.project.pinned
+                      )
+                    "
+                  >
+                    <PinOffIcon v-if="project.project.pinned" />
+                    <PinIcon v-else />
+                    {{ project.project.pinned ? "取消置顶" : "置顶" }}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem @select="revealProject(project.project)">
+                    <FolderOpenIcon />
+                    在访达中打开
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    :disabled="project.sessions.length > 0"
+                    @select="pendingProjectDelete = project"
+                  >
+                    <Trash2Icon />
+                    {{
+                      project.sessions.length > 0
+                        ? "存在对话，无法删除"
+                        : "删除项目"
+                    }}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button
                 type="button"
                 class="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                :title="`在 ${project.label} 中新建对话`"
-                :aria-label="`在 ${project.label} 中新建对话`"
-                @click="newProjectSession(project.workspace)"
+                :title="`在 ${project.project.name} 中新建对话`"
+                :aria-label="`在 ${project.project.name} 中新建对话`"
+                @click="newProjectSession(project.project.id)"
               >
                 <PlusIcon class="size-3.5" />
               </button>
             </div>
 
             <div
-              v-if="!collapsedProjects.has(project.workspace)"
+              v-if="!collapsedProjects.has(project.project.id)"
               class="ml-[18px] border-l border-sidebar-border pb-1 pl-2 pt-1"
             >
               <SidebarMenu>
@@ -310,6 +405,61 @@ const projectGroups = computed<ProjectGroup[]>(() => {
         <Button variant="outline" @click="pendingDelete = null">取消</Button>
         <Button variant="destructive" @click="confirmDelete">删除</Button>
       </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog
+    :open="pendingProjectDelete !== null"
+    @update:open="(v) => !v && (pendingProjectDelete = null)"
+  >
+    <DialogContent class="max-w-md">
+      <DialogHeader>
+        <div class="flex items-center gap-2">
+          <Trash2Icon class="size-5 text-destructive" />
+          <DialogTitle>删除项目</DialogTitle>
+        </div>
+        <DialogDescription>
+          「{{ pendingProjectDelete?.project.name }}」将从 Foya 永久删除，磁盘文件不会被删除。
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter class="gap-2">
+        <Button variant="outline" @click="pendingProjectDelete = null">取消</Button>
+        <Button variant="destructive" @click="confirmProjectDelete">删除</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog
+    :open="pendingProjectRename !== null"
+    @update:open="(v) => !v && (pendingProjectRename = null)"
+  >
+    <DialogContent class="max-w-md">
+      <DialogHeader>
+        <DialogTitle>重命名项目</DialogTitle>
+        <DialogDescription class="sr-only">
+          修改项目显示名称
+        </DialogDescription>
+      </DialogHeader>
+      <form class="space-y-4" @submit.prevent="confirmProjectRename">
+        <Input
+          v-model="projectRename"
+          autofocus
+          aria-label="项目名称"
+          placeholder="项目名称"
+        />
+        <DialogFooter class="gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            @click="pendingProjectRename = null"
+          >
+            取消
+          </Button>
+          <Button type="submit" :disabled="!projectRename.trim()">
+            保存
+          </Button>
+        </DialogFooter>
+      </form>
     </DialogContent>
   </Dialog>
 </template>

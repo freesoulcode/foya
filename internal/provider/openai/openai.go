@@ -12,12 +12,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/respjson"
+	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 
 	"github.com/freesoulcode/foya/internal/message"
@@ -55,6 +57,72 @@ func New(cfg Config) *Provider {
 
 // Name 返回 provider 名。
 func (p *Provider) Name() string { return "openai" }
+
+// SearchWeb uses the Responses API hosted web-search tool. OpenAI-compatible
+// endpoints that do not implement Responses return an error and the caller
+// falls back to the configured external search provider.
+func (p *Provider) SearchWeb(ctx context.Context, model, query string, limit int) ([]provider.SearchResult, error) {
+	if model == "" {
+		model = p.model
+	}
+	if model == "" || strings.TrimSpace(query) == "" {
+		return nil, provider.ErrNativeSearchUnsupported
+	}
+	response, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model: shared.ResponsesModel(model),
+		Input: responses.ResponseNewParamsInputUnion{OfString: oai.String(
+			"Search the live web for the following query and answer using source citations: " + query,
+		)},
+		MaxToolCalls: oai.Int(4),
+		Tools: []responses.ToolUnionParam{
+			responses.ToolParamOfWebSearchPreview(responses.WebSearchToolTypeWebSearchPreview),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", provider.ErrNativeSearchUnsupported, err)
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 10 {
+		limit = 10
+	}
+	snippet := response.OutputText()
+	if len(snippet) > 500 {
+		snippet = snippet[:500]
+	}
+	seen := make(map[string]bool)
+	results := make([]provider.SearchResult, 0, limit)
+	for _, item := range response.Output {
+		for _, content := range item.Content {
+			for _, annotation := range content.Annotations {
+				if annotation.Type != "url_citation" {
+					continue
+				}
+				citation := annotation.AsURLCitation()
+				if citation.URL == "" || seen[citation.URL] {
+					continue
+				}
+				seen[citation.URL] = true
+				source := ""
+				if location, parseErr := url.Parse(citation.URL); parseErr == nil {
+					source = location.Hostname()
+				}
+				results = append(results, provider.SearchResult{
+					Title: citation.Title, URL: citation.URL, Snippet: snippet,
+					Source: source, Rank: len(results) + 1,
+				})
+				if len(results) >= limit {
+					return results, nil
+				}
+			}
+		}
+	}
+	if len(results) == 0 {
+		return nil, provider.ErrNativeSearchUnsupported
+	}
+	return results, nil
+}
 
 // ---- 类型转换 ----
 

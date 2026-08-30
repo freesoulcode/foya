@@ -47,7 +47,7 @@ type Submission struct {
 }
 
 // EditSubmission reports whether an edited turn started or needs explicit
-// confirmation that workspace effects from the old branch will remain.
+// confirmation that project effects from the old branch will remain.
 type EditSubmission struct {
 	Status  string
 	Effects []event.BranchEffect
@@ -347,7 +347,7 @@ func (b *Backend) CompactSession(
 }
 
 // EditTurn creates a new active history branch before targetUserSeq and starts
-// the replacement user turn. Superseded events and workspace changes are kept.
+// the replacement user turn. Superseded events and project changes are kept.
 func (b *Backend) EditTurn(
 	ctx context.Context,
 	sessionID string,

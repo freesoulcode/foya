@@ -11,14 +11,18 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/mcpclient"
+	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/terminal"
+	"github.com/freesoulcode/foya/internal/websearch"
 )
 
 // Server 承载 REST + SSE 路由。
@@ -59,12 +63,261 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}/queue/{message_id}", s.handleDeleteQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/queue/{message_id}/dispatch", s.handleDispatchQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
+	s.mux.HandleFunc("GET /skills", s.handleListSkills)
+	s.mux.HandleFunc("PATCH /skills/{ref}", s.handleSetSkillEnabled)
+	s.mux.HandleFunc("GET /projects", s.handleListProjects)
+	s.mux.HandleFunc("POST /projects", s.handleCreateProject)
+	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
+	s.mux.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
+	s.mux.HandleFunc("GET /projects/{id}/skills", s.handleProjectSkills)
+	s.mux.HandleFunc("GET /web-search", s.handleGetWebSearch)
+	s.mux.HandleFunc("PUT /web-search", s.handleUpdateWebSearch)
+	s.mux.HandleFunc("POST /web-search/test", s.handleTestWebSearch)
+	s.mux.HandleFunc("GET /mcp", s.handleGetMCP)
+	s.mux.HandleFunc("PUT /mcp", s.handleReplaceMCP)
+	s.mux.HandleFunc("GET /mcp/status", s.handleMCPStatus)
+	s.mux.HandleFunc("GET /mcp/registry", s.handleMCPRegistry)
+	s.mux.HandleFunc("GET /mcp/resources", s.handleMCPResources)
+	s.mux.HandleFunc("POST /mcp/resources/read", s.handleMCPReadResource)
+	s.mux.HandleFunc("GET /mcp/prompts", s.handleMCPPrompts)
+	s.mux.HandleFunc("POST /mcp/prompts/get", s.handleMCPGetPrompt)
 	s.mux.HandleFunc("POST /sessions/{id}/terminals", s.handleStartTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}", s.handleAttachTerminal)
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/input", s.handleWriteTerminal)
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
 	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
+}
+
+func (s *Server) handleGetMCP(w http.ResponseWriter, _ *http.Request) {
+	config, err := s.backend.MCPConfig()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "mcp_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) handleReplaceMCP(w http.ResponseWriter, r *http.Request) {
+	var config mcpclient.Config
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.ReplaceMCPConfig(r.Context(), config); err != nil {
+		writeErr(w, http.StatusBadRequest, "mcp_update_failed", err.Error())
+		return
+	}
+	updated, _ := s.backend.MCPConfig()
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleMCPStatus(w http.ResponseWriter, _ *http.Request) {
+	statuses, err := s.backend.MCPStatuses()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "mcp_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, statuses)
+}
+
+func (s *Server) handleMCPRegistry(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.SearchMCPRegistry(r.Context(), r.URL.Query().Get("search"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "mcp_registry_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
+	resources, err := s.backend.MCPResources(r.Context(), r.URL.Query().Get("server_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "mcp_resources_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resources)
+}
+
+func (s *Server) handleMCPReadResource(w http.ResponseWriter, r *http.Request) {
+	var input protocol.MCPResourceReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	result, err := s.backend.MCPReadResource(r.Context(), input.ServerID, input.URI)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "mcp_resource_read_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMCPPrompts(w http.ResponseWriter, r *http.Request) {
+	prompts, err := s.backend.MCPPrompts(r.Context(), r.URL.Query().Get("server_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "mcp_prompts_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, prompts)
+}
+
+func (s *Server) handleMCPGetPrompt(w http.ResponseWriter, r *http.Request) {
+	var input protocol.MCPPromptGetRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	result, err := s.backend.MCPGetPrompt(r.Context(), input.ServerID, input.Name, input.Args)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "mcp_prompt_get_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	var (
+		items any
+		err   error
+	)
+	if r.URL.Query().Get("all") == "true" {
+		items, err = s.backend.AllSkills(r.Context())
+	} else {
+		items, err = s.backend.Skills(r.Context())
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "skills_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.backend.Projects()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "projects_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var input protocol.ProjectCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.RegisterProject(input.Path, input.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "project_create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	var input protocol.ProjectUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.UpdateProject(r.PathValue("id"), input.Name, input.Pinned)
+	if err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "project_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.DeleteProject(r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, project.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
+		case errors.Is(err, backend.ErrProjectInUse):
+			writeErr(w, http.StatusConflict, "project_in_use", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "project_delete_failed", err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProjectSkills(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.ProjectSkills(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "skills_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleSetSkillEnabled(w http.ResponseWriter, r *http.Request) {
+	var input protocol.SkillEnableRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	ref := strings.TrimSpace(r.PathValue("ref"))
+	if ref == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "skill ref is required")
+		return
+	}
+	if err := s.backend.SetSkillEnabled(ref, input.Enabled); err != nil {
+		writeErr(w, http.StatusInternalServerError, "skill_update_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGetWebSearch(w http.ResponseWriter, _ *http.Request) {
+	settings, err := s.backend.WebSearchSettings()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "web_search_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdateWebSearch(w http.ResponseWriter, r *http.Request) {
+	var settings websearch.Settings
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.UpdateWebSearchSettings(settings); err != nil {
+		writeErr(w, http.StatusBadRequest, "web_search_update_failed", err.Error())
+		return
+	}
+	updated, _ := s.backend.WebSearchSettings()
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleTestWebSearch(w http.ResponseWriter, r *http.Request) {
+	var input protocol.WebSearchTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	results, err := s.backend.TestWebSearch(r.Context(), input.ProviderID, input.Query)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "web_search_test_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +328,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleCreateSession 新建会话。未指定模型时回退到默认 Connection 的模型。
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req protocol.CreateSessionRequest
-	// 兼容空 body(旧客户端):忽略解码错误。
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 
 	approval := req.ApprovalMode
 	if approval == "" {
@@ -87,7 +344,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ConnectionID:    req.ConnectionID,
 		Model:           req.Model,
 		ReasoningEffort: session.ReasoningEffort(req.ReasoningEffort),
-		Workspace:       req.Workspace,
+		ProjectID:       req.ProjectID,
 		ApprovalMode:    approval,
 	})
 	if err != nil {
@@ -99,18 +356,24 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "connection_not_found", err.Error())
 			return
 		}
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusBadRequest, "project_not_found", err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "create_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
 }
 
-// handleUpdateSession 局部更新会话可变字段(模型/工作目录/审批档位/标题),
+// handleUpdateSession 局部更新会话可变字段(模型/项目/审批档位/标题),
 // 供会话进行中实时切换审批档位、手动改名等场景。更新对后续工具调用立即生效。
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req protocol.UpdateSessionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -146,7 +409,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		req.ConnectionID,
 		req.Model,
 		req.ReasoningEffort,
-		req.Workspace,
+		req.ProjectID,
 		req.ApprovalMode,
 	)
 	if err != nil {
@@ -154,8 +417,12 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 			return
 		}
-		if errors.Is(err, session.ErrWorkspaceLocked) {
-			writeErr(w, http.StatusConflict, "workspace_locked", err.Error())
+		if errors.Is(err, session.ErrProjectLocked) {
+			writeErr(w, http.StatusConflict, "project_locked", err.Error())
+			return
+		}
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusBadRequest, "project_not_found", err.Error())
 			return
 		}
 		if errors.Is(err, session.ErrInvalidReasoningEffort) {
@@ -354,7 +621,7 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEditTurn branches before an active user message and runs its edited
-// replacement. Potential workspace effects require an explicit second request.
+// replacement. Potential project effects require an explicit second request.
 func (s *Server) handleEditTurn(w http.ResponseWriter, r *http.Request) {
 	rawSeq := r.PathValue("message_seq")
 	seq, err := strconv.ParseUint(rawSeq, 10, 64)

@@ -15,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:activeTurn": [value: number];
   "edit-message": [messageSeq: number, text: string];
+  "open-diff": [diff: string];
 }>();
 
 const scrollEl = ref<HTMLElement | null>(null);
@@ -211,6 +212,7 @@ onBeforeUnmount(() => {
           @edit="
             (messageSeq, text) => emit('edit-message', messageSeq, text)
           "
+          @open-diff="(diff) => emit('open-diff', diff)"
         />
       </div>
 

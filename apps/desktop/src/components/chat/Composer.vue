@@ -8,6 +8,7 @@ import {
   ShieldIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
+  FolderIcon,
   FolderOpenIcon,
   XIcon,
   CheckIcon,
@@ -16,12 +17,26 @@ import {
 } from "@lucide/vue";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  api,
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   type ApprovalMode,
   type ConnectionModelGroup,
   type ReasoningEffort,
   type ContextUsage as ContextUsageData,
   type QueuedMessage,
+  type ProjectInfo,
 } from "@/lib/api";
 import ContextUsage from "./ContextUsage.vue";
 import QueuedMessages from "./QueuedMessages.vue";
@@ -33,7 +48,8 @@ const props = withDefaults(
     connectionId?: string;
     model?: string;
     reasoningEffort?: ReasoningEffort;
-    workspace?: string;
+    projectId?: string;
+    projects?: ProjectInfo[];
     approval?: ApprovalMode;
     connections?: ConnectionModelGroup[];
     modelsLoading?: boolean;
@@ -42,7 +58,7 @@ const props = withDefaults(
     contextUsage?: ContextUsageData;
     contextWindow?: number;
     hasSession?: boolean;
-    workspaceLocked?: boolean;
+    projectLocked?: boolean;
   }>(),
   {
     disabled: false,
@@ -50,7 +66,8 @@ const props = withDefaults(
     connectionId: "",
     model: "",
     reasoningEffort: "",
-    workspace: "",
+    projectId: "",
+    projects: () => [],
     approval: "ask",
     connections: () => [],
     modelsLoading: false,
@@ -59,7 +76,7 @@ const props = withDefaults(
     contextUsage: undefined,
     contextWindow: 0,
     hasSession: false,
-    workspaceLocked: false,
+    projectLocked: false,
   }
 );
 
@@ -74,7 +91,8 @@ const emit = defineEmits<{
     e: "update:model-config",
     value: { connectionID: string; model: string; reasoningEffort: ReasoningEffort }
   ): void;
-  (e: "update:workspace", value: string): void;
+  (e: "update:project-id", value: string): void;
+  (e: "add-project"): void;
   (e: "update:approval", value: ApprovalMode): void;
   (e: "refresh-models"): void;
 }>();
@@ -237,26 +255,30 @@ function selectReasoningEffort(value: ReasoningEffort) {
   modelPickerOpen.value = false;
 }
 
-// ---- 文件夹绑定 ----
-async function pickFolder() {
-  if (props.disabled || props.workspaceLocked) return;
-  try {
-    const picked = await api.pickFolder();
-    if (picked) emit("update:workspace", picked);
-  } catch (e) {
-    console.error("选择文件夹失败:", e);
+const selectedProject = computed(
+  () => props.projects.find((project) => project.id === props.projectId) ?? null
+);
+
+const projectPickerOpen = ref(false);
+
+function selectProject(projectID: string) {
+  emit("update:project-id", projectID);
+  projectPickerOpen.value = false;
+}
+
+function selectProjectValue(value: unknown) {
+  if (
+    typeof value === "string" &&
+    props.projects.some((project) => project.id === value)
+  ) {
+    selectProject(value);
   }
 }
 
-function clearWorkspace() {
-  if (props.workspaceLocked) return;
-  emit("update:workspace", "");
-}
-
-function basename(p: string) {
-  if (!p) return "";
-  const parts = p.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || p;
+function createProjectFromPicker(event: Event) {
+  event.preventDefault();
+  projectPickerOpen.value = false;
+  emit("add-project");
 }
 
 // ---- 发送 ----
@@ -313,7 +335,7 @@ function onKeydown(e: KeyboardEvent) {
 
       <!-- 输入卡片 -->
       <div
-        class="relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+        class="composer-card relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
       >
         <div
           v-if="commandMenuOpen"
@@ -375,16 +397,16 @@ function onKeydown(e: KeyboardEvent) {
         />
 
         <!-- 底部工具栏 -->
-        <div class="flex items-center justify-between gap-2 px-2 pb-2">
-          <div class="flex items-center gap-0.5">
+        <div class="flex min-w-0 items-center gap-2 px-2 pb-2">
+          <div class="flex shrink-0 items-center gap-0.5">
             <!-- 绑定文件夹(+) -->
             <button
-              v-if="!workspaceLocked"
+              v-if="!projectLocked"
               type="button"
               :disabled="disabled"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              title="绑定工作文件夹"
-              @click="pickFolder"
+              title="添加项目"
+              @click="emit('add-project')"
             >
               <PlusIcon class="size-4" />
             </button>
@@ -394,7 +416,7 @@ function onKeydown(e: KeyboardEvent) {
               <button
                 type="button"
                 :disabled="disabled"
-                class="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
+                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
                 :class="
                   approval === 'bypass'
                     ? 'text-amber-600 dark:text-amber-400'
@@ -405,7 +427,7 @@ function onKeydown(e: KeyboardEvent) {
                 @click="approvalOpen = !approvalOpen"
               >
                 <ShieldIcon class="size-4" />
-                <span>{{ approvalLabel }}</span>
+                <span class="approval-label">{{ approvalLabel }}</span>
                 <ChevronDownIcon class="size-3.5 opacity-60" />
               </button>
 
@@ -433,21 +455,21 @@ function onKeydown(e: KeyboardEvent) {
             </div>
           </div>
 
-          <div class="flex shrink-0 items-center gap-1">
+          <div class="flex min-w-0 flex-1 items-center justify-end gap-1">
             <ContextUsage
               :usage="contextUsage"
               :context-window="contextWindow"
             />
 
             <!-- 两步模型选择器：模型 → 推理强度。 -->
-            <div ref="modelRef" class="relative">
+            <div ref="modelRef" class="relative min-w-0">
               <button
                 type="button"
                 :disabled="disabled"
-                class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+                class="flex min-w-0 max-w-full items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
                 @click="modelPickerOpen = !modelPickerOpen"
               >
-                <span>{{ modelPickerLabel }}</span>
+                <span class="truncate">{{ modelPickerLabel }}</span>
                 <ChevronDownIcon class="size-3.5 shrink-0 opacity-60" />
               </button>
 
@@ -605,32 +627,87 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
-      <!-- 下方：工作文件夹 -->
+      <!-- 下方：项目上下文 -->
       <div
-        v-if="!workspaceLocked"
         class="mt-1 flex items-center gap-2 rounded-xl bg-muted/40 px-3 py-2"
       >
-        <button
-          type="button"
-          :disabled="disabled"
-          class="flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-          :title="workspace || '选择文件夹（可选）'"
-          @click="pickFolder"
+        <FolderOpenIcon class="size-4 shrink-0 text-muted-foreground" />
+        <Popover
+          v-if="!projectLocked"
+          v-model:open="projectPickerOpen"
         >
-          <FolderOpenIcon class="size-4 shrink-0" />
-          <span class="truncate">
-            {{ workspace ? basename(workspace) : "选择文件夹（可选）" }}
-          </span>
-        </button>
-        <button
-          v-if="workspace"
-          type="button"
-          class="flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="取消绑定"
-          @click="clearWorkspace"
+          <PopoverTrigger as-child>
+            <button
+              type="button"
+              :disabled="disabled"
+              class="flex h-7 min-w-0 flex-1 items-center justify-between gap-2 text-left text-[13px] text-muted-foreground outline-none disabled:opacity-50"
+              aria-label="选择项目"
+            >
+              <span class="truncate">
+                {{
+                  selectedProject
+                    ? `${selectedProject.name} · ${selectedProject.path}`
+                    : "无项目"
+                }}
+              </span>
+              <ChevronDownIcon class="size-3.5 shrink-0 opacity-60" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="start"
+            :side-offset="6"
+            class="w-72 max-w-[calc(100vw-2rem)] gap-0 p-0"
+          >
+            <Command
+              :model-value="projectId"
+              @update:model-value="selectProjectValue"
+            >
+              <CommandInput placeholder="搜索项目" />
+              <CommandList class="max-h-52 p-1">
+                <CommandEmpty>未找到项目</CommandEmpty>
+                <CommandGroup>
+                  <CommandItem
+                    v-for="project in projects"
+                    :key="project.id"
+                    :value="project.id"
+                    class="h-9"
+                  >
+                    <FolderIcon class="size-4" />
+                    <span class="truncate">{{ project.name }}</span>
+                    <span class="sr-only">{{ project.path }}</span>
+                  </CommandItem>
+                </CommandGroup>
+              </CommandList>
+              <CommandSeparator />
+              <div class="p-1">
+                <button
+                  type="button"
+                  class="flex h-9 w-full items-center gap-2 rounded-sm px-2 text-sm outline-none hover:bg-muted focus-visible:bg-muted"
+                  @click="createProjectFromPicker"
+                >
+                  <PlusIcon class="size-4 text-muted-foreground" />
+                  新建项目
+                </button>
+                <button
+                  type="button"
+                  class="flex h-9 w-full items-center gap-2 rounded-sm px-2 text-sm outline-none hover:bg-muted focus-visible:bg-muted"
+                  @click="selectProject('')"
+                >
+                  <XIcon class="size-4 text-muted-foreground" />
+                  不在项目中工作
+                </button>
+              </div>
+            </Command>
+          </PopoverContent>
+        </Popover>
+        <span
+          v-else
+          class="min-w-0 flex-1 truncate text-[13px] text-muted-foreground"
+          :title="selectedProject?.path"
         >
-          <XIcon class="size-3" />
-        </button>
+          {{ selectedProject?.name ?? "无项目" }}
+        </span>
       </div>
 
       <p class="mt-2 text-center text-[11px] text-muted-foreground">
@@ -639,3 +716,15 @@ function onKeydown(e: KeyboardEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.composer-card {
+  container-type: inline-size;
+}
+
+@container (max-width: 520px) {
+  .approval-label {
+    display: none;
+  }
+}
+</style>

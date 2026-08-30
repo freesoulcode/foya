@@ -24,9 +24,12 @@ internal/
   session/         会话与多会话管理
   state/           日志即真相:Event Log + 投影
   tool/            工具接口、注册表、路由
+  skill/           内置、全局和项目级 Skills 发现与启停
+  mcpclient/       MCP tools/resources/prompts 与传输适配
+  websearch/       原生搜索、Google CSE 与 DuckDuckGo 路由
   approval/        审批网关与策略
   sandbox/         工具执行隔离
-  provider/        LLM provider 抽象(先 mock)
+  provider/        LLM provider 抽象与 OpenAI 兼容实现
   credential/      凭证存储(keychain / 加密文件降级)
   backend/         传输无关业务层:多连接、多会话、事件扇出
   server/          REST + SSE
@@ -42,6 +45,14 @@ make run     # 启动内核
 make test    # 运行测试
 ```
 
-## 状态
+## 已实现
 
-脚手架阶段:仅搭建工程结构与核心接口骨架,业务逻辑尚未实现,模型接入先用 mock/echo。
+- Go 常驻内核、本地 Unix socket、REST + SSE。
+- 多会话 Agent Loop、工具调用、审批、取消、队列与上下文压缩。
+- OpenAI 兼容模型连接和 BYOK 配置。
+- `bash`、`read`、`write`、`edit`、Skills、Web Search 与 WebFetch。
+- MCP stdio、Streamable HTTP、legacy SSE，以及 tools/resources/prompts。
+- `foya exec` 和 Skills、MCP、Web Search 管理命令。
+- Tauri + Vue 桌面端及对应设置界面。
+
+完整 MCP OAuth、客户端归属 MCP 和富媒体 artifact 仍在开发中。

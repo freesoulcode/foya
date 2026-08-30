@@ -33,9 +33,11 @@ func NewEditTool(gw approval.Gateway) Tool {
 	return &editTool{gw: gw}
 }
 
-func (t *editTool) Name() string        { return "edit" }
-func (t *editTool) Exposure() Exposure  { return ExposureDirect }
-func (t *editTool) Description() string { return "Edit an existing file by replacing exact text. Each old_text must uniquely match." }
+func (t *editTool) Name() string       { return "edit" }
+func (t *editTool) Exposure() Exposure { return ExposureDirect }
+func (t *editTool) Description() string {
+	return "Edit an existing file by replacing exact text. Each old_text must uniquely match."
+}
 
 func (t *editTool) Spec() []byte {
 	return []byte(`{
@@ -85,7 +87,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 
 	path := params.Path
 	if !filepath.IsAbs(path) {
-		if wd := WorkspaceFromContext(ctx); wd != "" {
+		if wd := CWDFromContext(ctx); wd != "" {
 			path = filepath.Join(wd, path)
 		}
 	}

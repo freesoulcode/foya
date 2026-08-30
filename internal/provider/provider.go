@@ -6,9 +6,12 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/freesoulcode/foya/internal/message"
 )
+
+var ErrNativeSearchUnsupported = errors.New("provider native web search is unsupported")
 
 // FunctionDef 是一个函数工具的定义。
 type FunctionDef struct {
@@ -37,6 +40,21 @@ type Usage struct {
 type ModelInfo struct {
 	ID            string `json:"id"`
 	ContextWindow int64  `json:"context_window,omitempty"`
+}
+
+// SearchResult 是跨 Provider 统一的网页搜索结果。
+type SearchResult struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Snippet string `json:"snippet,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Rank    int    `json:"rank"`
+}
+
+// NativeWebSearcher 是 Provider 的可选能力。实现仅在对应模型与协议确实
+// 支持原生联网搜索时返回结果；不支持时返回 ErrNativeSearchUnsupported。
+type NativeWebSearcher interface {
+	SearchWeb(ctx context.Context, model, query string, limit int) ([]SearchResult, error)
 }
 
 // StreamEvent 是模型流式响应的一个增量。

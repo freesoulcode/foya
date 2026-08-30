@@ -4,24 +4,27 @@ import { useKernel } from "@/composables/useKernel";
 import { usePlatform } from "@/composables/usePlatform";
 import { useWorkbar } from "@/composables/useWorkbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import type { ApprovalMode, ReasoningEffort, UpdateSessionPatch } from "@/lib/api";
+import { api, type ApprovalMode, type ReasoningEffort, type UpdateSessionPatch } from "@/lib/api";
+import { diffFilePath } from "@/lib/diff";
 import AppTitleBar from "@/components/AppTitleBar.vue";
 import SessionSidebar from "@/components/chat/SessionSidebar.vue";
 import MessageList from "@/components/chat/MessageList.vue";
 import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
-import SettingsWorkspace from "@/components/settings/SettingsWorkspace.vue";
+import SettingsPanel from "@/components/settings/SettingsPanel.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
+import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
 
 const { isMac } = usePlatform();
-const { open: workbarOpen } = useWorkbar();
+const { open: workbarOpen, openFile: openWorkbarFile } = useWorkbar();
 
 const {
   ready,
   streaming,
   sessions,
+  projects,
   runningSessions,
   compactingSessions,
   activeId,
@@ -52,9 +55,14 @@ const {
   deleteQueuedMessage,
   dispatchQueuedMessage,
   refreshConnections,
+  refreshProjects,
+  registerProject,
 } = useKernel();
 
 const settingsActive = ref(false);
+const projectCreateOpen = ref(false);
+const projectCreateBusy = ref(false);
+const projectCreateError = ref("");
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
 
@@ -88,7 +96,10 @@ function onTurnSelect(i: number) {
 
 // 退出设置工作区后刷新 Connection 目录，使新建连接立即出现在模型选择器。
 watch(settingsActive, (active) => {
-  if (!active) void refreshConnections();
+  if (!active) {
+    void refreshConnections();
+    void refreshProjects();
+  }
 });
 
 // 输入框当前展示的模型/工作目录/审批档位:草稿态读 draft,已建会话读 activeSession。
@@ -98,14 +109,21 @@ const composerModel = computed(() =>
 const composerConnectionID = computed(() =>
   isDraft.value ? draft.connectionID : activeSession.value?.connection_id ?? ""
 );
-const composerWorkspace = computed(() =>
-  isDraft.value ? draft.workspace : activeSession.value?.workspace ?? ""
+const currentProjectID = computed(() =>
+  isDraft.value ? draft.projectID : activeSession.value?.project_id ?? ""
 );
+const currentProject = computed(
+  () => projects.value.find((project) => project.id === currentProjectID.value) ?? null
+);
+const activeProjects = computed(() =>
+  projects.value
+);
+const projectPath = computed(() => currentProject.value?.path ?? "");
 const composerReasoningEffort = computed<ReasoningEffort>(
   () => (isDraft.value ? draft.reasoningEffort : activeSession.value?.reasoning_effort) ?? ""
 );
-const workspaceLocked = computed(
-  () => !isDraft.value && Boolean(activeSession.value?.workspace)
+const projectLocked = computed(
+  () => !isDraft.value && Boolean(activeSession.value?.project_id)
 );
 const composerApproval = computed<ApprovalMode>(
   () =>
@@ -131,6 +149,12 @@ const workbarObscured = computed(
     pendingHistoryEdit.value !== null
 );
 
+function onOpenDiff(diff: string) {
+  if (!projectPath.value) return;
+  const path = diffFilePath(diff, projectPath.value);
+  if (path) openWorkbarFile(projectPath.value, path, "diff", diff);
+}
+
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelConfigChange(value: {
   connectionID: string;
@@ -150,15 +174,34 @@ function onModelConfigChange(value: {
   }
 }
 
-function onWorkspaceChange(value: string) {
-  if (workspaceLocked.value) return;
-  if (isDraft.value) draft.workspace = value;
+function onProjectChange(value: string) {
+  if (projectLocked.value) return;
+  if (isDraft.value) draft.projectID = value;
   else if (activeId.value)
-    void updateSession(activeId.value, { workspace: value });
+    void updateSession(activeId.value, { project_id: value });
 }
 
-function onNewSession(workspace?: string) {
-  newSession(workspace);
+function onAddProject() {
+  projectCreateError.value = "";
+  projectCreateOpen.value = true;
+}
+
+async function onCreateProject(input: { name: string; path: string }) {
+  projectCreateBusy.value = true;
+  projectCreateError.value = "";
+  try {
+    const project = await registerProject(input.path, input.name);
+    projectCreateOpen.value = false;
+    onProjectChange(project.id);
+  } catch (error) {
+    projectCreateError.value = String(error);
+  } finally {
+    projectCreateBusy.value = false;
+  }
+}
+
+function onNewSession(projectID?: string) {
+  newSession(projectID);
 }
 
 function onApprovalChange(value: ApprovalMode) {
@@ -184,13 +227,41 @@ function onDelete(id: string) {
   void deleteSession(id);
 }
 
+async function onDeleteProject(id: string) {
+  try {
+    await api.deleteProject(id);
+    await refreshProjects();
+  } catch (error) {
+    console.error("删除项目失败:", error);
+  }
+}
+
+async function onRenameProject(id: string, name: string) {
+  try {
+    await api.updateProject(id, { name });
+    await refreshProjects();
+  } catch (error) {
+    console.error("重命名项目失败:", error);
+  }
+}
+
+async function onPinProject(id: string, pinned: boolean) {
+  try {
+    await api.updateProject(id, { pinned });
+    await refreshProjects();
+  } catch (error) {
+    console.error("更新项目置顶状态失败:", error);
+  }
+}
+
 onMounted(connect);
 </script>
 
 <template>
-  <SettingsWorkspace
+  <SettingsPanel
     v-if="settingsActive"
     :active="settingsActive"
+    :current-project-id="currentProjectID"
     @close="settingsActive = false"
   />
 
@@ -198,6 +269,7 @@ onMounted(connect);
     <SessionSidebar
       :is-mac="isMac"
       :sessions="sessions"
+      :projects="activeProjects"
       :running="runningSessions"
       :active-id="activeId"
       :is-draft="isDraft"
@@ -206,6 +278,9 @@ onMounted(connect);
       @rename="onRename"
       @pin="onPin"
       @delete="onDelete"
+      @delete-project="onDeleteProject"
+      @rename-project="onRenameProject"
+      @pin-project="onPinProject"
       @open-settings="settingsActive = true"
     />
 
@@ -233,6 +308,7 @@ onMounted(connect);
               :compacting="activeCompacting"
               :editable="queuedMessages.length === 0"
               @edit-message="editSentMessage"
+              @open-diff="onOpenDiff"
             />
           </div>
           <Composer
@@ -241,8 +317,9 @@ onMounted(connect);
             :model="composerModel"
             :connection-id="composerConnectionID"
             :reasoning-effort="composerReasoningEffort"
-            :workspace="composerWorkspace"
-            :workspace-locked="workspaceLocked"
+            :project-id="currentProjectID"
+            :projects="activeProjects"
+            :project-locked="projectLocked"
             :approval="composerApproval"
             :connections="connectionModels"
             :models-loading="modelsLoading"
@@ -258,7 +335,8 @@ onMounted(connect);
             @dispatch-queued="dispatchQueuedMessage"
             @delete-queued="deleteQueuedMessage"
             @update:model-config="onModelConfigChange"
-            @update:workspace="onWorkspaceChange"
+            @update:project-id="onProjectChange"
+            @add-project="onAddProject"
             @update:approval="onApprovalChange"
             @refresh-models="refreshConnections"
           />
@@ -268,7 +346,7 @@ onMounted(connect);
       <WorkbarPanel
         v-show="workbarOpen"
         :session-id="activeId || undefined"
-        :workspace="composerWorkspace"
+        :project-path="projectPath"
         :messages="messages"
         :obscured="workbarObscured"
         :ensure-session="ensureSession"
@@ -278,4 +356,10 @@ onMounted(connect);
 
   <ApprovalDialog />
   <HistoryEditDialog />
+  <ProjectCreateDialog
+    v-model:open="projectCreateOpen"
+    :busy="projectCreateBusy"
+    :error="projectCreateError"
+    @confirm="onCreateProject"
+  />
 </template>

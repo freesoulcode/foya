@@ -58,7 +58,7 @@ type Gateway interface {
 type ctxKey int
 
 const (
-	ctxKeyMode    ctxKey = iota
+	ctxKeyMode ctxKey = iota
 	ctxKeySession
 )
 
@@ -136,7 +136,7 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 			Session: req.Session,
 			Time:    time.Now(),
 			Payload: struct {
-				ID       string `json:"id"`
+				ID       string   `json:"id"`
 				Decision Decision `json:"decision"`
 			}{req.ID, d},
 		}

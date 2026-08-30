@@ -36,6 +36,12 @@ func (r *memRegistry) RegisterExternal(t Tool) {
 	r.tools[t.Name()] = t
 }
 
+func (r *memRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 func (r *memRegistry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

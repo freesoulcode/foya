@@ -72,6 +72,7 @@ type Engine struct {
 	// providerResolver binds a Session to its configured Connection. It is
 	// optional so focused engine tests can continue using the default provider.
 	providerResolver func(sessionID string) (provider.Provider, string)
+	projectResolver  func(projectID string) (string, bool)
 	modelWindows     map[string]int64
 	catalogLoaded    bool
 
@@ -91,6 +92,13 @@ type Engine struct {
 	// requestBudgets 保存每个会话最近一次成功请求的真实 input token 与请求体大小,
 	// 用于估算下一次请求。值带模型名,切换模型后自动退回完整载荷估算。
 	requestBudgets sync.Map // sessionID -> requestBudgetState
+}
+
+// SetProjectResolver resolves stable Project IDs to filesystem roots.
+func (e *Engine) SetProjectResolver(resolve func(projectID string) (string, bool)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.projectResolver = resolve
 }
 
 type requestBudgetState struct {
@@ -455,7 +463,7 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 }
 
 // RunEditedTurn executes the replacement turn after an earlier user message was
-// edited. The notice keeps the model aware that the workspace was not rewound.
+// edited. The notice keeps the model aware that the project tree was not rewound.
 func (e *Engine) RunEditedTurn(ctx context.Context, sessionID, userText string) error {
 	return e.runTurn(ctx, sessionID, userText, true)
 }
@@ -492,10 +500,13 @@ func (e *Engine) runTurn(
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
 
 	model := e.currentModel(sessionID)
+	prov, _ := e.currentProvider(sessionID)
 
 	// 注入会话级配置到 context:工作目录供工具读,审批档位供网关读。
 	if e.sessions != nil {
-		ctx = tool.WithWorkspace(ctx, e.resolveWorkspace(sessionID))
+		ctx = tool.WithCWD(ctx, e.resolveProjectPath(sessionID))
+		ctx = tool.WithProjectID(ctx, e.resolveProjectID(sessionID))
+		ctx = tool.WithModelRuntime(ctx, tool.ModelRuntime{Provider: prov, Model: model})
 		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
 		ctx = approval.WithSession(ctx, sessionID)
 	}
@@ -533,7 +544,7 @@ func (e *Engine) runTurn(
 		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
 		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
 		sysPrompt := prompt.Assemble(prompt.Input{
-			Workspace:    e.resolveWorkspace(sessionID),
+			ProjectPath:  e.resolveProjectPath(sessionID),
 			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
 		})
 		if editedHistory {
@@ -541,8 +552,8 @@ func (e *Engine) runTurn(
 
 <edited_history_notice>
 An earlier user message was edited and the superseded conversation suffix is not visible.
-The workspace was not rolled back and may still contain changes from that old branch or from the user.
-Inspect the current workspace before modifying files; do not assume it matches the visible conversation history.
+The project working tree was not rolled back and may still contain changes from that old branch or from the user.
+Inspect the current project tree before modifying files; do not assume it matches the visible conversation history.
 </edited_history_notice>`
 		}
 		messages, payloadUnits, err := e.prepareModelRequest(
@@ -558,7 +569,6 @@ Inspect the current workspace before modifying files; do not assume it matches t
 			return err
 		}
 
-		prov, _ := e.currentProvider(sessionID)
 		stream, err := prov.Stream(ctx, provider.Request{
 			Model:           model,
 			ReasoningEffort: e.resolveReasoningEffort(sessionID),
@@ -833,10 +843,24 @@ func resultText(r tool.Result) string {
 	return sb
 }
 
-// resolveWorkspace / resolveApprovalMode 从会话状态读取实时配置。
-func (e *Engine) resolveWorkspace(sessionID string) string {
+// resolveProjectPath resolves the stable project identity to its current path.
+func (e *Engine) resolveProjectPath(sessionID string) string {
+	if s, ok := e.sessions.Get(sessionID); ok && s.ProjectID != "" {
+		e.mu.RLock()
+		resolve := e.projectResolver
+		e.mu.RUnlock()
+		if resolve != nil {
+			if path, found := resolve(s.ProjectID); found {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func (e *Engine) resolveProjectID(sessionID string) string {
 	if s, ok := e.sessions.Get(sessionID); ok {
-		return s.Workspace
+		return s.ProjectID
 	}
 	return ""
 }

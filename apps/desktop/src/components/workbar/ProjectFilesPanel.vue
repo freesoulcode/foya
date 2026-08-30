@@ -49,18 +49,27 @@ import type {
   ToolCallView,
 } from "@/lib/api";
 import { api } from "@/lib/api";
+import {
+  diffFilePath,
+  diffStats,
+  fullDiffLines,
+  type FullDiffLine,
+} from "@/lib/diff";
 import { renderMarkdown } from "@/lib/markdown";
 
 const CodePreview = defineAsyncComponent(() => import("./CodePreview.vue"));
 
 const props = defineProps<{
-  workspace?: string;
+  projectPath?: string;
   selectedPath?: string;
+  selectedMode?: "file" | "diff";
+  diff?: string;
   messages: ChatMessage[];
 }>();
 
 const emit = defineEmits<{
   (event: "select", path: string): void;
+  (event: "update:selected-mode", mode: "file" | "diff"): void;
   (
     event: "entry-renamed",
     oldPath: string,
@@ -70,23 +79,32 @@ const emit = defineEmits<{
   (event: "entry-deleted", path: string, isDirectory: boolean): void;
 }>();
 
-interface DiffLine {
-  kind: "add" | "delete" | "context" | "hunk";
-  text: string;
-}
-
 interface FileDiff {
   raw: string;
-  lines: DiffLine[];
   additions: number;
   deletions: number;
 }
 
 type EditKind = "create-file" | "create-directory" | "rename";
 
+const TREE_MIN_WIDTH = 160;
+const TREE_MAX_WIDTH = 480;
+const PREVIEW_MIN_WIDTH = 240;
+const TREE_DEFAULT_WIDTH = 224;
+const TREE_WIDTH_KEY = "foya-project-tree-width-v1";
+
+function storedTreeWidth(): number {
+  const value = Number(localStorage.getItem(TREE_WIDTH_KEY));
+  if (!Number.isFinite(value)) return TREE_DEFAULT_WIDTH;
+  return Math.min(TREE_MAX_WIDTH, Math.max(TREE_MIN_WIDTH, Math.round(value)));
+}
+
+const panelRoot = ref<HTMLElement | null>(null);
 const entries = ref<ProjectEntry[]>([]);
 const collapsed = ref<Set<string>>(new Set());
 const treeOpen = ref(true);
+const treeWidth = ref(storedTreeWidth());
+const treeResizing = ref(false);
 const treeSelection = ref("");
 const query = ref("");
 const content = ref("");
@@ -109,15 +127,16 @@ const operating = ref(false);
 const notice = ref("");
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let fileRequest = 0;
+let stopTreeResize: (() => void) | null = null;
 
 const menuItemClass =
   "relative flex h-8 cursor-default select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
 const dangerMenuItemClass = `${menuItemClass} text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive`;
 
 const projectName = computed(() => {
-  if (!props.workspace) return "";
-  const parts = props.workspace.replace(/\/+$/, "").split(/[\\/]/);
-  return parts[parts.length - 1] || props.workspace;
+  if (!props.projectPath) return "";
+  const parts = props.projectPath.replace(/\/+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || props.projectPath;
 });
 
 const selectedEntry = computed(() =>
@@ -157,34 +176,15 @@ function collectToolCalls(message: ChatMessage): ToolCallView[] {
 }
 
 function diffPath(diff: string): string {
-  const marker = diff
-    .split("\n")
-    .find((line) => line.startsWith("+++ "));
-  if (!marker) return "";
-  let path = marker.slice(4).trim().replace(/^"|"$/g, "");
-  if (path === "/dev/null") return "";
-  path = path.replace(/^b\//, "").replace(/\\/g, "/");
-  const workspace = props.workspace?.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (workspace && path.startsWith(`${workspace}/`)) {
-    path = path.slice(workspace.length + 1);
-  }
-  return path;
+  return diffFilePath(diff, props.projectPath ?? "");
 }
 
 function parseDiff(raw: string): FileDiff {
-  const lines: DiffLine[] = [];
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("--- ") || line.startsWith("+++ ")) continue;
-    if (line.startsWith("@@")) lines.push({ kind: "hunk", text: line });
-    else if (line.startsWith("+")) lines.push({ kind: "add", text: line });
-    else if (line.startsWith("-")) lines.push({ kind: "delete", text: line });
-    else lines.push({ kind: "context", text: line });
-  }
+  const stats = diffStats(raw);
   return {
     raw,
-    lines,
-    additions: lines.filter((line) => line.kind === "add").length,
-    deletions: lines.filter((line) => line.kind === "delete").length,
+    additions: stats.additions,
+    deletions: stats.deletions,
   };
 }
 
@@ -200,8 +200,12 @@ const diffs = computed(() => {
   return result;
 });
 
-const selectedDiff = computed(() =>
-  props.selectedPath ? diffs.value.get(props.selectedPath) : undefined
+const selectedDiff = computed(() => {
+  if (props.diff) return parseDiff(props.diff);
+  return props.selectedPath ? diffs.value.get(props.selectedPath) : undefined;
+});
+const selectedDiffLines = computed(() =>
+  selectedDiff.value ? fullDiffLines(selectedDiff.value.raw, content.value) : []
 );
 const diffSignature = computed(() =>
   Array.from(diffs.value.entries())
@@ -227,15 +231,53 @@ const visibleEntries = computed(() => {
   });
 });
 
-function lineClass(kind: DiffLine["kind"]) {
+function startTreeResize(event: PointerEvent) {
+  event.preventDefault();
+  const startX = event.clientX;
+  const startWidth = treeWidth.value;
+  treeResizing.value = true;
+
+  const move = (next: PointerEvent) => {
+    const panelWidth = panelRoot.value?.getBoundingClientRect().width ?? 0;
+    const available = Math.max(TREE_MIN_WIDTH, panelWidth - PREVIEW_MIN_WIDTH);
+    const maxWidth = Math.min(TREE_MAX_WIDTH, available);
+    treeWidth.value = Math.min(
+      maxWidth,
+      Math.max(TREE_MIN_WIDTH, startWidth + startX - next.clientX)
+    );
+  };
+  const finish = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", finish);
+    window.removeEventListener("pointercancel", finish);
+    window.removeEventListener("blur", finish);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    treeResizing.value = false;
+    localStorage.setItem(TREE_WIDTH_KEY, String(Math.round(treeWidth.value)));
+    stopTreeResize = null;
+  };
+
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", finish, { once: true });
+  window.addEventListener("pointercancel", finish, { once: true });
+  window.addEventListener("blur", finish, { once: true });
+  stopTreeResize = finish;
+}
+
+function resetTreeWidth() {
+  treeWidth.value = TREE_DEFAULT_WIDTH;
+  localStorage.setItem(TREE_WIDTH_KEY, String(TREE_DEFAULT_WIDTH));
+}
+
+function lineClass(kind: FullDiffLine["kind"]) {
   if (kind === "add") {
     return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
   }
   if (kind === "delete") {
     return "bg-red-500/10 text-red-700 dark:text-red-300";
-  }
-  if (kind === "hunk") {
-    return "bg-blue-500/5 text-blue-600 dark:text-blue-300";
   }
   return "text-foreground/75";
 }
@@ -328,7 +370,7 @@ function validateName(name: string): string | undefined {
 }
 
 async function submitEdit() {
-  if (!props.workspace) return;
+  if (!props.projectPath) return;
   const name = editValue.value.trim();
   const validationError = validateName(name);
   if (validationError) {
@@ -342,7 +384,7 @@ async function submitEdit() {
     if (editKind.value === "rename" && editTarget.value) {
       const target = editTarget.value;
       const newPath = await api.renameProjectEntry(
-        props.workspace,
+        props.projectPath,
         target.path,
         name
       );
@@ -360,8 +402,8 @@ async function submitEdit() {
       const path = joinPath(editDirectory.value, name);
       const createdPath =
         editKind.value === "create-directory"
-          ? await api.createProjectDirectory(props.workspace, path)
-          : await api.createProjectFile(props.workspace, path);
+          ? await api.createProjectDirectory(props.projectPath, path)
+          : await api.createProjectFile(props.projectPath, path);
       if (editDirectory.value) {
         const next = new Set(collapsed.value);
         next.delete(editDirectory.value);
@@ -380,12 +422,12 @@ async function submitEdit() {
 }
 
 async function confirmDelete() {
-  if (!props.workspace || !deleteTarget.value) return;
+  if (!props.projectPath || !deleteTarget.value) return;
   const target = deleteTarget.value;
   operating.value = true;
   deleteError.value = "";
   try {
-    await api.deleteProjectEntry(props.workspace, target.path);
+    await api.deleteProjectEntry(props.projectPath, target.path);
     collapsed.value = new Set(
       Array.from(collapsed.value).filter(
         (path) =>
@@ -427,12 +469,12 @@ function copyText(text: string): Promise<void> {
 }
 
 async function copyEntryPath(entry = selectedEntry.value) {
-  if (!props.workspace) return;
+  if (!props.projectPath) return;
   inlineActionsPath.value = "";
   treeError.value = "";
   try {
     const path = await api.resolveProjectPath(
-      props.workspace,
+      props.projectPath,
       entry?.path ?? ""
     );
     await copyText(path);
@@ -443,12 +485,12 @@ async function copyEntryPath(entry = selectedEntry.value) {
 }
 
 async function revealEntry(entry = selectedEntry.value) {
-  if (!props.workspace) return;
+  if (!props.projectPath) return;
   inlineActionsPath.value = "";
   treeError.value = "";
   try {
     const path = await api.resolveProjectPath(
-      props.workspace,
+      props.projectPath,
       entry?.path ?? ""
     );
     await revealItemInDir(path);
@@ -480,14 +522,14 @@ async function onMarkdownClick(event: MouseEvent) {
 }
 
 async function loadTree() {
-  if (!props.workspace) {
+  if (!props.projectPath) {
     entries.value = [];
     return;
   }
   loadingTree.value = true;
   treeError.value = "";
   try {
-    entries.value = await api.listProjectFiles(props.workspace);
+    entries.value = await api.listProjectFiles(props.projectPath);
     if (
       treeSelection.value &&
       !entries.value.some((entry) => entry.path === treeSelection.value)
@@ -504,7 +546,7 @@ async function loadTree() {
 
 async function loadFile() {
   const request = ++fileRequest;
-  if (!props.workspace || !props.selectedPath) {
+  if (!props.projectPath || !props.selectedPath) {
     content.value = "";
     fileError.value = "";
     return;
@@ -513,7 +555,7 @@ async function loadFile() {
   fileError.value = "";
   try {
     const next = await api.readProjectFile(
-      props.workspace,
+      props.projectPath,
       props.selectedPath
     );
     if (request === fileRequest) content.value = next;
@@ -528,7 +570,7 @@ async function loadFile() {
 }
 
 watch(
-  () => props.workspace,
+  () => props.projectPath,
   () => {
     collapsed.value = new Set();
     treeSelection.value = "";
@@ -544,16 +586,18 @@ watch(
   (path) => {
     if (path) treeSelection.value = path;
     inlineActionsPath.value = "";
-    previewMode.value = selectedDiff.value ? "diff" : "file";
+    previewMode.value =
+      props.selectedMode === "diff" && selectedDiff.value ? "diff" : "file";
     void loadFile();
   },
   { immediate: true }
 );
 
 watch(
-  () => selectedDiff.value?.raw,
-  (value, previous) => {
-    if (value && !previous) previewMode.value = "diff";
+  () => props.selectedMode,
+  (mode) => {
+    previewMode.value =
+      mode === "diff" && selectedDiff.value ? "diff" : "file";
   }
 );
 
@@ -563,14 +607,15 @@ watch(diffSignature, (value, previous) => {
 
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer);
+  stopTreeResize?.();
 });
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 bg-background">
+  <div ref="panelRoot" class="relative flex h-full min-h-0 bg-background">
     <section class="relative flex min-w-0 flex-1 flex-col">
       <Button
-        v-if="workspace && !treeOpen"
+        v-if="projectPath && !treeOpen"
         size="icon"
         variant="ghost"
         class="absolute right-1.5 top-1.5 z-20 size-7"
@@ -606,7 +651,10 @@ onBeforeUnmount(() => {
                 ? 'bg-background text-foreground shadow-sm'
                 : 'text-muted-foreground',
             ]"
-            @click="previewMode = mode"
+            @click="
+              previewMode = mode;
+              emit('update:selected-mode', mode);
+            "
           >
             {{ mode === "file" ? "文件" : "变更" }}
           </button>
@@ -644,12 +692,15 @@ onBeforeUnmount(() => {
           <span class="text-red-600">-{{ selectedDiff.deletions }}</span>
         </div>
         <div
-          v-for="(line, index) in selectedDiff.lines"
+          v-for="(line, index) in selectedDiffLines"
           :key="index"
           :class="['flex min-w-max', lineClass(line.kind)]"
         >
+          <span class="w-4 shrink-0 select-none text-center opacity-60">
+            {{ line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " " }}
+          </span>
           <span class="w-10 shrink-0 select-none border-r border-border/60 pr-2 text-right text-muted-foreground/50">
-            {{ index + 1 }}
+            {{ line.lineNumber ?? "" }}
           </span>
           <span class="whitespace-pre px-2">{{ line.text || " " }}</span>
         </div>
@@ -670,10 +721,24 @@ onBeforeUnmount(() => {
     </section>
 
     <aside
-      v-if="workspace && treeOpen"
-      class="flex w-56 shrink-0 flex-col border-l border-border bg-muted/10"
+      v-if="projectPath && treeOpen"
+      :class="[
+        'relative flex shrink-0 flex-col border-l border-border bg-muted/10',
+        !treeResizing && 'transition-[width] duration-150',
+      ]"
+      :style="{ width: `${treeWidth}px` }"
       aria-label="项目文件"
     >
+      <button
+        type="button"
+        class="absolute -left-1 top-0 z-30 h-full w-2 cursor-col-resize touch-none"
+        aria-label="调整文件列表宽度"
+        title="拖动调整文件列表宽度，双击恢复默认"
+        @pointerdown="startTreeResize"
+        @dblclick="resetTreeWidth"
+      >
+        <span class="absolute left-1/2 top-1/2 h-10 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-border opacity-0 transition-opacity hover:opacity-100" />
+      </button>
       <div class="flex h-10 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
         <span class="min-w-0 flex-1 truncate pl-1 text-xs font-medium">
           {{ projectName }}

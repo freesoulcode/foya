@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -21,17 +22,23 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
+	"github.com/freesoulcode/foya/internal/websearch"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var (
 	ErrConnectionNotFound = fmt.Errorf("connection not found")
 	ErrConnectionInUse    = fmt.Errorf("connection is in use by a session")
 	ErrUnsupportedAuth    = fmt.Errorf("unsupported connection auth kind")
+	ErrProjectInUse       = fmt.Errorf("project is in use by a session")
 )
 
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
@@ -45,14 +52,266 @@ type Backend struct {
 	engine   *agent.Engine
 	approval approval.Gateway
 	terminal terminal.Manager
+	skills   *skill.Manager
+	web      *websearch.Manager
+	mcp      *mcpclient.Manager
+	projects *project.Manager
 
 	buildProvider     ProviderBuilder
 	dataDir           string
 	mu                sync.RWMutex
+	projectMu         sync.Mutex
 	connections       map[string]config.Connection
 	providers         map[string]provider.Provider
 	firstConnectionID string
 	turns             *turnScheduler
+}
+
+// SetCapabilityManagers attaches optional capability services assembled by the
+// kernel composition root.
+func (b *Backend) SetCapabilityManagers(skills *skill.Manager, web *websearch.Manager, mcp *mcpclient.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.skills = skills
+	b.web = web
+	b.mcp = mcp
+}
+
+func (b *Backend) SetProjectManager(projects *project.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.projects = projects
+}
+
+func (b *Backend) Projects() ([]project.Project, error) {
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("projects are unavailable")
+	}
+	return manager.List(), nil
+}
+
+func (b *Backend) RegisterProject(path, name string) (project.Project, error) {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return project.Project{}, errors.New("projects are unavailable")
+	}
+	return manager.Create(path, name)
+}
+
+func (b *Backend) Project(id string) (project.Project, error) {
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return project.Project{}, errors.New("projects are unavailable")
+	}
+	item, ok := manager.Get(id)
+	if !ok {
+		return project.Project{}, project.ErrNotFound
+	}
+	return item, nil
+}
+
+func (b *Backend) UpdateProject(
+	id string,
+	name *string,
+	pinned *bool,
+) (project.Project, error) {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return project.Project{}, errors.New("projects are unavailable")
+	}
+	return manager.Update(id, name, pinned)
+}
+
+func (b *Backend) DeleteProject(id string) error {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
+	for _, item := range b.sessions.List() {
+		if item.ProjectID == id {
+			return ErrProjectInUse
+		}
+	}
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("projects are unavailable")
+	}
+	return manager.Delete(id)
+}
+
+func (b *Backend) Skills(ctx context.Context) ([]skill.Skill, error) {
+	b.mu.RLock()
+	manager := b.skills
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("skills are unavailable")
+	}
+	return manager.List(ctx, "", "")
+}
+
+func (b *Backend) AllSkills(ctx context.Context) ([]skill.Skill, error) {
+	b.mu.RLock()
+	manager := b.skills
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("skills are unavailable")
+	}
+	return manager.ListAll(ctx, "", "")
+}
+
+func (b *Backend) ProjectSkills(ctx context.Context, projectID string) ([]skill.Skill, error) {
+	b.mu.RLock()
+	skillManager := b.skills
+	projectManager := b.projects
+	b.mu.RUnlock()
+	if skillManager == nil || projectManager == nil {
+		return nil, errors.New("project skills are unavailable")
+	}
+	item, ok := projectManager.Get(projectID)
+	if !ok {
+		return nil, project.ErrNotFound
+	}
+	return skillManager.ListAll(ctx, item.ID, item.Path)
+}
+
+func (b *Backend) SetSkillEnabled(ref string, enabled bool) error {
+	b.mu.RLock()
+	manager := b.skills
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("skills are unavailable")
+	}
+	return manager.SetEnabled(ref, enabled)
+}
+
+func (b *Backend) WebSearchSettings() (websearch.Settings, error) {
+	b.mu.RLock()
+	manager := b.web
+	b.mu.RUnlock()
+	if manager == nil {
+		return websearch.Settings{}, errors.New("web search is unavailable")
+	}
+	return manager.Settings(), nil
+}
+
+func (b *Backend) UpdateWebSearchSettings(settings websearch.Settings) error {
+	b.mu.RLock()
+	manager := b.web
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("web search is unavailable")
+	}
+	return manager.Update(settings)
+}
+
+func (b *Backend) TestWebSearch(ctx context.Context, providerID, query string) ([]provider.SearchResult, error) {
+	b.mu.RLock()
+	manager := b.web
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("web search is unavailable")
+	}
+	return manager.Test(ctx, providerID, query)
+}
+
+func (b *Backend) SearchWeb(ctx context.Context, query string) ([]provider.SearchResult, string, error) {
+	b.mu.RLock()
+	manager := b.web
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, "", errors.New("web search is unavailable")
+	}
+	return manager.Search(ctx, websearch.Request{Query: query})
+}
+
+func (b *Backend) MCPConfig() (mcpclient.Config, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return mcpclient.Config{}, errors.New("MCP is unavailable")
+	}
+	return manager.Config(), nil
+}
+
+func (b *Backend) ReplaceMCPConfig(ctx context.Context, config mcpclient.Config) error {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("MCP is unavailable")
+	}
+	return manager.Replace(ctx, config)
+}
+
+func (b *Backend) MCPStatuses() ([]mcpclient.Status, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("MCP is unavailable")
+	}
+	return manager.Statuses(), nil
+}
+
+func (b *Backend) SearchMCPRegistry(
+	ctx context.Context,
+	query string,
+) ([]mcpclient.RegistryServer, error) {
+	return mcpclient.SearchRegistry(ctx, query)
+}
+
+func (b *Backend) MCPResources(ctx context.Context, serverID string) ([]*mcp.Resource, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("MCP is unavailable")
+	}
+	return manager.Resources(ctx, serverID)
+}
+
+func (b *Backend) MCPReadResource(ctx context.Context, serverID, uri string) (*mcp.ReadResourceResult, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("MCP is unavailable")
+	}
+	return manager.ReadResource(ctx, serverID, uri)
+}
+
+func (b *Backend) MCPPrompts(ctx context.Context, serverID string) ([]*mcp.Prompt, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("MCP is unavailable")
+	}
+	return manager.Prompts(ctx, serverID)
+}
+
+func (b *Backend) MCPGetPrompt(ctx context.Context, serverID, name string, args map[string]string) (*mcp.GetPromptResult, error) {
+	b.mu.RLock()
+	manager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("MCP is unavailable")
+	}
+	return manager.GetPrompt(ctx, serverID, name, args)
 }
 
 // New 组装一个 Backend。
@@ -84,6 +343,8 @@ func New(
 
 // CreateSession 新建会话。
 func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, error) {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
 	b.mu.RLock()
 	connectionID := opts.ConnectionID
 	if connectionID == "" {
@@ -98,6 +359,9 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 		opts.Model = connection.DefaultModel
 	}
 	opts.ConnectionID = connectionID
+	if err := b.resolveSessionProject(&opts); err != nil {
+		return nil, err
+	}
 	return b.sessions.Create(opts)
 }
 
@@ -105,8 +369,10 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 func (b *Backend) UpdateSession(
 	ctx context.Context,
 	id string,
-	connectionID, model, reasoningEffort, workspace, approvalMode *string,
+	connectionID, model, reasoningEffort, projectID, approvalMode *string,
 ) (*session.Session, error) {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
 	if connectionID != nil {
 		b.mu.RLock()
 		_, exists := b.connections[*connectionID]
@@ -115,12 +381,33 @@ func (b *Backend) UpdateSession(
 			return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, *connectionID)
 		}
 	}
-	updated, err := b.sessions.Update(id, connectionID, model, reasoningEffort, workspace, approvalMode)
+	if projectID != nil && *projectID != "" {
+		if _, err := b.Project(*projectID); err != nil {
+			return nil, err
+		}
+	}
+	updated, err := b.sessions.Update(id, connectionID, model, reasoningEffort, projectID, approvalMode)
 	if err != nil {
 		return nil, err
 	}
 	b.broadcastSession(ctx, updated)
 	return updated, nil
+}
+
+func (b *Backend) resolveSessionProject(opts *session.CreateOptions) error {
+	b.mu.RLock()
+	manager := b.projects
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil
+	}
+	if opts.ProjectID != "" {
+		_, ok := manager.Get(opts.ProjectID)
+		if !ok {
+			return project.ErrNotFound
+		}
+	}
+	return nil
 }
 
 // RenameSession 手动改名。
@@ -201,7 +488,7 @@ func (b *Backend) ResolveApproval(requestID string, decision string) {
 	b.approval.Resolve(requestID, d)
 }
 
-// StartTerminal starts an interactive shell in the session workspace.
+// StartTerminal starts an interactive shell in the session project.
 func (b *Backend) StartTerminal(
 	ctx context.Context,
 	sessionID string,
@@ -211,7 +498,15 @@ func (b *Backend) StartTerminal(
 	if !ok {
 		return terminal.Snapshot{}, session.ErrNotFound
 	}
-	return b.terminal.Start(ctx, sessionID, s.Workspace, cols, rows)
+	projectPath := ""
+	if s.ProjectID != "" {
+		item, err := b.Project(s.ProjectID)
+		if err != nil {
+			return terminal.Snapshot{}, err
+		}
+		projectPath = item.Path
+	}
+	return b.terminal.Start(ctx, sessionID, projectPath, cols, rows)
 }
 
 // AttachTerminal returns the current recoverable terminal snapshot.

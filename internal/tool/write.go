@@ -26,9 +26,11 @@ func NewWriteTool(gw approval.Gateway) Tool {
 	return &writeTool{gw: gw}
 }
 
-func (t *writeTool) Name() string        { return "write" }
-func (t *writeTool) Exposure() Exposure  { return ExposureDirect }
-func (t *writeTool) Description() string { return "Write content to a file (creates or overwrites). Use for creating new files." }
+func (t *writeTool) Name() string       { return "write" }
+func (t *writeTool) Exposure() Exposure { return ExposureDirect }
+func (t *writeTool) Description() string {
+	return "Write content to a file (creates or overwrites). Use for creating new files."
+}
 
 func (t *writeTool) Spec() []byte {
 	return []byte(`{
@@ -64,7 +66,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 
 	path := params.Path
 	if !filepath.IsAbs(path) {
-		if wd := WorkspaceFromContext(ctx); wd != "" {
+		if wd := CWDFromContext(ctx); wd != "" {
 			path = filepath.Join(wd, path)
 		}
 	}

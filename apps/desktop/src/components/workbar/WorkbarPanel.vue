@@ -31,7 +31,7 @@ import BrowserPanel from "./BrowserPanel.vue";
 
 const props = defineProps<{
   sessionId?: string;
-  workspace?: string;
+  projectPath?: string;
   messages: ChatMessage[];
   obscured?: boolean;
   ensureSession: () => Promise<string>;
@@ -83,7 +83,7 @@ const launcherItems = computed<
     icon: LucideIcon;
   }>
 >(() => [
-  ...(props.workspace
+  ...(props.projectPath
     ? [{ kind: "files" as const, title: "文件", icon: FolderIcon }]
     : []),
   { kind: "browser", title: "浏览器", icon: GlobeIcon },
@@ -97,16 +97,20 @@ function addFeature(kind: WorkbarLaunchKind) {
 
 function launchFeature(kind: "files" | WorkbarLaunchKind) {
   if (kind === "files") {
-    if (props.workspace) openFiles(props.workspace);
+    if (props.projectPath) openFiles(props.projectPath);
     return;
   }
   addFeature(kind);
 }
 
 function selectFile(path: string) {
-  if (props.workspace) {
-    openFile(props.workspace, path);
+  if (props.projectPath) {
+    openFile(props.projectPath, path);
   }
+}
+
+function setFileMode(mode: "file" | "diff") {
+  if (activeTab.value?.kind === "file") activeTab.value.view = mode;
 }
 
 function activateTab(tab: WorkbarTab) {
@@ -118,14 +122,14 @@ function closeWorkbarTab(tab: WorkbarTab) {
 }
 
 function entryRenamed(oldPath: string, newPath: string, isDirectory: boolean) {
-  if (props.workspace) {
-    renameEntryTabs(props.workspace, oldPath, newPath, isDirectory);
+  if (props.projectPath) {
+    renameEntryTabs(props.projectPath, oldPath, newPath, isDirectory);
   }
 }
 
 function entryDeleted(path: string, isDirectory: boolean) {
-  if (props.workspace) {
-    resetDeletedEntryTab(props.workspace, path, isDirectory);
+  if (props.projectPath) {
+    resetDeletedEntryTab(props.projectPath, path, isDirectory);
   }
 }
 
@@ -196,9 +200,9 @@ function startResize(event: PointerEvent) {
 onBeforeUnmount(() => stopResize?.());
 
 watch(
-  () => props.workspace,
-  (workspace, previous) => {
-    if (workspace !== previous) closeFileTabs();
+  () => props.projectPath,
+  (projectPath, previous) => {
+    if (projectPath !== previous) closeFileTabs();
   }
 );
 </script>
@@ -345,14 +349,25 @@ watch(
             activeTab?.kind === 'file'
           "
           class="absolute inset-0"
-          :workspace="workspace"
+          :project-path="projectPath"
           :selected-path="
-            activeTab?.kind === 'file' && activeTab.workspace === workspace
+            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
               ? activeTab.path
+              : undefined
+          "
+          :selected-mode="
+            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
+              ? activeTab.view
+              : undefined
+          "
+          :diff="
+            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
+              ? activeTab.diff
               : undefined
           "
           :messages="messages"
           @select="selectFile"
+          @update:selected-mode="setFileMode"
           @entry-renamed="entryRenamed"
           @entry-deleted="entryDeleted"
         />

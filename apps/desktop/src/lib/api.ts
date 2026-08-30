@@ -9,7 +9,7 @@ export interface Session {
   connection_id: string;
   model: string;
   reasoning_effort?: ReasoningEffort;
-  workspace?: string;
+  project_id?: string;
   approval_mode?: string;
   title?: string;
   title_is_manual?: boolean;
@@ -27,16 +27,16 @@ export interface CreateSessionOptions {
   connection_id?: string;
   model?: string;
   reasoning_effort?: ReasoningEffort;
-  workspace?: string;
+  project_id?: string;
   approval_mode?: string;
 }
 
-// 局部更新会话配置(undefined 表示不变)。workspace 绑定后不可更换。
+// 局部更新会话配置(undefined 表示不变)。project_id 绑定后不可更换。
 export interface UpdateSessionPatch {
   connection_id?: string;
   model?: string;
   reasoning_effort?: ReasoningEffort;
-  workspace?: string;
+  project_id?: string;
   approval_mode?: string;
   title?: string;
   pinned?: boolean;
@@ -179,6 +179,110 @@ export interface ConnectionConfig {
   sort_order: number;
 }
 
+export interface SkillInfo {
+  ref: string;
+  name: string;
+  description?: string;
+  scope: "builtin" | "global" | "project";
+  path?: string;
+  enabled: boolean;
+  allowed_tools?: string[];
+}
+
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  available: boolean;
+  pinned?: boolean;
+  pinned_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SearchProviderConfig {
+  id: string;
+  kind: "google_cse" | "bing" | "baidu";
+  name: string;
+  enabled: boolean;
+  api_key?: string;
+  has_api_key?: boolean;
+  search_engine_id?: string;
+  endpoint?: string;
+}
+
+export interface WebSearchSettings {
+  enabled: boolean;
+  default_provider?: string;
+  providers: SearchProviderConfig[];
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet?: string;
+  source?: string;
+  rank: number;
+}
+
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: "stdio" | "streamable_http" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  bearer_token?: string;
+  has_token?: boolean;
+}
+
+export interface McpConfig {
+  version: number;
+  servers: McpServerConfig[];
+}
+
+export interface McpStatus {
+  id: string;
+  name: string;
+  state: "disabled" | "disconnected" | "connecting" | "connected" | "error";
+  transport: string;
+  tool_count: number;
+  resource_count: number;
+  prompt_count: number;
+  error?: string;
+}
+
+export interface McpRegistryServer {
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  installable: boolean;
+  reason?: string;
+  config: McpServerConfig;
+}
+
+function parseWebSearchSettings(raw: string): WebSearchSettings {
+  const parsed = JSON.parse(raw) as Partial<WebSearchSettings> | null;
+  return {
+    enabled: parsed?.enabled ?? true,
+    default_provider: parsed?.default_provider,
+    providers: Array.isArray(parsed?.providers) ? parsed.providers : [],
+  };
+}
+
+function parseMcpConfig(raw: string): McpConfig {
+  const parsed = JSON.parse(raw) as Partial<McpConfig> | null;
+  return {
+    version: parsed?.version ?? 1,
+    servers: Array.isArray(parsed?.servers) ? parsed.servers : [],
+  };
+}
+
 export const api = {
   createSession: (opts?: CreateSessionOptions) =>
     invoke<string>("create_session", { options: opts ?? null }).then(
@@ -197,28 +301,28 @@ export const api = {
   pickFolder: () =>
     open({ directory: true, multiple: false, title: "选择工作文件夹" }),
 
-  listProjectFiles: (workspace: string) =>
-    invoke<string>("list_project_files", { workspace }).then(
+  listProjectFiles: (projectPath: string) =>
+    invoke<string>("list_project_files", { projectPath }).then(
       (result) => (JSON.parse(result) as ProjectEntry[]) ?? []
     ),
 
-  readProjectFile: (workspace: string, path: string) =>
-    invoke<string>("read_project_file", { workspace, path }),
+  readProjectFile: (projectPath: string, path: string) =>
+    invoke<string>("read_project_file", { projectPath, path }),
 
-  createProjectFile: (workspace: string, path: string) =>
-    invoke<string>("create_project_file", { workspace, path }),
+  createProjectFile: (projectPath: string, path: string) =>
+    invoke<string>("create_project_file", { projectPath, path }),
 
-  createProjectDirectory: (workspace: string, path: string) =>
-    invoke<string>("create_project_directory", { workspace, path }),
+  createProjectDirectory: (projectPath: string, path: string) =>
+    invoke<string>("create_project_directory", { projectPath, path }),
 
-  renameProjectEntry: (workspace: string, path: string, newName: string) =>
-    invoke<string>("rename_project_entry", { workspace, path, newName }),
+  renameProjectEntry: (projectPath: string, path: string, newName: string) =>
+    invoke<string>("rename_project_entry", { projectPath, path, newName }),
 
-  deleteProjectEntry: (workspace: string, path: string) =>
-    invoke("delete_project_entry", { workspace, path }),
+  deleteProjectEntry: (projectPath: string, path: string) =>
+    invoke("delete_project_entry", { projectPath, path }),
 
-  resolveProjectPath: (workspace: string, path = "") =>
-    invoke<string>("resolve_project_path", { workspace, path }),
+  resolveProjectPath: (projectPath: string, path = "") =>
+    invoke<string>("resolve_project_path", { projectPath, path }),
 
   listSessions: () =>
     invoke<string>("list_sessions").then((r) => (JSON.parse(r) as Session[]) ?? []),
@@ -316,6 +420,73 @@ export const api = {
           context_windows: result.context_windows ?? {},
         } satisfies ConnectionModelCatalog;
       }
+    ),
+
+  listSkills: () =>
+    invoke<string>("list_skills").then(
+      (r) => (JSON.parse(r) as SkillInfo[]) ?? []
+    ),
+
+  listProjects: () =>
+    invoke<string>("list_projects").then(
+      (r) => (JSON.parse(r) as ProjectInfo[]) ?? []
+    ),
+
+  registerProject: (path: string, name = "") =>
+    invoke<string>("register_project", { path, name: name.trim() }).then(
+      (r) => JSON.parse(r) as ProjectInfo
+    ),
+
+  updateProject: (
+    projectId: string,
+    patch: { name?: string; pinned?: boolean }
+  ) =>
+    invoke<string>("update_project", { projectId, patch }).then(
+      (r) => JSON.parse(r) as ProjectInfo
+    ),
+
+  deleteProject: (projectId: string) =>
+    invoke("delete_project", { projectId }),
+
+  listProjectSkills: (projectId: string) =>
+    invoke<string>("list_project_skills", { projectId }).then(
+      (r) => (JSON.parse(r) as SkillInfo[]) ?? []
+    ),
+
+  setSkillEnabled: (skillRef: string, enabled: boolean) =>
+    invoke("set_skill_enabled", { skillRef, enabled }),
+
+  getWebSearchSettings: () =>
+    invoke<string>("get_web_search_settings").then(
+      parseWebSearchSettings
+    ),
+
+  updateWebSearchSettings: (settings: WebSearchSettings) =>
+    invoke<string>("update_web_search_settings", { settings }).then(
+      parseWebSearchSettings
+    ),
+
+  testWebSearch: (providerId: string, query: string) =>
+    invoke<string>("test_web_search", { providerId, query }).then(
+      (r) => (JSON.parse(r) as WebSearchResult[]) ?? []
+    ),
+
+  getMcpConfig: () =>
+    invoke<string>("get_mcp_config").then(parseMcpConfig),
+
+  updateMcpConfig: (config: McpConfig) =>
+    invoke<string>("update_mcp_config", { config }).then(
+      parseMcpConfig
+    ),
+
+  getMcpStatus: () =>
+    invoke<string>("get_mcp_status").then(
+      (r) => (JSON.parse(r) as McpStatus[]) ?? []
+    ),
+
+  searchMcpRegistry: (query: string) =>
+    invoke<string>("search_mcp_registry", { query }).then(
+      (r) => (JSON.parse(r) as McpRegistryServer[]) ?? []
     ),
 
   subscribeEvents: (sessionId: string, onEvent: (data: string) => void) => {

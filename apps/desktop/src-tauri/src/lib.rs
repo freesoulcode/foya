@@ -23,6 +23,18 @@ const IGNORED_PROJECT_DIRS: &[&str] = &[
     "vendor",
 ];
 
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 #[derive(serde::Deserialize)]
 struct BrowserViewport {
     x: f64,
@@ -63,15 +75,15 @@ fn browser_view_label(browser_id: &str) -> Result<String, String> {
     Ok(format!("{BROWSER_VIEW_PREFIX}-{browser_id}"))
 }
 
-fn workspace_root(workspace: &str) -> Result<PathBuf, String> {
-    let root = fs::canonicalize(workspace).map_err(|e| format!("无法访问项目目录: {e}"))?;
+fn project_root(project_path: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(project_path).map_err(|e| format!("无法访问项目目录: {e}"))?;
     if !root.is_dir() {
         return Err("项目路径不是目录".into());
     }
     Ok(root)
 }
 
-fn workspace_relative_path(relative_path: &str) -> Result<&Path, String> {
+fn project_relative_path(relative_path: &str) -> Result<&Path, String> {
     let relative = Path::new(relative_path);
     if relative.as_os_str().is_empty()
         || relative
@@ -83,9 +95,9 @@ fn workspace_relative_path(relative_path: &str) -> Result<&Path, String> {
     Ok(relative)
 }
 
-fn safe_workspace_entry(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
-    let relative = workspace_relative_path(relative_path)?;
-    let root = workspace_root(workspace)?;
+fn safe_project_entry(project_path: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = project_relative_path(relative_path)?;
+    let root = project_root(project_path)?;
     let candidate = root.join(relative);
     let metadata =
         fs::symlink_metadata(&candidate).map_err(|e| format!("无法访问项目条目: {e}"))?;
@@ -99,17 +111,17 @@ fn safe_workspace_entry(workspace: &str, relative_path: &str) -> Result<PathBuf,
     Ok(entry)
 }
 
-fn safe_workspace_file(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
-    let file = safe_workspace_entry(workspace, relative_path)?;
+fn safe_project_file(project_path: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let file = safe_project_entry(project_path, relative_path)?;
     if !file.is_file() {
         return Err("项目条目不是文件".into());
     }
     Ok(file)
 }
 
-fn safe_workspace_destination(workspace: &str, relative_path: &str) -> Result<PathBuf, String> {
-    let relative = workspace_relative_path(relative_path)?;
-    let root = workspace_root(workspace)?;
+fn safe_project_destination(project_path: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = project_relative_path(relative_path)?;
+    let root = project_root(project_path)?;
     let candidate = root.join(relative);
     let file_name = candidate.file_name().ok_or("项目路径无效")?;
     let parent = candidate.parent().ok_or("项目路径无效")?;
@@ -371,7 +383,7 @@ mod kernel {
     }
 }
 
-/// 建会话,返回会话 JSON。options 为可选的创建参数(model/workspace/approval_mode)。
+/// 建会话,返回会话 JSON。options 为可选的创建参数(model/project_id/approval_mode)。
 #[cfg(unix)]
 #[tauri::command]
 async fn create_session(options: Option<serde_json::Value>) -> Result<String, String> {
@@ -558,12 +570,105 @@ async fn delete_connection(connection_id: String) -> Result<(), String> {
 #[cfg(unix)]
 #[tauri::command]
 async fn list_connection_models(connection_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/connections/{connection_id}/models"), None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_skills() -> Result<String, String> {
+    kernel::request("GET", "/skills?all=true", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_projects() -> Result<String, String> {
+    kernel::request("GET", "/projects", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn register_project(path: String, name: String) -> Result<String, String> {
+    let body = serde_json::json!({ "path": path, "name": name }).to_string();
+    kernel::request("POST", "/projects", Some(&body)).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_project(project_id: String, patch: serde_json::Value) -> Result<String, String> {
     kernel::request(
-        "GET",
-        &format!("/connections/{connection_id}/models"),
-        None,
+        "PATCH",
+        &format!("/projects/{project_id}"),
+        Some(&patch.to_string()),
     )
     .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_project(project_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/projects/{project_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_project_skills(project_id: String) -> Result<String, String> {
+    let path = format!("/projects/{}/skills", encode_query_component(&project_id));
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn set_skill_enabled(skill_ref: String, enabled: bool) -> Result<(), String> {
+    let body = serde_json::json!({ "enabled": enabled }).to_string();
+    kernel::request("PATCH", &format!("/skills/{skill_ref}"), Some(&body))
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_web_search_settings() -> Result<String, String> {
+    kernel::request("GET", "/web-search", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_web_search_settings(settings: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/web-search", Some(&settings.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn test_web_search(provider_id: String, query: String) -> Result<String, String> {
+    let body = serde_json::json!({ "provider_id": provider_id, "query": query }).to_string();
+    kernel::request("POST", "/web-search/test", Some(&body)).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_mcp_config() -> Result<String, String> {
+    kernel::request("GET", "/mcp", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_mcp_config(config: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/mcp", Some(&config.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_mcp_status() -> Result<String, String> {
+    kernel::request("GET", "/mcp/status", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn search_mcp_registry(query: String) -> Result<String, String> {
+    let path = format!("/mcp/registry?search={}", encode_query_component(&query));
+    kernel::request("GET", &path, None).await
 }
 
 /// 订阅会话事件流。在后台异步任务持续把 SSE 事件经 Channel 推给前端。
@@ -704,9 +809,9 @@ async fn delete_session(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn list_project_files(workspace: String) -> Result<String, String> {
+async fn list_project_files(project_path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = workspace_root(&workspace)?;
+        let root = project_root(&project_path)?;
         let mut entries = Vec::new();
         collect_project_entries(&root, &root, &mut entries)?;
         serde_json::to_string(&entries).map_err(|e| e.to_string())
@@ -716,9 +821,9 @@ async fn list_project_files(workspace: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn read_project_file(workspace: String, path: String) -> Result<String, String> {
+async fn read_project_file(project_path: String, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let file = safe_workspace_file(&workspace, &path)?;
+        let file = safe_project_file(&project_path, &path)?;
         let metadata = fs::metadata(&file).map_err(|e| format!("无法读取文件信息: {e}"))?;
         if metadata.len() > MAX_PREVIEW_BYTES {
             return Err("文件超过 2 MiB，无法预览".into());
@@ -731,10 +836,10 @@ async fn read_project_file(workspace: String, path: String) -> Result<String, St
 }
 
 #[tauri::command]
-async fn create_project_file(workspace: String, path: String) -> Result<String, String> {
+async fn create_project_file(project_path: String, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = workspace_root(&workspace)?;
-        let file = safe_workspace_destination(&workspace, &path)?;
+        let root = project_root(&project_path)?;
+        let file = safe_project_destination(&project_path, &path)?;
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -747,10 +852,10 @@ async fn create_project_file(workspace: String, path: String) -> Result<String, 
 }
 
 #[tauri::command]
-async fn create_project_directory(workspace: String, path: String) -> Result<String, String> {
+async fn create_project_directory(project_path: String, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = workspace_root(&workspace)?;
-        let directory = safe_workspace_destination(&workspace, &path)?;
+        let root = project_root(&project_path)?;
+        let directory = safe_project_destination(&project_path, &path)?;
         fs::create_dir(&directory).map_err(|e| format!("无法创建文件夹: {e}"))?;
         project_relative_string(&root, &directory)
     })
@@ -760,13 +865,13 @@ async fn create_project_directory(workspace: String, path: String) -> Result<Str
 
 #[tauri::command]
 async fn rename_project_entry(
-    workspace: String,
+    project_path: String,
     path: String,
     new_name: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = workspace_root(&workspace)?;
-        let entry = safe_workspace_entry(&workspace, &path)?;
+        let root = project_root(&project_path)?;
+        let entry = safe_project_entry(&project_path, &path)?;
         let new_name = safe_entry_name(&new_name)?;
         let destination = entry.with_file_name(new_name);
 
@@ -786,9 +891,9 @@ async fn rename_project_entry(
 }
 
 #[tauri::command]
-async fn delete_project_entry(workspace: String, path: String) -> Result<(), String> {
+async fn delete_project_entry(project_path: String, path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let entry = safe_workspace_entry(&workspace, &path)?;
+        let entry = safe_project_entry(&project_path, &path)?;
         if entry.is_dir() {
             fs::remove_dir_all(entry).map_err(|e| format!("无法删除文件夹: {e}"))
         } else {
@@ -800,12 +905,12 @@ async fn delete_project_entry(workspace: String, path: String) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn resolve_project_path(workspace: String, path: String) -> Result<String, String> {
+async fn resolve_project_path(project_path: String, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let entry = if path.is_empty() {
-            workspace_root(&workspace)?
+            project_root(&project_path)?
         } else {
-            safe_workspace_entry(&workspace, &path)?
+            safe_project_entry(&project_path, &path)?
         };
         Ok(entry.to_string_lossy().into_owned())
     })
@@ -1056,10 +1161,7 @@ fn create_connection(_config: serde_json::Value) -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn update_connection(
-    _connection_id: String,
-    _config: serde_json::Value,
-) -> Result<String, String> {
+fn update_connection(_connection_id: String, _config: serde_json::Value) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -1153,6 +1255,90 @@ async fn delete_session(_session_id: String) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_skills() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_projects() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn register_project(_path: String, _name: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_project(_project_id: String, _patch: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_project(_project_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_project_skills(_project_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn set_skill_enabled(_skill_ref: String, _enabled: bool) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_web_search_settings() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_web_search_settings(_settings: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn test_web_search(_provider_id: String, _query: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_mcp_config() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_mcp_config(_config: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_mcp_status() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn search_mcp_registry(_query: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1213,6 +1399,20 @@ pub fn run() {
             update_connection,
             delete_connection,
             list_connection_models,
+            list_skills,
+            list_projects,
+            register_project,
+            update_project,
+            delete_project,
+            list_project_skills,
+            set_skill_enabled,
+            get_web_search_settings,
+            update_web_search_settings,
+            test_web_search,
+            get_mcp_config,
+            update_mcp_config,
+            get_mcp_status,
+            search_mcp_registry,
             subscribe_events,
             start_terminal,
             attach_terminal,

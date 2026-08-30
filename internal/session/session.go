@@ -15,8 +15,8 @@ import (
 var (
 	// ErrNotFound 表示会话不存在。
 	ErrNotFound = errors.New("session not found")
-	// ErrWorkspaceLocked 表示已绑定项目的会话不能切换或清空工作目录。
-	ErrWorkspaceLocked = errors.New("session workspace is locked")
+	// ErrProjectLocked 表示已绑定项目的会话不能切换或清空项目。
+	ErrProjectLocked = errors.New("session project is locked")
 	// ErrInvalidReasoningEffort 表示推理强度不在内核支持的统一档位中。
 	ErrInvalidReasoningEffort = errors.New("invalid reasoning effort")
 )
@@ -59,7 +59,7 @@ type Session struct {
 	ConnectionID    string          `json:"connection_id"`
 	Model           string          `json:"model"`
 	ReasoningEffort ReasoningEffort `json:"reasoning_effort,omitempty"`
-	Workspace       string          `json:"workspace,omitempty"`
+	ProjectID       string          `json:"project_id,omitempty"`
 	ApprovalMode    string          `json:"approval_mode,omitempty"`
 	Title           string          `json:"title,omitempty"`
 	TitleIsManual   bool            `json:"title_is_manual,omitempty"`
@@ -75,7 +75,7 @@ type CreateOptions struct {
 	ConnectionID    string
 	Model           string
 	ReasoningEffort ReasoningEffort
-	Workspace       string
+	ProjectID       string
 	ApprovalMode    string
 }
 
@@ -84,9 +84,9 @@ type Manager interface {
 	Create(opts CreateOptions) (*Session, error)
 	Get(id string) (*Session, bool)
 	List() []*Session
-	// Update 局部更新会话配置。工作目录只能从空值绑定一次，绑定后不可更换。
+	// Update 局部更新会话配置。项目只能从空值绑定一次，绑定后不可更换。
 	// 入参为指针,nil 表示该字段不变。
-	Update(id string, connectionID, model, reasoningEffort, workspace, approvalMode *string) (*Session, error)
+	Update(id string, connectionID, model, reasoningEffort, projectID, approvalMode *string) (*Session, error)
 	// SetPhase 更新由内核控制的执行阶段。
 	SetPhase(id string, phase Phase) (*Session, error)
 	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
@@ -127,7 +127,7 @@ func (m *memManager) Create(opts CreateOptions) (*Session, error) {
 		ConnectionID:    opts.ConnectionID,
 		Model:           opts.Model,
 		ReasoningEffort: opts.ReasoningEffort,
-		Workspace:       opts.Workspace,
+		ProjectID:       opts.ProjectID,
 		ApprovalMode:    opts.ApprovalMode,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -157,7 +157,7 @@ func (m *memManager) List() []*Session {
 
 func (m *memManager) Update(
 	id string,
-	connectionID, model, reasoningEffort, workspace, approvalMode *string,
+	connectionID, model, reasoningEffort, projectID, approvalMode *string,
 ) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,8 +168,8 @@ func (m *memManager) Update(
 	if reasoningEffort != nil && !ValidReasoningEffort(*reasoningEffort) {
 		return nil, ErrInvalidReasoningEffort
 	}
-	if workspace != nil && s.Workspace != "" && *workspace != s.Workspace {
-		return nil, ErrWorkspaceLocked
+	if projectID != nil && s.ProjectID != "" && *projectID != s.ProjectID {
+		return nil, ErrProjectLocked
 	}
 	if model != nil {
 		s.Model = *model
@@ -180,8 +180,8 @@ func (m *memManager) Update(
 	if reasoningEffort != nil {
 		s.ReasoningEffort = ReasoningEffort(*reasoningEffort)
 	}
-	if workspace != nil {
-		s.Workspace = *workspace
+	if projectID != nil {
+		s.ProjectID = *projectID
 	}
 	if approvalMode != nil {
 		s.ApprovalMode = *approvalMode

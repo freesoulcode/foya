@@ -9,10 +9,10 @@ import (
 // Input 是组装一次系统提示词所需的全部输入。
 //
 // 零值字段会被合理兜底(平台取 runtime.GOOS、shell 取环境变量、
-// 时间取 now、home 取 os.UserHomeDir),调用方只需关心 workspace
+// 时间取 now、home 取 os.UserHomeDir),调用方只需关心 project path
 // 和 approvalMode 等会话级信息。
 type Input struct {
-	Workspace    string    // 当前工作目录
+	ProjectPath  string    // 当前项目目录
 	ApprovalMode string    // 审批档位:explore / ask / bypass
 	Platform     string    // 留空则自动推断
 	Shell        string    // 留空则自动推断
@@ -36,10 +36,10 @@ func Assemble(in Input) string {
 
 	fragments := []string{
 		staticPrefix,
-		loadWorkspaceInstructions(home, in.Workspace),
+		loadProjectInstructions(home, in.ProjectPath),
 		permissionFragment(in.ApprovalMode),
 		envFragment(EnvInput{
-			Cwd:      in.Workspace,
+			Cwd:      in.ProjectPath,
 			Platform: in.Platform,
 			Shell:    in.Shell,
 			Now:      now,

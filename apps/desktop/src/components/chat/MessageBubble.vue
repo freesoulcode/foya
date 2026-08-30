@@ -19,6 +19,7 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
+import { diffFileName, diffStats } from "@/lib/diff";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -30,6 +31,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "edit", messageSeq: number, text: string): void;
+  (e: "open-diff", diff: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === "user");
@@ -115,11 +117,16 @@ function toolIcon(tc: ToolCallView): LucideIcon {
   return toolMeta(tc.name).icon;
 }
 
+function isFileChangeTool(tc: ToolCallView): boolean {
+  return tc.name === "write" || tc.name === "edit";
+}
+
 // 单行标题文案:运行中/失败/完成三态。
 function toolLabel(tc: ToolCallView): string {
   const meta = toolMeta(tc.name);
   if (tc.status === "running") return meta.running;
   if (tc.status === "error") return `${meta.done}（失败）`;
+  if (tc.diff) return "已编辑 1 个文件";
   return meta.done;
 }
 
@@ -130,58 +137,6 @@ function formatInput(input: string): string {
   } catch {
     return input;
   }
-}
-
-// 一行 diff:kind 决定行内着色(新增/删除/上下文/hunk 头)。
-interface DiffLine {
-  kind: "add" | "del" | "ctx" | "hunk";
-  text: string;
-}
-
-// 把统一 diff 文本解析成带类型的行,供行内着色渲染。
-// 跳过 ---/+++ 文件头(信息已由工具标题给出),保留 @@ hunk 头与增删/上下文行。
-function parseDiff(diff: string): DiffLine[] {
-  const out: DiffLine[] = [];
-  for (const raw of diff.split("\n")) {
-    if (raw === "" && out.length === 0) continue;
-    if (raw.startsWith("--- ") || raw.startsWith("+++ ")) continue;
-    if (raw.startsWith("@@")) {
-      out.push({ kind: "hunk", text: raw });
-    } else if (raw.startsWith("+")) {
-      out.push({ kind: "add", text: raw.slice(1) });
-    } else if (raw.startsWith("-")) {
-      out.push({ kind: "del", text: raw.slice(1) });
-    } else {
-      out.push({ kind: "ctx", text: raw.startsWith(" ") ? raw.slice(1) : raw });
-    }
-  }
-  // 去掉解析末尾可能的空上下文行。
-  while (out.length > 0 && out[out.length - 1].kind === "ctx" && out[out.length - 1].text === "") {
-    out.pop();
-  }
-  return out;
-}
-
-// diff 每行的行内样式:新增绿底、删除红底、hunk 头弱化、上下文常规。
-function diffLineClass(kind: DiffLine["kind"]): string {
-  switch (kind) {
-    case "add":
-      return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
-    case "del":
-      return "bg-red-500/10 text-red-600 dark:text-red-400";
-    case "hunk":
-      return "text-muted-foreground/60 select-none";
-    default:
-      return "text-foreground/70";
-  }
-}
-
-// diff 行首标记(+/-/空格),对齐展示。
-function diffGutter(kind: DiffLine["kind"]): string {
-  if (kind === "add") return "+";
-  if (kind === "del") return "-";
-  if (kind === "hunk") return "";
-  return " ";
 }
 
 // 渲染单个文本段的 markdown。
@@ -373,49 +328,74 @@ function onEditKeydown(event: KeyboardEvent) {
             >{{ seg.text }}</div>
           </div>
 
-          <!-- 工具段:单行紧凑样式(图标 + 状态文案),可展开查看参数/输出 -->
+          <!-- 文件编辑常驻展示摘要；其他工具可展开查看参数/输出。 -->
           <div v-else-if="seg.kind === 'tool'" class="mb-2">
-            <button
-              type="button"
-              class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-              @click="toggleTool(seg.tool.id)"
-            >
-              <ChevronRightIcon
-                :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool.id) && 'rotate-90')"
-              />
-              <component
-                :is="toolIcon(seg.tool)"
-                :class="cn('size-3.5 shrink-0', seg.tool.status === 'running' && 'animate-pulse')"
-              />
-              <span>{{ toolLabel(seg.tool) }}</span>
-            </button>
             <div
-              v-if="isToolExpanded(seg.tool.id)"
-              class="mt-1 border-l-2 border-border pl-3"
+              v-if="isFileChangeTool(seg.tool)"
+              class="space-y-0.5"
             >
-              <!-- 文件变更 diff:行内着色(新增绿/删除红) -->
-              <div v-if="seg.tool.diff" class="mb-2">
-                <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">变更</div>
-                <div class="overflow-x-auto rounded-md border border-border font-mono text-[11px] leading-relaxed">
-                  <div
-                    v-for="(line, li) in parseDiff(seg.tool.diff)"
-                    :key="li"
-                    :class="cn('flex whitespace-pre', diffLineClass(line.kind))"
-                  >
-                    <span class="w-4 shrink-0 select-none text-center opacity-60">{{ diffGutter(line.kind) }}</span>
-                    <span class="flex-1 break-all pr-2">{{ line.text }}</span>
-                  </div>
+              <button
+                type="button"
+                class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+                @click="toggleTool(seg.tool.id)"
+              >
+                <ChevronRightIcon
+                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool.id) && 'rotate-90')"
+                />
+                <component
+                  :is="toolIcon(seg.tool)"
+                  :class="cn('size-3.5 shrink-0', seg.tool.status === 'running' && 'animate-pulse')"
+                />
+                <span>{{ toolLabel(seg.tool) }}</span>
+              </button>
+              <button
+                v-if="seg.tool.diff && isToolExpanded(seg.tool.id)"
+                type="button"
+                class="ml-3 flex h-8 w-[calc(100%_-_0.75rem)] items-center gap-2 border-l-2 border-border px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                :title="`查看 ${diffFileName(seg.tool.diff)} 的完整变更`"
+                @click="emit('open-diff', seg.tool.diff)"
+              >
+                <FileTextIcon class="size-3.5 shrink-0 text-primary" />
+                <span class="min-w-0 flex-1 truncate font-mono">
+                  {{ diffFileName(seg.tool.diff) }}
+                </span>
+                <span class="shrink-0 font-mono text-emerald-600">
+                  +{{ diffStats(seg.tool.diff).additions }}
+                </span>
+                <span class="shrink-0 font-mono text-red-500">
+                  -{{ diffStats(seg.tool.diff).deletions }}
+                </span>
+              </button>
+            </div>
+            <template v-else>
+              <button
+                type="button"
+                class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+                @click="toggleTool(seg.tool.id)"
+              >
+                <ChevronRightIcon
+                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool.id) && 'rotate-90')"
+                />
+                <component
+                  :is="toolIcon(seg.tool)"
+                  :class="cn('size-3.5 shrink-0', seg.tool.status === 'running' && 'animate-pulse')"
+                />
+                <span>{{ toolLabel(seg.tool) }}</span>
+              </button>
+              <div
+                v-if="isToolExpanded(seg.tool.id)"
+                class="mt-1 border-l-2 border-border pl-3"
+              >
+                <div v-if="seg.tool.input" class="mb-2">
+                  <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">参数</div>
+                  <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(seg.tool.input) }}</pre>
+                </div>
+                <div v-if="seg.tool.output">
+                  <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">输出</div>
+                  <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ seg.tool.output }}</pre>
                 </div>
               </div>
-              <div v-if="seg.tool.input" class="mb-2">
-                <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">参数</div>
-                <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(seg.tool.input) }}</pre>
-              </div>
-              <div v-if="seg.tool.output">
-                <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">输出</div>
-                <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ seg.tool.output }}</pre>
-              </div>
-            </div>
+            </template>
           </div>
 
           <!-- 正文段(markdown) -->

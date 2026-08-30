@@ -19,9 +19,9 @@ const (
 type FSAccess string
 
 const (
-	FSReadOnly       FSAccess = "read"
-	FSWorkspaceWrite FSAccess = "workspace_write"
-	FSFull           FSAccess = "full"
+	FSReadOnly     FSAccess = "read"
+	FSProjectWrite FSAccess = "project_write"
+	FSFull         FSAccess = "full"
 )
 
 // Profile 描述一次执行的隔离约束。

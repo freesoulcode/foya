@@ -22,7 +22,7 @@ var (
 )
 
 // BranchResult reports whether a branch was committed or still needs explicit
-// confirmation because the superseded suffix may have changed the workspace.
+// confirmation because the superseded suffix may have changed the project tree.
 type BranchResult struct {
 	Event     event.Event
 	Effects   []event.BranchEffect
@@ -161,7 +161,7 @@ func (l *MemLog) RecordCheckpoint(
 
 // Branch replaces the active suffix beginning at targetUserSeq with a new
 // branch marker. No source event is deleted. If the suffix contains possible
-// workspace side effects, callers must explicitly allow them to remain.
+// project side effects, callers must explicitly allow them to remain.
 func (l *MemLog) Branch(
 	ctx context.Context,
 	session string,

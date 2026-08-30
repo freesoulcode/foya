@@ -10,14 +10,15 @@ import {
   type QueuedMessage,
   type ContextUsage,
   type BranchEffect,
+  type ProjectInfo,
 } from "@/lib/api";
 
-// 新建对话草稿态的配置:在真正创建会话前由用户选择模型、绑定文件夹、设定审批档位。
+// 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
 export interface DraftConfig {
   connectionID: string;
   model: string;
   reasoningEffort: ReasoningEffort;
-  workspace: string;
+  projectID: string;
   approvalMode: ApprovalMode;
 }
 
@@ -37,6 +38,7 @@ const ready = ref(false);
 const connecting = ref(false);
 const connectError = ref("");
 const sessions = ref<Session[]>([]);
+const projects = ref<ProjectInfo[]>([]);
 const activeId = ref<string>("");
 const streaming = ref(false);
 // 哪些会话正在运行 AI 回合(sessionId → true)。供侧边栏给运行中的会话加动画,
@@ -49,7 +51,7 @@ const draft = reactive<DraftConfig>({
   connectionID: "",
   model: "",
   reasoningEffort: "",
-  workspace: "",
+  projectID: "",
   approvalMode: DEFAULT_APPROVAL,
 });
 
@@ -430,6 +432,25 @@ async function refreshConnections() {
   }
 }
 
+async function registerProject(path: string, name = ""): Promise<ProjectInfo> {
+  const project = await api.registerProject(path, name);
+  const index = projects.value.findIndex((item) => item.id === project.id);
+  if (index >= 0) projects.value[index] = project;
+  else projects.value.unshift(project);
+  return project;
+}
+
+async function refreshProjects() {
+  projects.value = await api.listProjects();
+  if (
+    isDraft.value &&
+    draft.projectID &&
+    !projects.value.some((project) => project.id === draft.projectID)
+  ) {
+    draft.projectID = "";
+  }
+}
+
 // 连接内核:拉会话列表,选中或新建一个会话。
 async function connect() {
   if (ready.value || connecting.value) return;
@@ -437,6 +458,7 @@ async function connect() {
   connectError.value = "";
   try {
     sessions.value = await api.listSessions();
+    projects.value = await api.listProjects();
     sessions.value.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     if (sessions.value.length > 0) {
       await select(sessions.value[0].id);
@@ -457,8 +479,8 @@ async function connect() {
 }
 
 // 进入新对话草稿态:不立即创建会话,直到用户发送第一条消息。
-// 从项目分组发起时继承该工作目录;全局新建仍使用无项目草稿。
-function newSession(workspace = "") {
+// 从项目分组发起时继承 Project ID;全局新建仍使用无项目草稿。
+function newSession(projectID = "") {
   activeId.value = "";
   ensureBucket("");
   streaming.value = false;
@@ -466,7 +488,7 @@ function newSession(workspace = "") {
   draft.connectionID = first?.id ?? "";
   draft.model = first?.default_model || first?.models[0] || "";
   draft.reasoningEffort = "";
-  draft.workspace = workspace;
+  draft.projectID = projectID;
   draft.approvalMode = DEFAULT_APPROVAL;
 }
 
@@ -550,7 +572,7 @@ async function select(id: string) {
   else delete usageBySession.value[id];
 }
 
-// 局部更新当前会话的可变配置(模型/工作目录/审批档位)。
+// 局部更新当前会话的可变配置(模型/项目/审批档位)。
 // 调用内核 PATCH 接口,并同步更新本地会话对象;审批档位切换对后续工具调用立即生效。
 async function updateSession(id: string, patch: UpdateSessionPatch) {
   const updated = await api.updateSession(id, patch);
@@ -631,7 +653,7 @@ async function ensureSession(): Promise<string> {
     connection_id: draft.connectionID || undefined,
     model: draft.model || undefined,
     reasoning_effort: draft.reasoningEffort || undefined,
-    workspace: draft.workspace || undefined,
+    project_id: draft.projectID || undefined,
     approval_mode: draft.approvalMode,
   });
   sessions.value.unshift(s);
@@ -793,6 +815,7 @@ export function useKernel() {
     connectError,
     streaming,
     sessions,
+    projects,
     runningSessions,
     compactingSessions,
     activeId,
@@ -826,5 +849,7 @@ export function useKernel() {
     dispatchQueuedMessage,
     resolveApproval,
     refreshConnections,
+    refreshProjects,
+    registerProject,
   };
 }

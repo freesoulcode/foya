@@ -9,11 +9,11 @@ func stringPointer(value string) *string {
 	return &value
 }
 
-func TestUpdateLocksBoundWorkspace(t *testing.T) {
+func TestUpdateLocksBoundProject(t *testing.T) {
 	manager := NewMemManager()
 	created, err := manager.Create(CreateOptions{
 		Model:     "model-a",
-		Workspace: "/projects/alpha",
+		ProjectID: "project-alpha",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -24,18 +24,18 @@ func TestUpdateLocksBoundWorkspace(t *testing.T) {
 		nil,
 		stringPointer("model-b"),
 		nil,
-		stringPointer("/projects/beta"),
+		stringPointer("project-beta"),
 		nil,
 	)
-	if !errors.Is(err, ErrWorkspaceLocked) {
-		t.Fatalf("Update workspace error = %v, want %v", err, ErrWorkspaceLocked)
+	if !errors.Is(err, ErrProjectLocked) {
+		t.Fatalf("Update project error = %v, want %v", err, ErrProjectLocked)
 	}
 
 	current, ok := manager.Get(created.ID)
 	if !ok {
 		t.Fatal("session disappeared after rejected update")
 	}
-	if current.Model != "model-a" || current.Workspace != "/projects/alpha" {
+	if current.Model != "model-a" || current.ProjectID != "project-alpha" {
 		t.Fatalf("rejected update mutated session: %+v", current)
 	}
 
@@ -44,7 +44,7 @@ func TestUpdateLocksBoundWorkspace(t *testing.T) {
 		nil,
 		stringPointer("model-b"),
 		nil,
-		stringPointer("/projects/alpha"),
+		stringPointer("project-alpha"),
 		nil,
 	)
 	if err != nil {
@@ -55,7 +55,7 @@ func TestUpdateLocksBoundWorkspace(t *testing.T) {
 	}
 }
 
-func TestUpdateAllowsFirstWorkspaceBinding(t *testing.T) {
+func TestUpdateAllowsFirstProjectBinding(t *testing.T) {
 	manager := NewMemManager()
 	created, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
@@ -67,19 +67,19 @@ func TestUpdateAllowsFirstWorkspaceBinding(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		stringPointer("/projects/alpha"),
+		stringPointer("project-alpha"),
 		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Workspace != "/projects/alpha" {
-		t.Fatalf("Workspace = %q, want /projects/alpha", updated.Workspace)
+	if updated.ProjectID != "project-alpha" {
+		t.Fatalf("ProjectID = %q, want project-alpha", updated.ProjectID)
 	}
 
 	_, err = manager.Update(created.ID, nil, nil, nil, stringPointer(""), nil)
-	if !errors.Is(err, ErrWorkspaceLocked) {
-		t.Fatalf("Clear workspace error = %v, want %v", err, ErrWorkspaceLocked)
+	if !errors.Is(err, ErrProjectLocked) {
+		t.Fatalf("Clear project error = %v, want %v", err, ErrProjectLocked)
 	}
 }
 

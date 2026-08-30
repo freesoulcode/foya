@@ -44,7 +44,7 @@ Keep canonical history unchanged.
 ## Next Steps
 Continue from the latest user request.
 ## Critical Context
-Use the current workspace and tools.`, nil
+Use the current project and tools.`, nil
 }
 
 func (p *compactionProvider) Stream(

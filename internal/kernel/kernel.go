@@ -3,28 +3,37 @@
 package kernel
 
 import (
+	"context"
+	"os"
+
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/mcpclient"
+	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/provider/openai"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
+	"github.com/freesoulcode/foya/internal/websearch"
 )
 
 // App 是内核组合根。
 type App struct {
 	cfg     config.Config
 	backend *backend.Backend
+	cancel  context.CancelFunc
+	mcp     *mcpclient.Manager
 }
 
 // New 按配置装配内核。
-func New(cfg config.Config) *App {
+func New(cfg config.Config) (*App, error) {
 	sessions := session.NewMemManager()
 	log := state.NewMemLog()
 	bus := broker.New[event.Event]()
@@ -37,9 +46,37 @@ func New(cfg config.Config) *App {
 	tools.Register(tool.NewReadTool(gw))
 	tools.Register(tool.NewWriteTool(gw))
 	tools.Register(tool.NewEditTool(gw))
+	homeDir, _ := os.UserHomeDir()
+	skills, err := skill.NewManager(cfg.DataDir, homeDir, nil)
+	if err != nil {
+		return nil, err
+	}
+	web, err := websearch.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	tools.Register(tool.NewSkillSearchTool(skills))
+	tools.Register(tool.NewSkillLoadTool(skills))
+	tools.Register(tool.NewWebSearchTool(web, gw))
+	tools.Register(tool.NewWebFetchTool(gw))
+	mcpManager, err := mcpclient.NewManager(cfg.DataDir, homeDir, tools, gw)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := project.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, mcpTool := range mcpclient.ControlTools(mcpManager) {
+		tools.Register(mcpTool)
+	}
 
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
+	engine.SetProjectResolver(func(projectID string) (string, bool) {
+		item, ok := projects.Get(projectID)
+		return item.Path, ok
+	})
 
 	be := backend.New(
 		sessions,
@@ -57,7 +94,11 @@ func New(cfg config.Config) *App {
 	// Connection so no configured endpoint is lost.
 	connections := loadConnections(cfg)
 	be.SetConnections(connections)
-	return &App{cfg: cfg, backend: be}
+	be.SetCapabilityManagers(skills, web, mcpManager)
+	be.SetProjectManager(projects)
+	appCtx, cancel := context.WithCancel(context.Background())
+	go mcpManager.Start(appCtx)
+	return &App{cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager}, nil
 }
 
 func loadConnections(cfg config.Config) []config.Connection {
@@ -93,3 +134,9 @@ func (a *App) Backend() *backend.Backend { return a.backend }
 
 // Config 返回内核配置。
 func (a *App) Config() config.Config { return a.cfg }
+
+// Close 停止后台能力并释放 MCP 会话及其子进程。
+func (a *App) Close() {
+	a.cancel()
+	a.mcp.Close()
+}

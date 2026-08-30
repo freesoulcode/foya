@@ -22,17 +22,17 @@ type CreateSessionRequest struct {
 	ConnectionID    string `json:"connection_id,omitempty"`
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	Workspace       string `json:"workspace,omitempty"`
+	ProjectID       string `json:"project_id,omitempty"`
 	ApprovalMode    string `json:"approval_mode,omitempty"`
 }
 
 // UpdateSessionRequest 局部更新会话配置。
-// Workspace 只能首次绑定，已有非空值后不可更换或清空。
+// ProjectID 只能首次绑定，已有非空值后不可更换或清空。
 type UpdateSessionRequest struct {
 	ConnectionID    *string `json:"connection_id,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
-	Workspace       *string `json:"workspace,omitempty"`
+	ProjectID       *string `json:"project_id,omitempty"`
 	ApprovalMode    *string `json:"approval_mode,omitempty"`
 	Title           *string `json:"title,omitempty"`  // 手动改名;置 TitleIsManual=true
 	Pinned          *bool   `json:"pinned,omitempty"` // 置顶/取消置顶
@@ -46,7 +46,7 @@ type SubmitTurnResponse struct {
 }
 
 // EditTurnRequest replaces one active user turn. ConfirmEffects acknowledges
-// that side effects from the superseded branch remain in the workspace.
+// that side effects from the superseded branch remain in the project tree.
 type EditTurnRequest struct {
 	Message         string `json:"message"`
 	ConfirmEffects  bool   `json:"confirm_effects,omitempty"`
@@ -137,6 +137,36 @@ type TerminalResizeRequest struct {
 type ApprovalDecisionRequest struct {
 	RequestID string `json:"request_id"`
 	Decision  string `json:"decision"`
+}
+
+type SkillEnableRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+type ProjectCreateRequest struct {
+	Name string `json:"name,omitempty"`
+	Path string `json:"path"`
+}
+
+type ProjectUpdateRequest struct {
+	Name   *string `json:"name,omitempty"`
+	Pinned *bool   `json:"pinned,omitempty"`
+}
+
+type WebSearchTestRequest struct {
+	ProviderID string `json:"provider_id"`
+	Query      string `json:"query"`
+}
+
+type MCPResourceReadRequest struct {
+	ServerID string `json:"server_id"`
+	URI      string `json:"uri"`
+}
+
+type MCPPromptGetRequest struct {
+	ServerID string            `json:"server_id"`
+	Name     string            `json:"name"`
+	Args     map[string]string `json:"args,omitempty"`
 }
 
 // SetCredentialRequest 配置凭证(独立安全通道,不进事件流)。

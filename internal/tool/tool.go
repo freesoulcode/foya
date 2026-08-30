@@ -47,8 +47,8 @@ type Result struct {
 // Tool 是模型可调用的执行单元。
 type Tool interface {
 	Name() string
-	Description() string  // 给模型看的工具说明
-	Spec() []byte         // 参数 JSON Schema,喂给模型
+	Description() string // 给模型看的工具说明
+	Spec() []byte        // 参数 JSON Schema,喂给模型
 	Exposure() Exposure
 	Run(ctx context.Context, call Call) (Result, error)
 }
@@ -57,6 +57,7 @@ type Tool interface {
 type Registry interface {
 	Register(t Tool)         // 内置工具
 	RegisterExternal(t Tool) // MCP / 动态工具,可去重
+	Unregister(name string)
 	Get(name string) (Tool, bool)
 	List() []Tool
 	Specs() []provider.ToolDef // 生成喂给模型的工具定义

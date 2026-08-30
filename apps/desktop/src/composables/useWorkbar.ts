@@ -13,7 +13,9 @@ export interface WorkbarTab {
   kind: WorkbarTabKind;
   title: string;
   path?: string;
-  workspace?: string;
+  projectPath?: string;
+  view?: "file" | "diff";
+  diff?: string;
 }
 
 const MIN_WIDTH = 320;
@@ -73,8 +75,8 @@ function addTab(kind: WorkbarLaunchKind) {
   setOpen(true);
 }
 
-function openFiles(workspace: string) {
-  const id = `file:${workspace}`;
+function openFiles(projectPath: string) {
+  const id = `file:${projectPath}`;
   const existing = tabs.value.find((tab) => tab.id === id);
   if (existing) {
     activeTabId.value = existing.id;
@@ -84,23 +86,31 @@ function openFiles(workspace: string) {
     id,
     kind: "file",
     title: "文件",
-    workspace,
+    projectPath,
   });
   activeTabId.value = id;
   setOpen(true);
 }
 
-function openFile(workspace: string, path: string) {
-  const id = `file:${workspace}`;
+function openFile(
+  projectPath: string,
+  path: string,
+  view: "file" | "diff" = "file",
+  diff?: string
+) {
+  const id = `file:${projectPath}`;
   const title = path.split("/").pop() || path;
   const existing = tabs.value.find((tab) => tab.id === id);
   if (existing) {
     existing.title = title;
     existing.path = path;
+    existing.view = view;
+    existing.diff = diff;
   } else {
-    tabs.value.push({ id, kind: "file", title, path, workspace });
+    tabs.value.push({ id, kind: "file", title, path, projectPath, view, diff });
   }
   activeTabId.value = id;
+  setOpen(true);
 }
 
 function selectTab(tabId: string) {
@@ -142,7 +152,7 @@ function entryContainsPath(entryPath: string, filePath: string, isDirectory: boo
 }
 
 function renameEntryTabs(
-  workspace: string,
+  projectPath: string,
   oldPath: string,
   newPath: string,
   isDirectory: boolean
@@ -150,7 +160,7 @@ function renameEntryTabs(
   tabs.value = tabs.value.map((tab) => {
     if (
       tab.kind !== "file" ||
-      tab.workspace !== workspace ||
+      tab.projectPath !== projectPath ||
       !tab.path ||
       !entryContainsPath(oldPath, tab.path, isDirectory)
     ) {
@@ -167,14 +177,14 @@ function renameEntryTabs(
 }
 
 function resetDeletedEntryTab(
-  workspace: string,
+  projectPath: string,
   path: string,
   isDirectory: boolean
 ) {
   const tab = tabs.value.find(
     (candidate) =>
       candidate.kind === "file" &&
-      candidate.workspace === workspace &&
+      candidate.projectPath === projectPath &&
       Boolean(
         candidate.path &&
           entryContainsPath(path, candidate.path, isDirectory)
@@ -183,6 +193,7 @@ function resetDeletedEntryTab(
   if (!tab) return;
   tab.title = "文件";
   tab.path = undefined;
+  tab.diff = undefined;
 }
 
 export function useWorkbar() {
