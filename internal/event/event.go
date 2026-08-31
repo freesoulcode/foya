@@ -17,8 +17,8 @@ const (
 	KindMessageDelta        Kind = "message_delta"     // 流式 token 增量
 	KindReasoningDelta      Kind = "reasoning_delta"   // 流式思考内容增量(思考模型)
 	KindMessageEnd          Kind = "message_end"       // 一条消息完成
-	KindToolBegin           Kind = "tool_begin"        // 工具调用开始
-	KindToolUpdate          Kind = "tool_update"       // 工具执行中的部分输出
+	KindToolBegin           Kind = "tool_begin"        // 模型已生成工具调用,进入等待队列
+	KindToolUpdate          Kind = "tool_update"       // 参数、执行状态或部分结果更新
 	KindToolEnd             Kind = "tool_end"          // 工具调用结束
 	KindApprovalReq         Kind = "approval_request"  // 审批请求(必达)
 	KindApprovalResolved    Kind = "approval_resolved" // 审批已决策(必达)

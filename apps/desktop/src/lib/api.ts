@@ -152,7 +152,7 @@ export interface ToolCallView {
   id: string;
   name: string;
   input: string;
-  status: "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error";
   output?: string;
   child_session_id?: string;
   agent_ref?: string;
@@ -181,6 +181,9 @@ export interface ChatMessage {
   tool_call_id?: string;
   // 文件变更 diff(仅 tool 角色历史消息),用于历史回放时回填工具段。
   diff?: string;
+  // 最终 assistant 消息携带的通用回合生命周期时间。
+  turn_started_at?: string;
+  turn_completed_at?: string;
   error?: boolean;
 }
 

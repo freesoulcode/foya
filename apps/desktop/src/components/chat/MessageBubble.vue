@@ -6,23 +6,14 @@ import {
   CheckIcon,
   PencilIcon,
   XIcon,
-  TerminalIcon,
   ChevronRightIcon,
   BrainIcon,
-  FileTextIcon,
-  FilePlusIcon,
-  FilePenLineIcon,
-  SearchIcon,
-  GlobeIcon,
-  WrenchIcon,
-  type LucideIcon,
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
-import { diffFileName, diffStats } from "@/lib/diff";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import { Textarea } from "@/components/ui/textarea";
-import SubAgentActivity from "./SubAgentActivity.vue";
+import ToolActivityGroup from "./ToolActivityGroup.vue";
 
 const props = defineProps<{
   message: ChatMessage;
@@ -80,83 +71,82 @@ const isError = computed(() => !isUser.value && props.message.error === true);
 const showWorking = computed(() => {
   if (isUser.value || props.message.error || !props.streaming) return false;
   const last = segments.value[segments.value.length - 1];
-  return !!last && last.kind === "tool" && last.tool.status !== "running";
+  return (
+    !!last &&
+    last.kind === "tool" &&
+    (last.tool.status === "done" || last.tool.status === "error")
+  );
 });
 
-// 工具调用展开状态。
-const expandedTools = ref<Set<string>>(new Set());
-const collapsedAgentTools = ref<Set<string>>(new Set());
-function toggleTool(id: string) {
-  const tool = toolCalls.value.find((item) => item.id === id);
-  if (tool?.agent_run) {
-    if (collapsedAgentTools.value.has(id)) collapsedAgentTools.value.delete(id);
-    else collapsedAgentTools.value.add(id);
-    return;
+function isToolBatchStart(index: number): boolean {
+  return segments.value[index]?.kind === "tool" && segments.value[index - 1]?.kind !== "tool";
+}
+
+function toolBatchAt(index: number): ToolCallView[] {
+  const batch: ToolCallView[] = [];
+  for (let i = index; i < segments.value.length; i++) {
+    const segment = segments.value[i];
+    if (segment.kind !== "tool") break;
+    batch.push(segment.tool);
   }
-  if (expandedTools.value.has(id)) expandedTools.value.delete(id);
-  else expandedTools.value.add(id);
-}
-function isToolExpanded(tool: ToolCallView) {
-  if (tool.agent_run) return !collapsedAgentTools.value.has(tool.id);
-  return expandedTools.value.has(tool.id);
+  return batch;
 }
 
-// 工具展示描述:按工具类型给图标 + 进行时/完成时的动词,统一收敛为单行紧凑样式。
-// 后续新增工具(搜索、网络等)只需在此登记一行。
-interface ToolMeta {
-  icon: LucideIcon;
-  running: string; // 进行中文案,如「正在执行命令」
-  done: string; // 完成文案,如「已执行命令」
-}
+const processExpanded = ref(false);
 
-const TOOL_META: Record<string, ToolMeta> = {
-  bash: { icon: TerminalIcon, running: "正在执行命令", done: "已执行命令" },
-  read: { icon: FileTextIcon, running: "正在读取文件", done: "已读取文件" },
-  write: { icon: FilePlusIcon, running: "正在写入文件", done: "已写入文件" },
-  edit: { icon: FilePenLineIcon, running: "正在编辑文件", done: "已编辑文件" },
-  search: { icon: SearchIcon, running: "正在搜索", done: "已搜索" },
-  web_search: { icon: GlobeIcon, running: "正在联网搜索", done: "已联网搜索" },
-  agent: { icon: BotIcon, running: "子 Agent 正在执行", done: "子 Agent 已完成" },
-  spawn_agent: { icon: BotIcon, running: "正在派发子 Agent", done: "已派发子 Agent" },
-  wait_agents: { icon: BotIcon, running: "正在等待子 Agent", done: "子 Agent 已返回" },
-  read_agent_output: { icon: BotIcon, running: "正在读取子 Agent", done: "已读取子 Agent" },
-  cancel_agent: { icon: BotIcon, running: "正在取消子 Agent", done: "已取消子 Agent" },
-  list_agents: { icon: BotIcon, running: "正在检查子任务", done: "已检查子任务" },
-};
-
-function toolMeta(name: string): ToolMeta {
-  return TOOL_META[name] ?? { icon: WrenchIcon, running: `正在调用 ${name}`, done: `已调用 ${name}` };
-}
-
-function toolIcon(tc: ToolCallView): LucideIcon {
-  return toolMeta(tc.name).icon;
-}
-
-function isFileChangeTool(tc: ToolCallView): boolean {
-  return tc.name === "write" || tc.name === "edit";
-}
-
-// 单行标题文案:运行中/失败/完成三态。
-function toolLabel(tc: ToolCallView): string {
-  const meta = toolMeta(tc.name);
-  const agentSuffix = isAgentTool(tc) && tc.agent_name ? ` · ${tc.agent_name}` : "";
-  if (tc.status === "running") return meta.running + agentSuffix;
-  if (tc.status === "error") return `${meta.done}${agentSuffix}（失败）`;
-  if (tc.diff) return "已编辑 1 个文件";
-  return meta.done + agentSuffix;
-}
-
-function isAgentTool(tc: ToolCallView): boolean {
-  return tc.name === "agent" || tc.name === "spawn_agent";
-}
-
-// 格式化工具输入用于展示(尝试 pretty-print JSON)。
-function formatInput(input: string): string {
-  try {
-    return JSON.stringify(JSON.parse(input), null, 2);
-  } catch {
-    return input;
+// 使用过工具的已完成回合中，最后一个工具之后的最后一段正文是最终回复；
+// 其余思考、工具和中间正文统一归入可折叠的任务过程。
+const finalTextSegmentIndex = computed(() => {
+  let lastToolIndex = -1;
+  for (let i = segments.value.length - 1; i >= 0; i--) {
+    if (segments.value[i].kind === "tool") {
+      lastToolIndex = i;
+      break;
+    }
   }
+  for (let i = segments.value.length - 1; i > lastToolIndex; i--) {
+    if (segments.value[i].kind === "text") return i;
+  }
+  return -1;
+});
+
+const taskDurationMS = computed<number | null>(() => {
+  if (!props.message.turn_started_at || !props.message.turn_completed_at) return null;
+  const startedAt = Date.parse(props.message.turn_started_at);
+  const completedAt = Date.parse(props.message.turn_completed_at);
+  if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt)) return null;
+  return Math.max(completedAt - startedAt, 0);
+});
+
+const isCompletedTask = computed(
+  () =>
+    !props.streaming &&
+    toolCalls.value.length > 0 &&
+    finalTextSegmentIndex.value >= 0 &&
+    taskDurationMS.value !== null
+);
+
+const copyContent = computed(() => {
+  if (!isCompletedTask.value) return props.message.content;
+  const segment = segments.value[finalTextSegmentIndex.value];
+  return segment?.kind === "text" ? segment.text : props.message.content;
+});
+
+function shouldRenderSegment(index: number): boolean {
+  return (
+    !isCompletedTask.value ||
+    processExpanded.value ||
+    index === finalTextSegmentIndex.value
+  );
+}
+
+function formatDuration(durationMS: number): string {
+  if (durationMS < 1000) return "<1s";
+  const totalSeconds = Math.round(durationMS / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 // 渲染单个文本段的 markdown。
@@ -197,7 +187,7 @@ async function onBodyClick(e: MouseEvent) {
 }
 
 async function copyAll() {
-  if (await copyText(props.message.content)) {
+  if (await copyText(copyContent.value)) {
     copiedAll.value = true;
     window.setTimeout(() => (copiedAll.value = false), 1500);
   }
@@ -328,108 +318,60 @@ function onEditKeydown(event: KeyboardEvent) {
 
       <!-- 助手消息:按段有序渲染「思考→工具→思考→回复」 -->
       <template v-else>
-        <template v-for="(seg, i) in segments" :key="i">
-          <!-- 思考段(可折叠) -->
-          <div v-if="seg.kind === 'reasoning'" class="mb-2">
-            <button
-              type="button"
-              class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-              @click="toggleReasoning(i)"
-            >
-              <ChevronRightIcon
-                :class="cn('size-3.5 shrink-0 transition-transform', isReasoningExpanded(i) && 'rotate-90')"
-              />
-              <BrainIcon :class="cn('size-3.5 shrink-0', isReasoningStreaming(i) && 'animate-pulse')" />
-              <span>{{ isReasoningStreaming(i) ? "正在思考…" : "已深度思考" }}</span>
-            </button>
-            <div
-              v-if="isReasoningExpanded(i)"
-              class="mt-1 whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-xs leading-relaxed text-muted-foreground"
-            >{{ seg.text }}</div>
-          </div>
+        <div v-if="isCompletedTask" class="mb-3 border-b border-border pb-2">
+          <button
+            type="button"
+            class="flex items-center gap-1 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+            :aria-expanded="processExpanded"
+            @click="processExpanded = !processExpanded"
+          >
+            <span>任务耗时 {{ formatDuration(taskDurationMS ?? 0) }}</span>
+            <ChevronRightIcon
+              :class="cn('size-3.5 shrink-0 transition-transform', processExpanded && 'rotate-90')"
+            />
+          </button>
+        </div>
 
-          <!-- 文件编辑常驻展示摘要；其他工具可展开查看参数/输出。 -->
-          <div v-else-if="seg.kind === 'tool'" class="mb-2">
-            <div
-              v-if="isFileChangeTool(seg.tool)"
-              class="space-y-0.5"
-            >
+        <template v-for="(seg, i) in segments" :key="i">
+          <template v-if="shouldRenderSegment(i)">
+            <!-- 思考段(可折叠) -->
+            <div v-if="seg.kind === 'reasoning'" class="mb-2">
               <button
                 type="button"
                 class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-                @click="toggleTool(seg.tool.id)"
+                @click="toggleReasoning(i)"
               >
                 <ChevronRightIcon
-                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool) && 'rotate-90')"
+                  :class="cn('size-3.5 shrink-0 transition-transform', isReasoningExpanded(i) && 'rotate-90')"
                 />
-                <component
-                  :is="toolIcon(seg.tool)"
-                  :class="cn('size-3.5 shrink-0', seg.tool.status === 'running' && 'animate-pulse')"
-                />
-                <span>{{ toolLabel(seg.tool) }}</span>
-              </button>
-              <button
-                v-if="seg.tool.diff && isToolExpanded(seg.tool)"
-                type="button"
-                class="ml-3 flex h-8 w-[calc(100%_-_0.75rem)] items-center gap-2 border-l-2 border-border px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-                :title="`查看 ${diffFileName(seg.tool.diff)} 的完整变更`"
-                @click="emit('open-diff', seg.tool.diff)"
-              >
-                <FileTextIcon class="size-3.5 shrink-0 text-primary" />
-                <span class="min-w-0 flex-1 truncate font-mono">
-                  {{ diffFileName(seg.tool.diff) }}
-                </span>
-                <span class="shrink-0 font-mono text-emerald-600">
-                  +{{ diffStats(seg.tool.diff).additions }}
-                </span>
-                <span class="shrink-0 font-mono text-red-500">
-                  -{{ diffStats(seg.tool.diff).deletions }}
-                </span>
-              </button>
-            </div>
-            <template v-else>
-              <button
-                type="button"
-                class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-                @click="toggleTool(seg.tool.id)"
-              >
-                <ChevronRightIcon
-                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool) && 'rotate-90')"
-                />
-                <component
-                  :is="toolIcon(seg.tool)"
-                  :class="cn('size-3.5 shrink-0', seg.tool.status === 'running' && 'animate-pulse')"
-                />
-                <span>{{ toolLabel(seg.tool) }}</span>
+                <BrainIcon :class="cn('size-3.5 shrink-0', isReasoningStreaming(i) && 'animate-pulse')" />
+                <span>{{ isReasoningStreaming(i) ? "正在思考…" : "已深度思考" }}</span>
               </button>
               <div
-                v-if="isToolExpanded(seg.tool)"
-                class="mt-1 border-l-2 border-border pl-3"
-              >
-                <SubAgentActivity
-                  v-if="isAgentTool(seg.tool) && seg.tool.agent_run"
-                  :run="seg.tool.agent_run"
-                  :messages="seg.tool.child_messages"
-                />
-                <div v-if="seg.tool.input" class="mb-2">
-                  <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">参数</div>
-                  <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(seg.tool.input) }}</pre>
-                </div>
-                <div v-if="seg.tool.output">
-                  <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">输出</div>
-                  <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ seg.tool.output }}</pre>
-                </div>
-              </div>
-            </template>
-          </div>
+                v-if="isReasoningExpanded(i)"
+                class="mt-1 whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-xs leading-relaxed text-muted-foreground"
+              >{{ seg.text }}</div>
+            </div>
 
-          <!-- 正文段(markdown) -->
-          <div
-            v-else-if="seg.kind === 'text'"
-            class="prose-chat relative text-foreground"
-            v-html="renderSegment(seg.text)"
-            @click="onBodyClick"
-          />
+            <!-- 同一模型步骤的连续工具段聚合展示。 -->
+            <div
+              v-else-if="seg.kind === 'tool' && isToolBatchStart(i)"
+              class="mb-2"
+            >
+              <ToolActivityGroup
+                :tools="toolBatchAt(i)"
+                @open-diff="(diff) => emit('open-diff', diff)"
+              />
+            </div>
+
+            <!-- 正文段(markdown) -->
+            <div
+              v-else-if="seg.kind === 'text'"
+              class="prose-chat relative text-foreground"
+              v-html="renderSegment(seg.text)"
+              @click="onBodyClick"
+            />
+          </template>
         </template>
 
         <!-- 工作中指示:工具已结束、回合仍在流式,模型正在为下一步生成 -->

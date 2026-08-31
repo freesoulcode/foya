@@ -79,6 +79,23 @@ function escapeHtml(s: string): string {
 const marked = new Marked({ gfm: true, breaks: true });
 
 marked.use({
+  tokenizer: {
+    // Marked 的 GFM 规则接受单个 ~ 作为删除线分隔符，会误伤
+    // “4~5 级转 3~4 级”这类范围文本。这里只保留标准的 ~~...~~。
+    del(src: string): Tokens.Del | undefined {
+      const match =
+        /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/.exec(
+          src
+        );
+      if (!match) return undefined;
+      return {
+        type: "del",
+        raw: match[0],
+        text: match[2],
+        tokens: this.lexer.inlineTokens(match[2]),
+      };
+    },
+  },
   renderer: {
     code(token: Tokens.Code): string {
       const lang = (token.lang || "").split(/\s+/)[0];
@@ -97,12 +114,14 @@ marked.use({
     },
     table(token: Tokens.Table): string {
       const headerCells = token.header
-        .map((cell) => `<th>${cell.text}</th>`)
+        .map((cell) => `<th>${this.parser.parseInline(cell.tokens)}</th>`)
         .join("");
       const bodyRows = token.rows
         .map(
           (row) =>
-            `<tr>${row.map((cell) => `<td>${cell.text}</td>`).join("")}</tr>`
+            `<tr>${row
+              .map((cell) => `<td>${this.parser.parseInline(cell.tokens)}</td>`)
+              .join("")}</tr>`
         )
         .join("");
       return (

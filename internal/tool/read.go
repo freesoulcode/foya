@@ -31,6 +31,7 @@ func NewReadTool(gw approval.Gateway) Tool {
 
 func (t *readTool) Name() string        { return "read" }
 func (t *readTool) Exposure() Exposure  { return ExposureDirect }
+func (t *readTool) Parallel() bool      { return true }
 func (t *readTool) Description() string { return "Read a file from the filesystem." }
 
 func (t *readTool) Spec() []byte {
@@ -96,7 +97,11 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 		content = strings.Join(lines[start:end], "\n")
 	}
 
-	content = truncate(content, maxReadLen)
+	content = truncateToolOutput(content, truncationOptions{
+		MaxLines:  defaultMaxOutputLines,
+		MaxBytes:  maxReadLen,
+		Direction: keepOutputHead,
+	}).Content
 	return Result{
 		Content: []ContentPart{{Type: "text", Text: content}},
 	}, nil

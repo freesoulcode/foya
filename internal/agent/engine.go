@@ -472,8 +472,19 @@ type toolCallPayload struct {
 	Name    string `json:"name"`
 	Input   string `json:"input,omitempty"`
 	Output  string `json:"output,omitempty"`
+	Status  string `json:"status,omitempty"` // queued / running / done / error
 	IsError bool   `json:"is_error,omitempty"`
 	Diff    string `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
+}
+
+type turnStartedPayload struct {
+	RunID     string    `json:"run_id"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type turnCompletePayload struct {
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
 }
 
 type executedToolCall struct {
@@ -525,6 +536,13 @@ func (e *Engine) runTurn(
 	ctx = turnCtx
 	runID := newRunID()
 	ctx = tool.WithRunID(ctx, runID)
+	turnStartedAt := time.Now()
+	completeTurn := func() {
+		e.emit(ctx, sessionID, event.KindTurnComplete, turnCompletePayload{
+			StartedAt:   turnStartedAt,
+			CompletedAt: time.Now(),
+		}, true)
+	}
 	e.setSessionPhase(ctx, sessionID, session.PhaseTurn)
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
 
@@ -566,7 +584,9 @@ func (e *Engine) runTurn(
 	// 用户消息入日志。
 	userMsg := message.Message{Role: message.RoleUser, Content: userText}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
-	e.emit(ctx, sessionID, event.KindTurnStarted, map[string]string{"run_id": runID}, true)
+	e.emit(ctx, sessionID, event.KindTurnStarted, turnStartedPayload{
+		RunID: runID, StartedAt: turnStartedAt,
+	}, true)
 
 	// 循环防护:跨本回合所有步骤,检测无意义重复(见 loopguard.go)。
 	guard := &loopGuard{}
@@ -620,7 +640,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		)
 		if err != nil {
 			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			completeTurn()
 			return err
 		}
 
@@ -633,7 +653,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		if err != nil {
 			// ctx 取消(用户点停止)不算错误,只安静结束回合。
 			if ctx.Err() != nil {
-				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+				completeTurn()
 				return nil
 			}
 			if !overflowRecoveryUsed && isContextOverflow(err.Error()) {
@@ -644,7 +664,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 				}
 			}
 			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			completeTurn()
 			return err
 		}
 
@@ -693,19 +713,19 @@ Inspect the current project tree before modifying files; do not assume it matche
 				if ev.ToolArgsDlt != "" {
 					pc.argsBuf += ev.ToolArgsDlt
 				}
-				// 首个 ID+名称齐全的分片:立即通知 UI「开始调用该工具」。
+				// 首个 ID+名称齐全的分片:立即通知 UI「该工具已进入等待队列」。
 				// 此时参数还在流式生成(write 的文件内容可能很长),用户可即时感知,
 				// 不必等到参数全部流完。
 				if !pc.uiNotified && pc.ID != "" && pc.Name != "" {
 					pc.uiNotified = true
 					e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
-						ID: pc.ID, Name: pc.Name,
+						ID: pc.ID, Name: pc.Name, Status: "queued",
 					}, true)
 				}
 			case "error":
 				// ctx 被取消(用户点停止):安静结束回合,不弹错误气泡。
 				if ctx.Err() != nil {
-					e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+					completeTurn()
 					return nil
 				}
 				streamError = ev.Text
@@ -733,7 +753,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 				}
 			}
 			e.emit(ctx, sessionID, event.KindError, streamError, true)
-			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			completeTurn()
 			return nil
 		}
 
@@ -750,6 +770,10 @@ Inspect the current project tree before modifying files; do not assume it matche
 		}
 		if len(toolCalls) > 0 {
 			asstMsg.ToolCalls = toolCalls
+		} else {
+			turnCompletedAt := time.Now()
+			asstMsg.TurnStartedAt = &turnStartedAt
+			asstMsg.TurnCompletedAt = &turnCompletedAt
 		}
 		e.emit(ctx, sessionID, event.KindMessageEnd, asstMsg, true)
 
@@ -764,7 +788,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		// 同时收集本步骤的工具交互,供第二层重复检测在步骤结束后判定。
 		for _, tc := range toolCalls {
 			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
-				ID: tc.ID, Name: tc.Name, Input: string(tc.Input),
+				ID: tc.ID, Name: tc.Name, Input: string(tc.Input), Status: "queued",
 			}, true)
 		}
 
@@ -776,7 +800,8 @@ Inspect the current project tree before modifying files; do not assume it matche
 				name: tc.Name, input: tc.Input, output: item.output,
 			})
 			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
-				ID: tc.ID, Name: tc.Name, Output: item.output, IsError: item.isErr, Diff: item.diff,
+				ID: tc.ID, Name: tc.Name, Output: item.output, IsError: item.isErr,
+				Diff: item.diff,
 			}, true)
 
 			toolMsg := message.Message{
@@ -788,7 +813,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
 		}
 		if ctx.Err() != nil {
-			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			completeTurn()
 			return nil
 		}
 
@@ -798,18 +823,20 @@ Inspect the current project tree before modifying files; do not assume it matche
 			e.emit(ctx, sessionID, event.KindError,
 				"检测到重复操作:agent 反复执行相同调用且无进展,已终止本回合。请调整指令或补充信息后重试。",
 				true)
-			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			completeTurn()
 			return nil
 		}
 	}
 
-	e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+	completeTurn()
 	return nil
 }
 
-// executeToolCalls executes a batch concurrently only when every call targets a
-// tool that explicitly declares itself parallel-safe. Result ordering always
-// matches the model's tool-call ordering.
+const maxParallelToolCalls = 5
+
+// executeToolCalls dispatches parallel-safe calls on a bounded concurrent lane
+// while preserving model order for calls on the sequential lane. Result ordering
+// always matches the model's tool-call ordering.
 func (e *Engine) executeToolCalls(
 	ctx context.Context,
 	sessionID string,
@@ -817,13 +844,14 @@ func (e *Engine) executeToolCalls(
 	guard *loopGuard,
 ) []executedToolCall {
 	results := make([]executedToolCall, len(calls))
-	allParallel := len(calls) > 1
+	parallelIndexes := make([]int, 0, len(calls))
+	sequentialIndexes := make([]int, 0, len(calls))
 	for i, call := range calls {
 		results[i] = executedToolCall{call: call, sig: callSig(call.Name, call.Input)}
-		t, ok := e.tools.Get(call.Name)
-		parallel, parallelOK := t.(tool.ParallelTool)
-		if !ok || !parallelOK || !parallel.Parallel() || !e.toolAllowed(sessionID, call.Name) {
-			allParallel = false
+		if e.toolExecutionMode(sessionID, call.Name) == "parallel" {
+			parallelIndexes = append(parallelIndexes, i)
+		} else {
+			sequentialIndexes = append(sequentialIndexes, i)
 		}
 	}
 
@@ -836,8 +864,15 @@ func (e *Engine) executeToolCalls(
 		if guard.blockBeforeExec(item.sig) {
 			item.output = loopGateText(item.call.Name)
 			item.isErr = true
+			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+				ID: item.call.ID, Name: item.call.Name, Output: item.output,
+				IsError: true, Status: "error",
+			}, true)
 			return
 		}
+		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+			ID: item.call.ID, Name: item.call.Name, Status: "running",
+		}, true)
 		result := e.executeTool(ctx, sessionID, item.call)
 		item.output = resultText(result)
 		item.isErr = result.IsError
@@ -847,29 +882,49 @@ func (e *Engine) executeToolCalls(
 			item.isErr = false
 			item.diff = ""
 		}
+		status := "done"
+		if item.isErr {
+			status = "error"
+		}
+		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+			ID: item.call.ID, Name: item.call.Name, Output: item.output,
+			IsError: item.isErr, Diff: item.diff, Status: status,
+		}, true)
 	}
 
-	if allParallel {
-		var wg sync.WaitGroup
-		wg.Add(len(results))
-		for i := range results {
-			go func(index int) {
-				defer wg.Done()
+	var wg sync.WaitGroup
+	parallelSlots := make(chan struct{}, maxParallelToolCalls)
+	for _, index := range parallelIndexes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case parallelSlots <- struct{}{}:
+				defer func() { <-parallelSlots }()
 				run(index)
-			}(i)
-		}
-		wg.Wait()
-	} else {
-		for i := range results {
-			run(i)
-			if ctx.Err() != nil {
-				for j := i + 1; j < len(results); j++ {
-					results[j].output = "已中断"
+			case <-ctx.Done():
+				results[index].output = "已中断"
+			}
+		}()
+	}
+	if len(sequentialIndexes) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for position, index := range sequentialIndexes {
+				run(index)
+				if ctx.Err() == nil {
+					continue
+				}
+				for _, remaining := range sequentialIndexes[position+1:] {
+					results[remaining].output = "已中断"
 				}
 				break
 			}
-		}
+		}()
 	}
+	wg.Wait()
+
 	for i := range results {
 		if results[i].output == "" {
 			results[i].output = "(no output)"
@@ -879,6 +934,15 @@ func (e *Engine) executeToolCalls(
 		}
 	}
 	return results
+}
+
+func (e *Engine) toolExecutionMode(sessionID, name string) string {
+	t, ok := e.tools.Get(name)
+	parallel, parallelOK := t.(tool.ParallelTool)
+	if ok && parallelOK && parallel.Parallel() && e.toolAllowed(sessionID, name) {
+		return "parallel"
+	}
+	return "sequential"
 }
 
 // Cancel 中断指定会话当前正在运行的回合(若有)。

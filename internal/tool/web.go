@@ -93,6 +93,7 @@ func NewWebFetchTool(gateway approval.Gateway) Tool {
 
 func (t *webSearchTool) Name() string       { return "web_search" }
 func (t *webSearchTool) Exposure() Exposure { return ExposureDirect }
+func (t *webSearchTool) Parallel() bool     { return true }
 func (t *webSearchTool) Description() string {
 	return "Search the live web and return bounded source rows."
 }
@@ -147,6 +148,7 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 
 func (t *webFetchTool) Name() string       { return "web_fetch" }
 func (t *webFetchTool) Exposure() Exposure { return ExposureDirect }
+func (t *webFetchTool) Parallel() bool     { return true }
 func (t *webFetchTool) Description() string {
 	return "Read the main textual content of a known HTTP or HTTPS URL."
 }
@@ -216,9 +218,11 @@ func (t *webFetchTool) Run(ctx context.Context, call Call) (Result, error) {
 			return errResult("web page parse failed: " + err.Error()), nil
 		}
 	}
-	if len(content) > webFetchMaxText {
-		content = content[:webFetchMaxText] + "\n\n[content truncated]"
-	}
+	content = truncateToolOutput(content, truncationOptions{
+		MaxLines:  defaultMaxOutputLines,
+		MaxBytes:  webFetchMaxText,
+		Direction: keepOutputHead,
+	}).Content
 	return textResult(content), nil
 }
 

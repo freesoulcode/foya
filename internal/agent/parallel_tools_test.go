@@ -10,6 +10,7 @@ import (
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
@@ -58,6 +59,11 @@ type blockingParallelTool struct {
 	release chan struct{}
 }
 
+type blockingSequentialTool struct {
+	started chan string
+	release chan struct{}
+}
+
 type captureProvider struct {
 	request provider.Request
 }
@@ -94,6 +100,20 @@ func (t *blockingParallelTool) Run(ctx context.Context, _ tool.Call) (tool.Resul
 	select {
 	case <-t.release:
 		return tool.Result{Content: []tool.ContentPart{{Type: "text", Text: "done"}}}, nil
+	case <-ctx.Done():
+		return tool.Result{}, ctx.Err()
+	}
+}
+
+func (t *blockingSequentialTool) Name() string            { return "sequential_test" }
+func (t *blockingSequentialTool) Description() string     { return "test" }
+func (t *blockingSequentialTool) Spec() []byte            { return []byte(`{"type":"object"}`) }
+func (t *blockingSequentialTool) Exposure() tool.Exposure { return tool.ExposureDirect }
+func (t *blockingSequentialTool) Run(ctx context.Context, call tool.Call) (tool.Result, error) {
+	t.started <- call.ID
+	select {
+	case <-t.release:
+		return tool.Result{Content: []tool.ContentPart{{Type: "text", Text: call.ID}}}, nil
 	case <-ctx.Done():
 		return tool.Result{}, ctx.Err()
 	}
@@ -136,6 +156,94 @@ func TestParallelSafeToolCallsRunConcurrently(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("turn did not complete")
+	}
+
+	history, err := log.History(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finalAssistant *message.Message
+	for i := range history {
+		if history[i].Role == message.RoleAssistant && len(history[i].ToolCalls) == 0 {
+			finalAssistant = &history[i]
+		}
+	}
+	if finalAssistant == nil ||
+		finalAssistant.TurnStartedAt == nil ||
+		finalAssistant.TurnCompletedAt == nil ||
+		finalAssistant.TurnCompletedAt.Before(*finalAssistant.TurnStartedAt) {
+		t.Fatalf("final assistant turn timestamps were not persisted: %#v", finalAssistant)
+	}
+}
+
+func TestMixedToolBatchUsesParallelAndOrderedSequentialLanes(t *testing.T) {
+	registry := tool.NewRegistry()
+	parallel := &blockingParallelTool{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}, 1),
+	}
+	sequential := &blockingSequentialTool{
+		started: make(chan string, 2),
+		release: make(chan struct{}, 2),
+	}
+	registry.Register(parallel)
+	registry.Register(sequential)
+	engine := &Engine{
+		tools: registry,
+		log:   state.NewMemLog(),
+		bus:   broker.New[event.Event](),
+	}
+
+	done := make(chan []executedToolCall, 1)
+	go func() {
+		done <- engine.executeToolCalls(context.Background(), "session-1", []message.ToolCall{
+			{ID: "parallel-1", Name: "parallel_test", Input: []byte(`{}`)},
+			{ID: "sequential-1", Name: "sequential_test", Input: []byte(`{}`)},
+			{ID: "sequential-2", Name: "sequential_test", Input: []byte(`{}`)},
+		}, &loopGuard{})
+	}()
+
+	select {
+	case <-parallel.started:
+	case <-time.After(time.Second):
+		t.Fatal("parallel lane did not start")
+	}
+	select {
+	case id := <-sequential.started:
+		if id != "sequential-1" {
+			t.Fatalf("first sequential call = %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sequential lane did not start alongside parallel lane")
+	}
+	select {
+	case id := <-sequential.started:
+		t.Fatalf("second sequential call %q started before the first completed", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	sequential.release <- struct{}{}
+	select {
+	case id := <-sequential.started:
+		if id != "sequential-2" {
+			t.Fatalf("second sequential call = %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second sequential call did not start after the first completed")
+	}
+	sequential.release <- struct{}{}
+	parallel.release <- struct{}{}
+
+	select {
+	case results := <-done:
+		if len(results) != 3 ||
+			results[0].call.ID != "parallel-1" ||
+			results[1].call.ID != "sequential-1" ||
+			results[2].call.ID != "sequential-2" {
+			t.Fatalf("result order = %#v", results)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mixed tool batch did not complete")
 	}
 }
 

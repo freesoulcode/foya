@@ -34,6 +34,7 @@ interface KernelEvent {
   seq: number;
   kind: string;
   session: string;
+  time: string;
   payload?: unknown;
 }
 
@@ -247,6 +248,8 @@ function handleEvent(sessionId: string, data: string) {
         if (m.reasoning && !bucket[idx].segments?.some((s) => s.kind === "reasoning")) {
           ensureSegments(bucket[idx]).unshift({ kind: "reasoning", text: m.reasoning });
         }
+        if (m.turn_started_at) bucket[idx].turn_started_at = m.turn_started_at;
+        if (m.turn_completed_at) bucket[idx].turn_completed_at = m.turn_completed_at;
         bucket[idx].error = false;
         // 仅当本条消息不携带 tool_calls(即最终回复)时才释放流式槽位。
         // 携带 tool_calls 时回合尚未结束:工具执行后模型会继续输出,
@@ -271,7 +274,12 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "tool_begin": {
-      const p = ev.payload as { id: string; name: string; input: string };
+      const p = ev.payload as {
+        id: string;
+        name: string;
+        input: string;
+        status?: ToolCallView["status"];
+      };
       // 找到当前流式助手消息,挂上 tool_call 视图。
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx >= 0) {
@@ -283,7 +291,7 @@ function handleEvent(sessionId: string, data: string) {
             id: p.id,
             name: p.name,
             input: p.input,
-            status: "running" as const,
+            status: p.status ?? "queued",
           };
           msg.tool_calls.push(tool);
           // 按序追加为 tool 段:插在当前思考/文本之后,后续思考会另起新段。
@@ -295,26 +303,47 @@ function handleEvent(sessionId: string, data: string) {
     case "tool_update": {
       // 执行前回填完整参数(tool_begin 在参数刚开始流式生成时已发出,
       // 那时只有名称;此处补上完整 input)。若卡片因回放等原因不存在则兜底创建。
-      const p = ev.payload as { id: string; name: string; input: string };
+      const p = ev.payload as {
+        id: string;
+        name: string;
+        input: string;
+        status?: ToolCallView["status"];
+        output?: string;
+        is_error?: boolean;
+        diff?: string;
+      };
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx < 0) break;
       const msg = bucket[asstIdx];
       let tc = msg.tool_calls?.find((t) => t.id === p.id);
       if (!tc) {
         if (!msg.tool_calls) msg.tool_calls = [];
-        tc = { id: p.id, name: p.name, input: p.input, status: "running" };
+        tc = {
+          id: p.id,
+          name: p.name,
+          input: p.input,
+          status: p.status ?? "queued",
+        };
         msg.tool_calls.push(tc);
         ensureSegments(msg).push({ kind: "tool", tool: tc });
       } else {
         if (p.name) tc.name = p.name;
         if (p.input) tc.input = p.input;
       }
+      if (p.status) tc.status = p.status;
+      if (p.output) tc.output = p.output;
+      if (p.is_error) tc.status = "error";
+      if (p.diff) tc.diff = p.diff;
       const seg = msg.segments?.find(
         (s) => s.kind === "tool" && s.tool.id === p.id
       );
       if (seg && seg.kind === "tool") {
         if (p.name) seg.tool.name = p.name;
         if (p.input) seg.tool.input = p.input;
+        if (p.status) seg.tool.status = p.status;
+        if (p.output) seg.tool.output = p.output;
+        if (p.is_error) seg.tool.status = "error";
+        if (p.diff) seg.tool.diff = p.diff;
       }
       break;
     }
@@ -388,6 +417,7 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "turn_started": {
+      const p = ev.payload as { started_at?: string } | null;
       runningSessions.value[sessionId] = true;
       let idx = streamingIdx[sessionId] ?? -1;
       if (idx < 0) {
@@ -395,14 +425,26 @@ function handleEvent(sessionId: string, data: string) {
         idx = bucket.length - 1;
         streamingIdx[sessionId] = idx;
       }
+      bucket[idx].turn_started_at = p?.started_at ?? ev.time;
       if (sessionId === activeId.value) streaming.value = true;
       break;
     }
-    case "turn_complete":
+    case "turn_complete": {
+      const p = ev.payload as {
+        started_at?: string;
+        completed_at?: string;
+      } | null;
+      const streamingMessageIdx = streamingIdx[sessionId] ?? -1;
+      const idx = streamingMessageIdx >= 0 ? streamingMessageIdx : findLastAssistantIdx(bucket);
+      if (idx >= 0) {
+        bucket[idx].turn_started_at ??= p?.started_at ?? ev.time;
+        bucket[idx].turn_completed_at = p?.completed_at ?? ev.time;
+      }
       streamingIdx[sessionId] = -1;
       delete runningSessions.value[sessionId];
       if (sessionId === activeId.value) streaming.value = false;
       break;
+    }
     case "queue_updated": {
       const p = ev.payload as { items?: QueuedMessage[] };
       queuedBySession.value[sessionId] = p?.items ?? [];
@@ -601,9 +643,11 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
         segs.push({ kind: "text", text: m.content });
         cur.content += m.content; // 供复制/滚动等仍读 content 的地方使用
       }
+      if (m.turn_started_at) cur.turn_started_at = m.turn_started_at;
+      if (m.turn_completed_at) cur.turn_completed_at = m.turn_completed_at;
       if (m.tool_calls) {
         for (const tc of m.tool_calls) {
-          const tool = { ...tc, status: "running" as const };
+          const tool = { ...tc, status: "queued" as const };
           cur.tool_calls!.push(tool);
           segs.push({ kind: "tool", tool });
         }

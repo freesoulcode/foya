@@ -5,7 +5,10 @@
 // 的累积。
 package message
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Role 是消息角色。
 type Role string
@@ -36,4 +39,7 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Diff       string     `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供展示,不回灌模型
+	// 回合生命周期时间仅写入最终 assistant 消息，不回灌模型。
+	TurnStartedAt   *time.Time `json:"turn_started_at,omitempty"`
+	TurnCompletedAt *time.Time `json:"turn_completed_at,omitempty"`
 }

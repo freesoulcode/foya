@@ -3,7 +3,6 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"runtime"
 	"strings"
 	"time"
@@ -98,7 +97,11 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 			output += "\n" + runErr.Error()
 		}
 	}
-	output = truncate(output, maxOutputLen)
+	output = truncateToolOutput(output, truncationOptions{
+		MaxLines:  defaultMaxOutputLines,
+		MaxBytes:  maxOutputLen,
+		Direction: keepOutputTail,
+	}).Content
 	return Result{
 		Content: []ContentPart{{Type: "text", Text: output}},
 		IsError: runErr != nil,
@@ -110,13 +113,6 @@ func defaultShell() (shell, flag string) {
 		return "cmd", "/c"
 	}
 	return "/bin/sh", "-c"
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + fmt.Sprintf("\n... (output truncated, %d bytes total)", len(s))
 }
 
 func errResult(msg string) Result {
