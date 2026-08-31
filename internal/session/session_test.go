@@ -2,8 +2,37 @@ package session
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 )
+
+func TestPersistentManagerRestoresChildRuntimeSnapshot(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	manager, err := NewPersistentManager(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(CreateOptions{
+		Model: "model", ParentID: "parent", AgentRef: "user:researcher",
+		AgentInstructions: "research carefully", AllowedTools: []string{"read"},
+		AgentMaxTurns: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewPersistentManager(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := restored.Get(created.ID)
+	if !ok {
+		t.Fatal("restored session missing")
+	}
+	if item.AgentInstructions != "research carefully" ||
+		len(item.AllowedTools) != 1 || item.AgentMaxTurns != 7 {
+		t.Fatalf("runtime snapshot = %+v", item)
+	}
+}
 
 func stringPointer(value string) *string {
 	return &value
@@ -108,5 +137,34 @@ func TestUpdateReasoningEffort(t *testing.T) {
 	_, err = manager.Update(created.ID, nil, nil, stringPointer("maximum"), nil, nil)
 	if !errors.Is(err, ErrInvalidReasoningEffort) {
 		t.Fatalf("invalid effort error = %v, want %v", err, ErrInvalidReasoningEffort)
+	}
+}
+
+func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
+	manager := NewMemManager()
+	parent, err := manager.Create(CreateOptions{Model: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := manager.Create(CreateOptions{
+		ParentID:          parent.ID,
+		SpawnedBy:         &SpawnedBy{ParentToolCallID: "call-1"},
+		AgentRef:          "project:p1:researcher",
+		AgentName:         "researcher",
+		AgentDigest:       "digest",
+		AgentInstructions: "instructions",
+		AllowedTools:      []string{"read"},
+		AgentMaxTurns:     5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentID != parent.ID || child.SpawnedBy == nil ||
+		child.SpawnedBy.ParentToolCallID != "call-1" {
+		t.Fatalf("lineage = %+v", child)
+	}
+	if child.AgentInstructions != "instructions" || child.AgentMaxTurns != 5 ||
+		len(child.AllowedTools) != 1 || child.AllowedTools[0] != "read" {
+		t.Fatalf("runtime snapshot = %+v", child)
 	}
 }

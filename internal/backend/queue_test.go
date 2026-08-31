@@ -225,6 +225,37 @@ func TestQueueSnapshotIsBroadcastToEverySubscriber(t *testing.T) {
 	}
 }
 
+func TestChildSessionsStayOutOfRootListAndDeleteWithParent(t *testing.T) {
+	be, parentID, _ := newQueueTestBackend(t)
+	child, err := be.sessions.Create(session.CreateOptions{ParentID: parentID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := be.sessions.Create(session.CreateOptions{ParentID: child.ID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := be.ListSessions()
+	if len(roots) != 1 || roots[0].ID != parentID {
+		t.Fatalf("root sessions = %#v", roots)
+	}
+	children, err := be.ChildSessions(parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 || children[0].ID != child.ID {
+		t.Fatalf("child sessions = %#v", children)
+	}
+	if err := be.DeleteSession(context.Background(), parentID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{parentID, child.ID, grandchild.ID} {
+		if _, ok := be.sessions.Get(id); ok {
+			t.Fatalf("session %s survived parent deletion", id)
+		}
+	}
+}
+
 func TestEditTurnStartsFromActiveHistoryPrefix(t *testing.T) {
 	be, sessionID, prov := newQueueTestBackend(t)
 	ctx := context.Background()

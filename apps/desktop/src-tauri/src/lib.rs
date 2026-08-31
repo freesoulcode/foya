@@ -515,6 +515,52 @@ async fn list_sessions() -> Result<String, String> {
     kernel::request("GET", "/sessions", None).await
 }
 
+/// 列出一个父会话的直接子 Agent 会话。
+#[cfg(unix)]
+#[tauri::command]
+async fn list_child_sessions(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/children"), None).await
+}
+
+/// 列出父会话创建的异步 Agent runs。
+#[cfg(unix)]
+#[tauri::command]
+async fn list_agent_runs(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/agents"), None).await
+}
+
+/// 启动一个异步 Agent run。
+#[cfg(unix)]
+#[tauri::command]
+async fn start_agent(session_id: String, request: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/agents"),
+        Some(&request.to_string()),
+    )
+    .await
+}
+
+/// 取消一个异步 Agent run。
+#[cfg(unix)]
+#[tauri::command]
+async fn cancel_agent(session_id: String, run_id: String) -> Result<(), String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/agents/{run_id}/cancel"),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 读取父任务树的 token 预算。
+#[cfg(unix)]
+#[tauri::command]
+async fn load_agent_budget(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/agent-budget"), None).await
+}
+
 /// 加载某会话的对话历史。
 #[cfg(unix)]
 #[tauri::command]
@@ -581,6 +627,24 @@ async fn list_skills() -> Result<String, String> {
 
 #[cfg(unix)]
 #[tauri::command]
+async fn list_agents() -> Result<String, String> {
+    kernel::request("GET", "/agents", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_agent_limits() -> Result<String, String> {
+    kernel::request("GET", "/settings/agent-limits", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_agent_limits(limits: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/settings/agent-limits", Some(&limits.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn list_projects() -> Result<String, String> {
     kernel::request("GET", "/projects", None).await
 }
@@ -615,6 +679,13 @@ async fn delete_project(project_id: String) -> Result<(), String> {
 #[tauri::command]
 async fn list_project_skills(project_id: String) -> Result<String, String> {
     let path = format!("/projects/{}/skills", encode_query_component(&project_id));
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_project_agents(project_id: String) -> Result<String, String> {
+    let path = format!("/projects/{}/agents", encode_query_component(&project_id));
     kernel::request("GET", &path, None).await
 }
 
@@ -1137,6 +1208,12 @@ fn list_sessions() -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn list_child_sessions(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn load_history(_session_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -1263,6 +1340,24 @@ async fn list_skills() -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn list_agents() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_agent_limits() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_agent_limits(_limits: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn list_projects() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -1288,6 +1383,12 @@ async fn delete_project(_project_id: String) -> Result<(), String> {
 #[cfg(not(unix))]
 #[tauri::command]
 async fn list_project_skills(_project_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_project_agents(_project_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
 
@@ -1392,6 +1493,11 @@ pub fn run() {
             delete_queued_message,
             dispatch_queued_message,
             list_sessions,
+            list_child_sessions,
+            list_agent_runs,
+            start_agent,
+            cancel_agent,
+            load_agent_budget,
             load_history,
             load_usage,
             list_connections,
@@ -1400,11 +1506,15 @@ pub fn run() {
             delete_connection,
             list_connection_models,
             list_skills,
+            list_agents,
+            get_agent_limits,
+            update_agent_limits,
             list_projects,
             register_project,
             update_project,
             delete_project,
             list_project_skills,
+            list_project_agents,
             set_skill_enabled,
             get_web_search_settings,
             update_web_search_settings,

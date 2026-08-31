@@ -14,6 +14,8 @@ const (
 	ctxKeyApproval
 	ctxKeyModelRuntime
 	ctxKeyProjectID
+	ctxKeySessionID
+	ctxKeyRunID
 )
 
 // WithCWD 把执行目录注入上下文(由 engine 设置)。
@@ -35,6 +37,32 @@ func WithProjectID(ctx context.Context, projectID string) context.Context {
 
 func ProjectIDFromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(ctxKeyProjectID).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// WithSessionID identifies the session that initiated a tool call.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, ctxKeySessionID, sessionID)
+}
+
+// SessionIDFromContext returns the session that initiated a tool call.
+func SessionIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(ctxKeySessionID).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// WithRunID identifies the root user turn that owns a tool call and every
+// delegated descendant.
+func WithRunID(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, ctxKeyRunID, runID)
+}
+
+func RunIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(ctxKeyRunID).(string); ok {
 		return id
 	}
 	return ""

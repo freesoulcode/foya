@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import {
   ArrowLeftIcon,
   BlocksIcon,
+  BotIcon,
   BookOpenIcon,
   DownloadIcon,
   FileJsonIcon,
@@ -21,6 +22,7 @@ import {
 } from "@lucide/vue";
 import {
   api,
+  type AgentLimits,
   type ConnectionConfig,
   type McpConfig,
   type McpRegistryServer,
@@ -73,7 +75,13 @@ const emit = defineEmits<{ close: [] }>();
 const { theme, setTheme } = useTheme();
 const { isMac } = usePlatform();
 
-type SettingsSection = "connections" | "skills" | "mcp" | "web-search" | "appearance";
+type SettingsSection =
+  | "connections"
+  | "skills"
+  | "mcp"
+  | "web-search"
+  | "agents"
+  | "appearance";
 interface DragPreview {
   name: string;
   model: string;
@@ -124,6 +132,11 @@ const searchEngineID = ref("");
 const searchEndpoint = ref("");
 const webTestQuery = ref("Foya agent");
 const webTestResults = ref<WebSearchResult[]>([]);
+const agentLimits = ref<AgentLimits>({
+  max_global_concurrency: 4,
+  max_per_root: 4,
+  max_tree_tokens: 0,
+});
 const globalSkills = computed(() =>
   skills.value.filter((item) => item.scope !== "project")
 );
@@ -161,6 +174,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
   { id: "skills", label: "技能", icon: BookOpenIcon },
   { id: "mcp", label: "MCP", icon: BlocksIcon },
   { id: "web-search", label: "联网搜索", icon: GlobeIcon },
+  { id: "agents", label: "Agent", icon: BotIcon },
   { id: "appearance", label: "外观", icon: PaletteIcon },
 ];
 const themeOptions: Array<{ value: Theme; label: string; icon: typeof SunIcon }> = [
@@ -209,7 +223,46 @@ watch(section, (next) => {
   if (next === "skills") void loadSkills();
   if (next === "mcp") void loadMcp();
   if (next === "web-search") void loadWebSearch();
+  if (next === "agents") void loadAgentLimits();
 });
+
+async function loadAgentLimits() {
+  capabilityLoading.value = true;
+  error.value = "";
+  try {
+    agentLimits.value = await api.getAgentLimits();
+  } catch (cause) {
+    error.value = String(cause);
+  } finally {
+    capabilityLoading.value = false;
+  }
+}
+
+function validInteger(value: number, min: number, max: number): boolean {
+  return Number.isInteger(value) && value >= min && value <= max;
+}
+
+async function saveAgentLimits() {
+  error.value = "";
+  const limits = agentLimits.value;
+  if (
+    !validInteger(limits.max_global_concurrency, 1, 256) ||
+    !validInteger(limits.max_per_root, 1, 256) ||
+    !Number.isInteger(limits.max_tree_tokens) ||
+    limits.max_tree_tokens < 0
+  ) {
+    error.value = "请检查输入范围：并发 1~256，Token 上限 ≥ 0";
+    return;
+  }
+  capabilitySaving.value = true;
+  try {
+    agentLimits.value = await api.updateAgentLimits({ ...limits });
+  } catch (cause) {
+    error.value = String(cause);
+  } finally {
+    capabilitySaving.value = false;
+  }
+}
 
 function openProjectCreate() {
   projectCreateError.value = "";
@@ -1160,6 +1213,65 @@ async function remove() {
               </a>
             </div>
             <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+          </div>
+        </div>
+
+        <div v-else-if="section === 'agents'" class="mx-auto w-full max-w-3xl p-6">
+          <h2 class="mb-6 text-base font-medium">Agent 调度</h2>
+          <p class="mb-4 text-xs text-muted-foreground">
+            当前子 Agent 默认无递归派工能力，调度层级固定为 1；系统内置 Child 总数安全网以防失控。
+          </p>
+          <div class="divide-y divide-border border-y border-border">
+            <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
+              <span class="min-w-0">
+                <span class="block text-sm font-medium">全局并发</span>
+                <span class="block text-xs text-muted-foreground">整个内核同时运行的 Child 数</span>
+              </span>
+              <Input
+                v-model.number="agentLimits.max_global_concurrency"
+                type="number"
+                min="1"
+                max="256"
+                step="1"
+                :disabled="capabilityLoading"
+              />
+            </label>
+            <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
+              <span class="min-w-0">
+                <span class="block text-sm font-medium">单任务并发</span>
+                <span class="block text-xs text-muted-foreground">单个根任务同时运行的 Child 数</span>
+              </span>
+              <Input
+                v-model.number="agentLimits.max_per_root"
+                type="number"
+                min="1"
+                max="256"
+                step="1"
+                :disabled="capabilityLoading"
+              />
+            </label>
+            <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
+              <span class="min-w-0">
+                <span class="block text-sm font-medium">任务树 Token 上限</span>
+                <span class="block text-xs text-muted-foreground">0 表示不限制</span>
+              </span>
+              <Input
+                v-model.number="agentLimits.max_tree_tokens"
+                type="number"
+                min="0"
+                step="1000"
+                :disabled="capabilityLoading"
+              />
+            </label>
+          </div>
+          <p v-if="error" class="mt-4 text-sm text-destructive">{{ error }}</p>
+          <div class="mt-5 flex justify-end">
+            <Button
+              :disabled="capabilityLoading || capabilitySaving"
+              @click="saveAgentLimits"
+            >
+              {{ capabilitySaving ? "保存中…" : "保存" }}
+            </Button>
           </div>
         </div>
 

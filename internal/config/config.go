@@ -2,9 +2,13 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Transport 是内核对外的传输方式。
@@ -30,10 +34,23 @@ type Config struct {
 	SocketPath string // Unix socket 路径(TransportUnixSocket 时)
 	Addr       string // 监听地址(TransportTCP 时)
 	DataDir    string // 事件日志、SQLite 索引所在目录
+	Agents     AgentLimits
 
 	// Provider 是旧的单连接启动配置，仅用于从环境变量迁移初始 Connection。
 	Provider Provider
 }
+
+const (
+	InternalMaxChildrenPerRoot = 64
+)
+
+type AgentLimits struct {
+	MaxGlobalConcurrency int   `json:"max_global_concurrency"`
+	MaxPerRoot           int   `json:"max_per_root"`
+	MaxTreeTokens        int64 `json:"max_tree_tokens"`
+}
+
+var ErrInvalidAgentLimits = errors.New("invalid agent limits")
 
 // Provider 是旧版单连接启动配置(BYOK:用户自带 base_url + key + model)。
 type Provider struct {
@@ -76,8 +93,21 @@ func Default() Config {
 		Lifecycle:  LifecycleEphemeral,
 		SocketPath: DefaultSocketPath(),
 		DataDir:    DefaultDataDir(),
-		Provider:   providerFromEnv(),
+		Agents: AgentLimits{
+			MaxGlobalConcurrency: envInt("FOYA_AGENT_MAX_GLOBAL_CONCURRENCY", 4),
+			MaxPerRoot:           envInt("FOYA_AGENT_MAX_PER_ROOT", 4),
+			MaxTreeTokens:        int64(envInt("FOYA_AGENT_MAX_TREE_TOKENS", 0)),
+		},
+		Provider: providerFromEnv(),
 	}
+}
+
+func envInt(name string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
 }
 
 // providerFromEnv 从环境变量装配 provider 配置。
@@ -113,6 +143,73 @@ func providerConfigPath(dataDir string) string {
 
 func connectionsConfigPath(dataDir string) string {
 	return filepath.Join(dataDir, "connections.json")
+}
+
+func agentLimitsConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, "agent-limits.json")
+}
+
+// LoadAgentLimits reads the persisted scheduler limits. A missing file lets the
+// caller retain environment-derived defaults.
+func LoadAgentLimits(dataDir string) (AgentLimits, bool, error) {
+	data, err := os.ReadFile(agentLimitsConfigPath(dataDir))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return AgentLimits{}, false, nil
+		}
+		return AgentLimits{}, false, err
+	}
+	var limits AgentLimits
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&limits); err != nil {
+		return AgentLimits{}, false, err
+	}
+	if err := ValidateAgentLimits(limits); err != nil {
+		return AgentLimits{}, false, err
+	}
+	return limits, true, nil
+}
+
+// SaveAgentLimits atomically persists scheduler settings with user-only
+// permissions so manual edits and desktop settings share one source.
+func SaveAgentLimits(dataDir string, limits AgentLimits) error {
+	if err := ValidateAgentLimits(limits); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(limits, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := agentLimitsConfigPath(dataDir)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func ValidateAgentLimits(limits AgentLimits) error {
+	values := []struct {
+		name  string
+		value int
+		max   int
+	}{
+		{"max_global_concurrency", limits.MaxGlobalConcurrency, 256},
+		{"max_per_root", limits.MaxPerRoot, 256},
+	}
+	for _, item := range values {
+		if item.value < 1 || item.value > item.max {
+			return fmt.Errorf("%w: %s must be between 1 and %d", ErrInvalidAgentLimits, item.name, item.max)
+		}
+	}
+	if limits.MaxTreeTokens < 0 {
+		return fmt.Errorf("%w: max_tree_tokens must be zero or greater", ErrInvalidAgentLimits)
+	}
+	return nil
 }
 
 // LoadConnections reads the Connection catalog. If it is absent, callers may

@@ -22,6 +22,7 @@ import { renderMarkdown } from "@/lib/markdown";
 import { diffFileName, diffStats } from "@/lib/diff";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import { Textarea } from "@/components/ui/textarea";
+import SubAgentActivity from "./SubAgentActivity.vue";
 
 const props = defineProps<{
   message: ChatMessage;
@@ -84,12 +85,20 @@ const showWorking = computed(() => {
 
 // 工具调用展开状态。
 const expandedTools = ref<Set<string>>(new Set());
+const collapsedAgentTools = ref<Set<string>>(new Set());
 function toggleTool(id: string) {
+  const tool = toolCalls.value.find((item) => item.id === id);
+  if (tool?.agent_run) {
+    if (collapsedAgentTools.value.has(id)) collapsedAgentTools.value.delete(id);
+    else collapsedAgentTools.value.add(id);
+    return;
+  }
   if (expandedTools.value.has(id)) expandedTools.value.delete(id);
   else expandedTools.value.add(id);
 }
-function isToolExpanded(id: string) {
-  return expandedTools.value.has(id);
+function isToolExpanded(tool: ToolCallView) {
+  if (tool.agent_run) return !collapsedAgentTools.value.has(tool.id);
+  return expandedTools.value.has(tool.id);
 }
 
 // 工具展示描述:按工具类型给图标 + 进行时/完成时的动词,统一收敛为单行紧凑样式。
@@ -107,6 +116,12 @@ const TOOL_META: Record<string, ToolMeta> = {
   edit: { icon: FilePenLineIcon, running: "正在编辑文件", done: "已编辑文件" },
   search: { icon: SearchIcon, running: "正在搜索", done: "已搜索" },
   web_search: { icon: GlobeIcon, running: "正在联网搜索", done: "已联网搜索" },
+  agent: { icon: BotIcon, running: "子 Agent 正在执行", done: "子 Agent 已完成" },
+  spawn_agent: { icon: BotIcon, running: "正在派发子 Agent", done: "已派发子 Agent" },
+  wait_agents: { icon: BotIcon, running: "正在等待子 Agent", done: "子 Agent 已返回" },
+  read_agent_output: { icon: BotIcon, running: "正在读取子 Agent", done: "已读取子 Agent" },
+  cancel_agent: { icon: BotIcon, running: "正在取消子 Agent", done: "已取消子 Agent" },
+  list_agents: { icon: BotIcon, running: "正在检查子任务", done: "已检查子任务" },
 };
 
 function toolMeta(name: string): ToolMeta {
@@ -124,10 +139,15 @@ function isFileChangeTool(tc: ToolCallView): boolean {
 // 单行标题文案:运行中/失败/完成三态。
 function toolLabel(tc: ToolCallView): string {
   const meta = toolMeta(tc.name);
-  if (tc.status === "running") return meta.running;
-  if (tc.status === "error") return `${meta.done}（失败）`;
+  const agentSuffix = isAgentTool(tc) && tc.agent_name ? ` · ${tc.agent_name}` : "";
+  if (tc.status === "running") return meta.running + agentSuffix;
+  if (tc.status === "error") return `${meta.done}${agentSuffix}（失败）`;
   if (tc.diff) return "已编辑 1 个文件";
-  return meta.done;
+  return meta.done + agentSuffix;
+}
+
+function isAgentTool(tc: ToolCallView): boolean {
+  return tc.name === "agent" || tc.name === "spawn_agent";
 }
 
 // 格式化工具输入用于展示(尝试 pretty-print JSON)。
@@ -340,7 +360,7 @@ function onEditKeydown(event: KeyboardEvent) {
                 @click="toggleTool(seg.tool.id)"
               >
                 <ChevronRightIcon
-                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool.id) && 'rotate-90')"
+                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool) && 'rotate-90')"
                 />
                 <component
                   :is="toolIcon(seg.tool)"
@@ -349,7 +369,7 @@ function onEditKeydown(event: KeyboardEvent) {
                 <span>{{ toolLabel(seg.tool) }}</span>
               </button>
               <button
-                v-if="seg.tool.diff && isToolExpanded(seg.tool.id)"
+                v-if="seg.tool.diff && isToolExpanded(seg.tool)"
                 type="button"
                 class="ml-3 flex h-8 w-[calc(100%_-_0.75rem)] items-center gap-2 border-l-2 border-border px-3 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
                 :title="`查看 ${diffFileName(seg.tool.diff)} 的完整变更`"
@@ -374,7 +394,7 @@ function onEditKeydown(event: KeyboardEvent) {
                 @click="toggleTool(seg.tool.id)"
               >
                 <ChevronRightIcon
-                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool.id) && 'rotate-90')"
+                  :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(seg.tool) && 'rotate-90')"
                 />
                 <component
                   :is="toolIcon(seg.tool)"
@@ -383,9 +403,14 @@ function onEditKeydown(event: KeyboardEvent) {
                 <span>{{ toolLabel(seg.tool) }}</span>
               </button>
               <div
-                v-if="isToolExpanded(seg.tool.id)"
+                v-if="isToolExpanded(seg.tool)"
                 class="mt-1 border-l-2 border-border pl-3"
               >
+                <SubAgentActivity
+                  v-if="isAgentTool(seg.tool) && seg.tool.agent_run"
+                  :run="seg.tool.agent_run"
+                  :messages="seg.tool.child_messages"
+                />
                 <div v-if="seg.tool.input" class="mb-2">
                   <div class="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">参数</div>
                   <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(seg.tool.input) }}</pre>

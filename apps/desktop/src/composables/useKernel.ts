@@ -11,6 +11,9 @@ import {
   type ContextUsage,
   type BranchEffect,
   type ProjectInfo,
+  type AgentRunSnapshot,
+  type AgentBudget,
+  type ToolCallView,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -69,11 +72,14 @@ const deletedSessions = new Set<string>();
 // 待发送队列由内核持有;这里仅按会话保存 SSE/GET 投影。
 const queuedBySession = ref<Record<string, QueuedMessage[]>>({});
 const usageBySession = ref<Record<string, ContextUsage>>({});
+const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
+const agentBudgetBySession = ref<Record<string, AgentBudget>>({});
 
 // 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
 export interface PendingApproval {
   id: string;
   session: string;
+  execution_session?: string;
   tool_name: string;
   action: string;
   detail: string;
@@ -111,6 +117,49 @@ function findLastAssistantIdx(bucket: ChatMessage[]): number {
     if (bucket[i].role === "assistant") return i;
   }
   return -1;
+}
+
+function matchingAgentTools(sessionId: string, toolCallId?: string): ToolCallView[] {
+  if (!toolCallId) return [];
+  const tools: ToolCallView[] = [];
+  for (const msg of messagesBySession.value[sessionId] ?? []) {
+    for (const item of msg.tool_calls ?? []) {
+      if (item.id === toolCallId) tools.push(item);
+    }
+    for (const segment of msg.segments ?? []) {
+      if (segment.kind === "tool" && segment.tool.id === toolCallId) {
+        tools.push(segment.tool);
+      }
+    }
+  }
+  return tools;
+}
+
+async function hydrateAgentRun(parentSessionId: string, run: AgentRunSnapshot) {
+  const runs = agentRunsBySession.value[parentSessionId] ?? [];
+  const index = runs.findIndex((item) => item.id === run.id);
+  if (index >= 0) runs[index] = run;
+  else runs.push(run);
+  agentRunsBySession.value[parentSessionId] = runs;
+
+  const tools = matchingAgentTools(parentSessionId, run.parent_tool_call_id);
+  for (const item of tools) {
+    item.agent_run = run;
+    item.child_session_id = run.child_session_id;
+    item.agent_ref = run.agent_ref;
+    item.agent_name = run.agent_name;
+  }
+  if (!run.child_session_id) return;
+  const childId = run.child_session_id;
+  ensureBucket(childId);
+  if (messagesBySession.value[childId].length === 0) {
+    const history = await api.loadHistory(childId);
+    messagesBySession.value[childId] = normalizeHistory(history);
+  }
+  for (const item of tools) {
+    item.child_messages = messagesBySession.value[childId];
+  }
+  await subscribe(childId);
 }
 
 // 确保气泡有 segments 数组,并返回它(用于按序追加思考/文本/工具段)。
@@ -292,6 +341,37 @@ function handleEvent(sessionId: string, data: string) {
           if (p.diff) seg.tool.diff = p.diff;
         }
       }
+      break;
+    }
+    case "subagent_queued":
+    case "subagent_running":
+    case "subagent_started":
+    case "subagent_completed":
+    case "subagent_failed":
+    case "subagent_cancelled":
+    case "subagent_interrupted": {
+      const run = ev.payload as AgentRunSnapshot;
+      if (run?.id) {
+        void hydrateAgentRun(sessionId, run);
+      } else {
+        // Compatibility with synchronous agent events.
+        const legacy = ev.payload as {
+          child_session_id: string;
+          agent_ref: string;
+          agent_name: string;
+          tool_call_id: string;
+        };
+        for (const item of matchingAgentTools(sessionId, legacy.tool_call_id)) {
+          item.child_session_id = legacy.child_session_id;
+          item.agent_ref = legacy.agent_ref;
+          item.agent_name = legacy.agent_name;
+        }
+      }
+      break;
+    }
+    case "agent_budget_updated":
+    case "agent_budget_exceeded": {
+      agentBudgetBySession.value[sessionId] = ev.payload as AgentBudget;
       break;
     }
     case "approval_request": {
@@ -563,13 +643,17 @@ async function select(id: string) {
     messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
-  const [queued, usage] = await Promise.all([
+  const [queued, usage, agentRuns, agentBudget] = await Promise.all([
     api.listQueuedMessages(id),
     api.loadUsage(id),
+    api.listAgentRuns(id),
+    api.loadAgentBudget(id),
   ]);
   queuedBySession.value[id] = queued;
   if (usage) usageBySession.value[id] = usage;
   else delete usageBySession.value[id];
+  agentBudgetBySession.value[id] = agentBudget;
+  await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
 // 局部更新当前会话的可变配置(模型/项目/审批档位)。
@@ -828,6 +912,8 @@ export function useKernel() {
     messages: activeMessages,
     queuedMessages: activeQueuedMessages,
     contextUsage: activeUsage,
+    agentRunsBySession,
+    agentBudgetBySession,
     pendingApprovals,
     pendingHistoryEdit,
     connect,

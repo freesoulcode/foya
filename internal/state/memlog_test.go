@@ -245,3 +245,37 @@ func appendMessage(
 	}
 	return seq
 }
+
+func TestPersistentLogRestoresTypedHistoryAndDeletion(t *testing.T) {
+	dataDir := t.TempDir()
+	log, err := NewPersistentLog(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMessage(t, log, "kept", message.Message{
+		Role: message.RoleUser, Content: "persist me",
+	})
+	appendMessage(t, log, "deleted", message.Message{
+		Role: message.RoleUser, Content: "remove me",
+	})
+	log.Delete("deleted")
+
+	restored, err := NewPersistentLog(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := restored.History(context.Background(), "kept")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Content != "persist me" {
+		t.Fatalf("restored history = %+v", history)
+	}
+	deleted, err := restored.Read(context.Background(), "deleted", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("deleted events restored: %+v", deleted)
+	}
+}

@@ -5,11 +5,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/websearch"
 )
@@ -52,6 +55,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
+	s.mux.HandleFunc("GET /sessions/{id}/children", s.handleChildSessions)
+	s.mux.HandleFunc("POST /sessions/{id}/agents", s.handleStartAgent)
+	s.mux.HandleFunc("GET /sessions/{id}/agents", s.handleListAgentRuns)
+	s.mux.HandleFunc("GET /sessions/{id}/agents/{run_id}", s.handleGetAgentRun)
+	s.mux.HandleFunc("POST /sessions/{id}/agents/wait", s.handleWaitAgents)
+	s.mux.HandleFunc("POST /sessions/{id}/agents/{run_id}/cancel", s.handleCancelAgent)
+	s.mux.HandleFunc("GET /sessions/{id}/agent-budget", s.handleAgentBudget)
 	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/edit", s.handleEditTurn)
@@ -65,11 +75,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
 	s.mux.HandleFunc("GET /skills", s.handleListSkills)
 	s.mux.HandleFunc("PATCH /skills/{ref}", s.handleSetSkillEnabled)
+	s.mux.HandleFunc("GET /agents", s.handleListAgents)
+	s.mux.HandleFunc("GET /settings/agent-limits", s.handleGetAgentLimits)
+	s.mux.HandleFunc("PUT /settings/agent-limits", s.handleUpdateAgentLimits)
 	s.mux.HandleFunc("GET /projects", s.handleListProjects)
 	s.mux.HandleFunc("POST /projects", s.handleCreateProject)
 	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /projects/{id}/skills", s.handleProjectSkills)
+	s.mux.HandleFunc("GET /projects/{id}/agents", s.handleProjectAgents)
 	s.mux.HandleFunc("GET /web-search", s.handleGetWebSearch)
 	s.mux.HandleFunc("PUT /web-search", s.handleUpdateWebSearch)
 	s.mux.HandleFunc("POST /web-search/test", s.handleTestWebSearch)
@@ -87,6 +101,138 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
 	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
+}
+
+func (s *Server) handleGetAgentLimits(w http.ResponseWriter, _ *http.Request) {
+	limits, err := s.backend.AgentLimits()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "agent_limits_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
+}
+
+func (s *Server) handleUpdateAgentLimits(w http.ResponseWriter, r *http.Request) {
+	var limits config.AgentLimits
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&limits); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.UpdateAgentLimits(limits); err != nil {
+		writeErr(w, http.StatusBadRequest, "agent_limits_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, limits)
+}
+
+func (s *Server) handleStartAgent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Task             string                    `json:"task"`
+		AgentRef         string                    `json:"agent_ref,omitempty"`
+		RootRunID        string                    `json:"root_run_id,omitempty"`
+		ParentToolCallID string                    `json:"parent_tool_call_id,omitempty"`
+		Context          subagent.ContextSelection `json:"context,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.StartAgent(r.Context(), subagent.SpawnRequest{
+		ParentSessionID: r.PathValue("id"), ParentToolCallID: req.ParentToolCallID,
+		RootRunID: req.RootRunID, Task: req.Task, AgentRef: req.AgentRef, Context: req.Context,
+	})
+	if err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, item)
+}
+
+func (s *Server) handleListAgentRuns(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.AgentRuns(r.PathValue("id"))
+	if err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleGetAgentRun(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.AgentRun(r.PathValue("id"), r.PathValue("run_id"))
+	if err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleWaitAgents(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs  []string `json:"ids"`
+		Mode string   `json:"mode,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	items, err := s.backend.WaitAgents(r.Context(), r.PathValue("id"), req.IDs, req.Mode != "any")
+	if err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.CancelAgent(r.PathValue("id"), r.PathValue("run_id")); err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAgentBudget(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.AgentBudget(r.PathValue("id"))
+	if err != nil {
+		writeAgentRunErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func writeAgentRunErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrNotFound), errors.Is(err, os.ErrNotExist):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, context.Canceled):
+		writeErr(w, http.StatusRequestTimeout, "cancelled", err.Error())
+	default:
+		writeErr(w, http.StatusBadRequest, "agent_run_failed", err.Error())
+	}
+}
+
+func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.Agents(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "agents_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleProjectAgents(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.ProjectAgents(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "agents_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) handleGetMCP(w http.ResponseWriter, _ *http.Request) {
@@ -572,6 +718,19 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 // handleListSessions 列出会话。
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.backend.ListSessions())
+}
+
+func (s *Server) handleChildSessions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.ChildSessions(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "children_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // handleHistory 返回某会话的对话历史(从事件日志投影)。

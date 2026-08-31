@@ -2,10 +2,14 @@
 package state
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +17,7 @@ import (
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/provider"
 )
 
 var (
@@ -38,6 +43,12 @@ type MemLog struct {
 	events      map[string][]event.Event // session -> 有序事件
 	checkpoints map[string]compaction.Checkpoint
 	deleted     map[string]struct{} // 已删除会话,其迟到事件一律丢弃
+	path        string
+}
+
+type diskRecord struct {
+	Event          *json.RawMessage `json:"event,omitempty"`
+	DeletedSession string           `json:"deleted_session,omitempty"`
 }
 
 // NewMemLog 创建内存日志。
@@ -49,6 +60,44 @@ func NewMemLog() *MemLog {
 	}
 }
 
+// NewPersistentLog restores the append-only JSONL event log. Deletion
+// tombstones remain in the stream so deleted sessions cannot reappear after a
+// restart.
+func NewPersistentLog(dataDir string) (*MemLog, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	log := NewMemLog()
+	log.path = filepath.Join(dataDir, "events.jsonl")
+	file, err := os.Open(log.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return log, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	reader := bufio.NewReader(file)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(strings.TrimSpace(string(line))) > 0 {
+			if err := log.restoreRecord(line); err != nil {
+				if errors.Is(readErr, io.EOF) {
+					break // Ignore one crash-truncated trailing record.
+				}
+				return nil, fmt.Errorf("restore event log: %w", err)
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	return log, nil
+}
+
 // Append 追加事件,分配单调递增序号。
 // 会话已被删除时(如删除后回合收尾的迟到事件),直接丢弃、不分配序号,
 // 避免已删会话的日志被僵尸事件重建。
@@ -58,8 +107,11 @@ func (l *MemLog) Append(ctx context.Context, ev event.Event) (event.Seq, error) 
 	if _, gone := l.deleted[ev.Session]; gone {
 		return l.seq, nil
 	}
-	l.seq++
-	ev.Seq = l.seq
+	ev.Seq = l.seq + 1
+	if err := l.appendDiskLocked(ev, ""); err != nil {
+		return l.seq, err
+	}
+	l.seq = ev.Seq
 	l.events[ev.Session] = append(l.events[ev.Session], ev)
 	return ev.Seq, nil
 }
@@ -84,6 +136,7 @@ func (l *MemLog) Delete(session string) {
 	delete(l.events, session)
 	delete(l.checkpoints, session)
 	l.deleted[session] = struct{}{}
+	_ = l.appendDiskLocked(event.Event{}, session)
 	l.mu.Unlock()
 }
 
@@ -146,14 +199,17 @@ func (l *MemLog) RecordCheckpoint(
 	if !compaction.ValidateCheckpoint(active, checkpoint) {
 		return event.Event{}, fmt.Errorf("compaction checkpoint does not match source events")
 	}
-	l.seq++
 	ev := event.Event{
-		Seq:     l.seq,
+		Seq:     l.seq + 1,
 		Kind:    event.KindCompactionCompleted,
 		Session: checkpoint.SessionID,
 		Payload: checkpoint,
 		Time:    checkpoint.CreatedAt,
 	}
+	if err := l.appendDiskLocked(ev, ""); err != nil {
+		return event.Event{}, err
+	}
+	l.seq = ev.Seq
 	l.events[checkpoint.SessionID] = append(sourceEvents, ev)
 	l.checkpoints[checkpoint.SessionID] = checkpoint
 	return ev, nil
@@ -215,18 +271,21 @@ func (l *MemLog) Branch(
 		return BranchResult{}, ErrBranchChanged
 	}
 
-	l.seq++
 	payload := event.HistoryBranched{
 		TargetUserSeq: targetUserSeq,
 		Effects:       effects,
 	}
 	ev := event.Event{
-		Seq:     l.seq,
+		Seq:     l.seq + 1,
 		Kind:    event.KindHistoryBranched,
 		Session: session,
 		Time:    time.Now(),
 		Payload: payload,
 	}
+	if err := l.appendDiskLocked(ev, ""); err != nil {
+		return BranchResult{}, err
+	}
+	l.seq = ev.Seq
 	l.events[session] = append(l.events[session], ev)
 	delete(l.checkpoints, session)
 	return BranchResult{
@@ -236,6 +295,114 @@ func (l *MemLog) Branch(
 		FirstUser: firstUser,
 		Applied:   true,
 	}, nil
+}
+
+func (l *MemLog) appendDiskLocked(ev event.Event, deletedSession string) error {
+	if l.path == "" {
+		return nil
+	}
+	var record any
+	if deletedSession != "" {
+		record = struct {
+			DeletedSession string `json:"deleted_session"`
+		}{DeletedSession: deletedSession}
+	} else {
+		record = struct {
+			Event event.Event `json:"event"`
+		}{Event: ev}
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func (l *MemLog) restoreRecord(data []byte) error {
+	var envelope struct {
+		Event          json.RawMessage `json:"event"`
+		DeletedSession string          `json:"deleted_session"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if envelope.DeletedSession != "" {
+		delete(l.events, envelope.DeletedSession)
+		delete(l.checkpoints, envelope.DeletedSession)
+		l.deleted[envelope.DeletedSession] = struct{}{}
+		return nil
+	}
+	var raw struct {
+		Seq     event.Seq       `json:"seq"`
+		Kind    event.Kind      `json:"kind"`
+		Session string          `json:"session"`
+		RunID   string          `json:"run_id,omitempty"`
+		Time    time.Time       `json:"time"`
+		Payload json.RawMessage `json:"payload,omitempty"`
+	}
+	if err := json.Unmarshal(envelope.Event, &raw); err != nil {
+		return err
+	}
+	ev := event.Event{
+		Seq: raw.Seq, Kind: raw.Kind, Session: raw.Session, RunID: raw.RunID,
+		Time: raw.Time, Payload: decodePayload(raw.Kind, raw.Payload),
+	}
+	if ev.Seq > l.seq {
+		l.seq = ev.Seq
+	}
+	if _, deleted := l.deleted[ev.Session]; !deleted {
+		l.events[ev.Session] = append(l.events[ev.Session], ev)
+	}
+	if checkpoint, ok := ev.Payload.(compaction.Checkpoint); ok {
+		l.checkpoints[ev.Session] = checkpoint
+	}
+	return nil
+}
+
+func decodePayload(kind event.Kind, raw json.RawMessage) any {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var target any
+	switch kind {
+	case event.KindMessageEnd:
+		target = &message.Message{}
+	case event.KindCompactionCompleted:
+		target = &compaction.Checkpoint{}
+	case event.KindHistoryBranched:
+		target = &event.HistoryBranched{}
+	case event.KindUsageUpdated:
+		target = &provider.Usage{}
+	default:
+		var value any
+		if json.Unmarshal(raw, &value) == nil {
+			return value
+		}
+		return nil
+	}
+	if json.Unmarshal(raw, target) != nil {
+		return nil
+	}
+	switch value := target.(type) {
+	case *message.Message:
+		return *value
+	case *compaction.Checkpoint:
+		return *value
+	case *event.HistoryBranched:
+		return *value
+	case *provider.Usage:
+		return *value
+	default:
+		return target
+	}
 }
 
 func activeMessageEvents(events []event.Event) []event.Event {

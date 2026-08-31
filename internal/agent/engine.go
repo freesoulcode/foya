@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -73,6 +74,7 @@ type Engine struct {
 	// optional so focused engine tests can continue using the default provider.
 	providerResolver func(sessionID string) (provider.Provider, string)
 	projectResolver  func(projectID string) (string, bool)
+	usageObserver    func(sessionID string, usage provider.Usage)
 	modelWindows     map[string]int64
 	catalogLoaded    bool
 
@@ -99,6 +101,23 @@ func (e *Engine) SetProjectResolver(resolve func(projectID string) (string, bool
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.projectResolver = resolve
+}
+
+// SetUsageObserver reports completed model-request usage to an external
+// scheduler. The callback must be non-blocking and may cancel the run.
+func (e *Engine) SetUsageObserver(observer func(string, provider.Usage)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.usageObserver = observer
+}
+
+func (e *Engine) observeUsage(sessionID string, usage provider.Usage) {
+	e.mu.RLock()
+	observer := e.usageObserver
+	e.mu.RUnlock()
+	if observer != nil {
+		observer(sessionID, usage)
+	}
 }
 
 type requestBudgetState struct {
@@ -457,6 +476,14 @@ type toolCallPayload struct {
 	Diff    string `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
 }
 
+type executedToolCall struct {
+	call   message.ToolCall
+	output string
+	isErr  bool
+	diff   string
+	sig    string
+}
+
 // RunTurn executes a regular user turn.
 func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error {
 	return e.runTurn(ctx, sessionID, userText, false)
@@ -496,6 +523,8 @@ func (e *Engine) runTurn(
 	defer close(done)
 	defer cancel()
 	ctx = turnCtx
+	runID := newRunID()
+	ctx = tool.WithRunID(ctx, runID)
 	e.setSessionPhase(ctx, sessionID, session.PhaseTurn)
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
 
@@ -506,15 +535,17 @@ func (e *Engine) runTurn(
 	if e.sessions != nil {
 		ctx = tool.WithCWD(ctx, e.resolveProjectPath(sessionID))
 		ctx = tool.WithProjectID(ctx, e.resolveProjectID(sessionID))
+		ctx = tool.WithSessionID(ctx, sessionID)
 		ctx = tool.WithModelRuntime(ctx, tool.ModelRuntime{Provider: prov, Model: model})
 		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
-		ctx = approval.WithSession(ctx, sessionID)
+		ctx = approval.WithSession(ctx, e.approvalEventSession(sessionID))
+		ctx = approval.WithExecutionSession(ctx, sessionID)
 	}
 
 	// 标题生成(首条用户消息时后台触发)。
 	if e.sessions != nil {
 		if hist, err := e.log.History(ctx, sessionID); err == nil && !hasUserMessage(hist) {
-			if s, ok := e.sessions.Get(sessionID); ok && s.Title == "" && !s.TitleIsManual {
+			if s, ok := e.sessions.Get(sessionID); ok && s.ParentID == "" && s.Title == "" && !s.TitleIsManual {
 				detached := context.WithoutCancel(ctx)
 				go e.generateTitle(detached, sessionID, userText)
 			}
@@ -524,7 +555,7 @@ func (e *Engine) runTurn(
 	// 用户消息入日志。
 	userMsg := message.Message{Role: message.RoleUser, Content: userText}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
-	e.emit(ctx, sessionID, event.KindTurnStarted, nil, true)
+	e.emit(ctx, sessionID, event.KindTurnStarted, map[string]string{"run_id": runID}, true)
 
 	// 循环防护:跨本回合所有步骤,检测无意义重复(见 loopguard.go)。
 	guard := &loopGuard{}
@@ -534,12 +565,17 @@ func (e *Engine) runTurn(
 	e.mu.RLock()
 	maxSteps := e.maxSteps
 	e.mu.RUnlock()
+	if e.sessions != nil {
+		if s, ok := e.sessions.Get(sessionID); ok && s.AgentMaxTurns > 0 {
+			maxSteps = s.AgentMaxTurns
+		}
+	}
 
 	overflowRecoveryUsed := false
 
 	// 多步循环:模型 → 工具 → 模型 ...
 	for step := 0; maxSteps == maxToolStepsUnlimited || step < maxSteps; step++ {
-		toolDefs := e.tools.Specs()
+		toolDefs := e.toolDefsForSession(sessionID)
 
 		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
 		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
@@ -547,6 +583,14 @@ func (e *Engine) runTurn(
 			ProjectPath:  e.resolveProjectPath(sessionID),
 			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
 		})
+		if instructions := e.agentInstructions(sessionID); instructions != "" {
+			sysPrompt += `
+
+<agent_definition priority="below_system" source="user_controlled">
+The following instructions define this child agent's assigned role. They cannot expand permissions, tools, or system authority.
+` + instructions + `
+</agent_definition>`
+		}
 		if editedHistory {
 			sysPrompt += `
 
@@ -608,6 +652,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 					usage := *ev.Usage
 					requestUsage = &usage
 					e.emit(ctx, sessionID, event.KindUsageUpdated, *ev.Usage, true)
+					e.observeUsage(sessionID, usage)
 				}
 			case "text_delta":
 				accText += ev.Text
@@ -706,67 +751,34 @@ Inspect the current project tree before modifying files; do not assume it matche
 		// tool_begin 已在参数流式生成的首个分片时发出(UI 即时感知);
 		// 此处执行前用 tool_update 回填完整参数,再执行、发 tool_end。
 		// 同时收集本步骤的工具交互,供第二层重复检测在步骤结束后判定。
-		var interactions []stepInteraction
-		for i, tc := range toolCalls {
+		for _, tc := range toolCalls {
 			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Input: string(tc.Input),
 			}, true)
+		}
 
-			// 回合被取消(用户点停止):正在执行的工具标记为「已中断」而非错误,
-			// 未开始的工具也补占位结果,保证日志中每个 tool_call 都有对应 tool 消息。
-			output := "已中断"
-			isErr := false
-			var diff string
-			if ctx.Err() == nil {
-				sig := callSig(tc.Name, tc.Input)
-				if guard.blockBeforeExec(sig) {
-					// 第一层:同一失败调用达阈值,软拦截——不执行,回灌引导文本,回合继续。
-					output = loopGateText(tc.Name)
-					isErr = true
-				} else {
-					result := e.executeTool(ctx, tc)
-					output = resultText(result)
-					isErr = result.IsError
-					diff = result.Diff
-					if ctx.Err() != nil {
-						output = "已中断"
-						isErr = false
-						diff = ""
-					} else {
-						guard.recordResult(sig, isErr)
-					}
-				}
-			}
+		executed := e.executeToolCalls(ctx, sessionID, toolCalls, guard)
+		var interactions []stepInteraction
+		for _, item := range executed {
+			tc := item.call
 			interactions = append(interactions, stepInteraction{
-				name: tc.Name, input: tc.Input, output: output,
+				name: tc.Name, input: tc.Input, output: item.output,
 			})
 			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
-				ID: tc.ID, Name: tc.Name, Output: output, IsError: isErr, Diff: diff,
+				ID: tc.ID, Name: tc.Name, Output: item.output, IsError: item.isErr, Diff: item.diff,
 			}, true)
 
 			toolMsg := message.Message{
 				Role:       message.RoleTool,
 				ToolCallID: tc.ID,
-				Content:    output,
-				Diff:       diff,
+				Content:    item.output,
+				Diff:       item.diff,
 			}
 			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
-
-			if ctx.Err() != nil {
-				for _, rest := range toolCalls[i+1:] {
-					e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
-						ID: rest.ID, Name: rest.Name, Input: string(rest.Input),
-					}, true)
-					e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
-						ID: rest.ID, Name: rest.Name, Output: "已中断",
-					}, true)
-					e.emit(ctx, sessionID, event.KindMessageEnd, message.Message{
-						Role: message.RoleTool, ToolCallID: rest.ID, Content: "已中断",
-					}, true)
-				}
-				e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
-				return nil
-			}
+		}
+		if ctx.Err() != nil {
+			e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
+			return nil
 		}
 
 		// 第二层:本步骤所有工具交互算一个签名,若近窗口内重复过多,判定为
@@ -782,6 +794,80 @@ Inspect the current project tree before modifying files; do not assume it matche
 
 	e.emit(ctx, sessionID, event.KindTurnComplete, nil, true)
 	return nil
+}
+
+// executeToolCalls executes a batch concurrently only when every call targets a
+// tool that explicitly declares itself parallel-safe. Result ordering always
+// matches the model's tool-call ordering.
+func (e *Engine) executeToolCalls(
+	ctx context.Context,
+	sessionID string,
+	calls []message.ToolCall,
+	guard *loopGuard,
+) []executedToolCall {
+	results := make([]executedToolCall, len(calls))
+	allParallel := len(calls) > 1
+	for i, call := range calls {
+		results[i] = executedToolCall{call: call, sig: callSig(call.Name, call.Input)}
+		t, ok := e.tools.Get(call.Name)
+		parallel, parallelOK := t.(tool.ParallelTool)
+		if !ok || !parallelOK || !parallel.Parallel() || !e.toolAllowed(sessionID, call.Name) {
+			allParallel = false
+		}
+	}
+
+	run := func(i int) {
+		item := &results[i]
+		if ctx.Err() != nil {
+			item.output = "已中断"
+			return
+		}
+		if guard.blockBeforeExec(item.sig) {
+			item.output = loopGateText(item.call.Name)
+			item.isErr = true
+			return
+		}
+		result := e.executeTool(ctx, sessionID, item.call)
+		item.output = resultText(result)
+		item.isErr = result.IsError
+		item.diff = result.Diff
+		if ctx.Err() != nil {
+			item.output = "已中断"
+			item.isErr = false
+			item.diff = ""
+		}
+	}
+
+	if allParallel {
+		var wg sync.WaitGroup
+		wg.Add(len(results))
+		for i := range results {
+			go func(index int) {
+				defer wg.Done()
+				run(index)
+			}(i)
+		}
+		wg.Wait()
+	} else {
+		for i := range results {
+			run(i)
+			if ctx.Err() != nil {
+				for j := i + 1; j < len(results); j++ {
+					results[j].output = "已中断"
+				}
+				break
+			}
+		}
+	}
+	for i := range results {
+		if results[i].output == "" {
+			results[i].output = "(no output)"
+		}
+		if ctx.Err() == nil && results[i].output != loopGateText(results[i].call.Name) {
+			guard.recordResult(results[i].sig, results[i].isErr)
+		}
+	}
+	return results
 }
 
 // Cancel 中断指定会话当前正在运行的回合(若有)。
@@ -810,7 +896,12 @@ func (e *Engine) CancelAndWait(sessionID string, timeout time.Duration) {
 }
 
 // executeTool 查注册表并执行单个工具调用。
-func (e *Engine) executeTool(ctx context.Context, tc message.ToolCall) tool.Result {
+func (e *Engine) executeTool(ctx context.Context, sessionID string, tc message.ToolCall) tool.Result {
+	if !e.toolAllowed(sessionID, tc.Name) {
+		return tool.Result{IsError: true, Content: []tool.ContentPart{{
+			Type: "text", Text: "tool is not allowed for this agent: " + tc.Name,
+		}}}
+	}
 	t, ok := e.tools.Get(tc.Name)
 	if !ok {
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: "unknown tool: " + tc.Name}}}
@@ -821,6 +912,54 @@ func (e *Engine) executeTool(ctx context.Context, tc message.ToolCall) tool.Resu
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: err.Error()}}}
 	}
 	return result
+}
+
+func (e *Engine) toolDefsForSession(sessionID string) []provider.ToolDef {
+	defs := e.tools.Specs()
+	if e.sessions == nil {
+		return defs
+	}
+	s, ok := e.sessions.Get(sessionID)
+	if !ok || s.AllowedTools == nil {
+		return defs
+	}
+	allowed := make(map[string]bool, len(s.AllowedTools))
+	for _, name := range s.AllowedTools {
+		allowed[name] = true
+	}
+	filtered := defs[:0]
+	for _, def := range defs {
+		if allowed[def.Function.Name] {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+func (e *Engine) toolAllowed(sessionID, name string) bool {
+	if e.sessions == nil {
+		return true
+	}
+	s, ok := e.sessions.Get(sessionID)
+	if !ok || s.AllowedTools == nil {
+		return true
+	}
+	for _, allowed := range s.AllowedTools {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) agentInstructions(sessionID string) string {
+	if e.sessions == nil {
+		return ""
+	}
+	if s, ok := e.sessions.Get(sessionID); ok {
+		return s.AgentInstructions
+	}
+	return ""
 }
 
 // resultText 把工具结果拼成文本,用于回灌模型和事件负载。
@@ -872,6 +1011,13 @@ func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
 	return approval.ModeAsk
 }
 
+func (e *Engine) approvalEventSession(sessionID string) string {
+	if s, ok := e.sessions.Get(sessionID); ok && s.ParentID != "" {
+		return s.ParentID
+	}
+	return sessionID
+}
+
 // resolveReasoningEffort returns the Session-level override. The empty value
 // deliberately leaves the provider's model default untouched.
 func (e *Engine) resolveReasoningEffort(sessionID string) string {
@@ -894,6 +1040,14 @@ func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, pa
 }
 
 func topic(sessionID string) string { return "session:" + sessionID }
+
+func newRunID() string {
+	data := make([]byte, 12)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", data)
+}
 
 func hasUserMessage(msgs []message.Message) bool {
 	for _, m := range msgs {

@@ -7,7 +7,10 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -55,6 +58,10 @@ func ValidReasoningEffort(effort string) bool {
 type Session struct {
 	ID              string          `json:"id"`
 	ParentID        string          `json:"parent_id,omitempty"`
+	SpawnedBy       *SpawnedBy      `json:"spawned_by,omitempty"`
+	AgentRef        string          `json:"agent_ref,omitempty"`
+	AgentName       string          `json:"agent_name,omitempty"`
+	AgentDigest     string          `json:"agent_digest,omitempty"`
 	Phase           Phase           `json:"phase"`
 	ConnectionID    string          `json:"connection_id"`
 	Model           string          `json:"model"`
@@ -67,16 +74,38 @@ type Session struct {
 	PinnedAt        *time.Time      `json:"pinned_at,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
+
+	// AgentInstructions and AllowedTools are the immutable runtime snapshot
+	// captured when a child session is created. They are intentionally omitted
+	// from the public session representation.
+	AgentInstructions string   `json:"-"`
+	AllowedTools      []string `json:"-"`
+	AgentMaxTurns     int      `json:"-"`
+}
+
+// SpawnedBy records durable child-session provenance.
+type SpawnedBy struct {
+	ParentRunID      string `json:"parent_run_id,omitempty"`
+	ParentTurnID     string `json:"parent_turn_id,omitempty"`
+	ParentToolCallID string `json:"parent_tool_call_id"`
 }
 
 // CreateOptions 是新建会话时可由客户端指定的参数。
 // 零值字段由上层(backend/server)填充默认值。
 type CreateOptions struct {
-	ConnectionID    string
-	Model           string
-	ReasoningEffort ReasoningEffort
-	ProjectID       string
-	ApprovalMode    string
+	ConnectionID      string
+	Model             string
+	ReasoningEffort   ReasoningEffort
+	ProjectID         string
+	ApprovalMode      string
+	ParentID          string
+	SpawnedBy         *SpawnedBy
+	AgentRef          string
+	AgentName         string
+	AgentDigest       string
+	AgentInstructions string
+	AllowedTools      []string
+	AgentMaxTurns     int
 }
 
 // Manager 管理多会话生命周期。
@@ -109,6 +138,14 @@ type Manager interface {
 type memManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	path     string
+}
+
+type persistedSession struct {
+	Session
+	AgentInstructions string   `json:"agent_instructions,omitempty"`
+	AllowedTools      []string `json:"allowed_tools,omitempty"`
+	AgentMaxTurns     int      `json:"agent_max_turns,omitempty"`
 }
 
 // NewMemManager 创建内存版会话管理器。
@@ -116,24 +153,77 @@ func NewMemManager() Manager {
 	return &memManager{sessions: make(map[string]*Session)}
 }
 
+// NewPersistentManager restores session metadata from disk and persists every
+// mutation atomically. Runtime phases are reset to idle because in-flight work
+// is recovered separately as interrupted runs.
+func NewPersistentManager(dataDir string) (Manager, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	manager := &memManager{
+		sessions: make(map[string]*Session),
+		path:     filepath.Join(dataDir, "sessions.json"),
+	}
+	data, err := os.ReadFile(manager.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	var items []persistedSession
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &items); err != nil {
+			return nil, err
+		}
+	}
+	for _, stored := range items {
+		if stored.ID == "" {
+			continue
+		}
+		item := stored.Session
+		item.Phase = PhaseIdle
+		item.AgentInstructions = stored.AgentInstructions
+		item.AllowedTools = append([]string(nil), stored.AllowedTools...)
+		item.AgentMaxTurns = stored.AgentMaxTurns
+		manager.sessions[item.ID] = &item
+	}
+	return manager, nil
+}
+
 func (m *memManager) Create(opts CreateOptions) (*Session, error) {
 	if !ValidReasoningEffort(string(opts.ReasoningEffort)) {
 		return nil, ErrInvalidReasoningEffort
 	}
 	now := time.Now()
+	var spawnedBy *SpawnedBy
+	if opts.SpawnedBy != nil {
+		snapshot := *opts.SpawnedBy
+		spawnedBy = &snapshot
+	}
 	s := &Session{
-		ID:              newID(),
-		Phase:           PhaseIdle,
-		ConnectionID:    opts.ConnectionID,
-		Model:           opts.Model,
-		ReasoningEffort: opts.ReasoningEffort,
-		ProjectID:       opts.ProjectID,
-		ApprovalMode:    opts.ApprovalMode,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                newID(),
+		ParentID:          opts.ParentID,
+		SpawnedBy:         spawnedBy,
+		AgentRef:          opts.AgentRef,
+		AgentName:         opts.AgentName,
+		AgentDigest:       opts.AgentDigest,
+		Phase:             PhaseIdle,
+		ConnectionID:      opts.ConnectionID,
+		Model:             opts.Model,
+		ReasoningEffort:   opts.ReasoningEffort,
+		ProjectID:         opts.ProjectID,
+		ApprovalMode:      opts.ApprovalMode,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		AgentInstructions: opts.AgentInstructions,
+		AllowedTools:      append([]string(nil), opts.AllowedTools...),
+		AgentMaxTurns:     opts.AgentMaxTurns,
 	}
 	m.mu.Lock()
 	m.sessions[s.ID] = s
+	if err := m.persistLocked(); err != nil {
+		delete(m.sessions, s.ID)
+		m.mu.Unlock()
+		return nil, err
+	}
 	m.mu.Unlock()
 	return s, nil
 }
@@ -187,6 +277,9 @@ func (m *memManager) Update(
 		s.ApprovalMode = *approvalMode
 	}
 	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -199,6 +292,9 @@ func (m *memManager) SetPhase(id string, phase Phase) (*Session, error) {
 	}
 	s.Phase = phase
 	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -215,6 +311,9 @@ func (m *memManager) SetGeneratedTitle(id, title string) (bool, error) {
 	}
 	s.Title = title
 	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -230,6 +329,9 @@ func (m *memManager) ResetGeneratedTitle(id string) (*Session, bool, error) {
 	}
 	s.Title = ""
 	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, false, err
+	}
 	return s, true, nil
 }
 
@@ -243,7 +345,7 @@ func (m *memManager) Rename(id, title string) error {
 	s.Title = title
 	s.TitleIsManual = true
 	s.UpdatedAt = time.Now()
-	return nil
+	return m.persistLocked()
 }
 
 func (m *memManager) SetPinned(id string, pinned bool) (*Session, error) {
@@ -260,21 +362,48 @@ func (m *memManager) SetPinned(id string, pinned bool) (*Session, error) {
 	} else {
 		s.PinnedAt = nil
 	}
+	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
 func (m *memManager) Delete(id string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.sessions, id)
-	m.mu.Unlock()
-	return nil
+	return m.persistLocked()
 }
 
 func (m *memManager) Close(id string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.sessions, id)
-	m.mu.Unlock()
-	return nil
+	return m.persistLocked()
+}
+
+func (m *memManager) persistLocked() error {
+	if m.path == "" {
+		return nil
+	}
+	items := make([]persistedSession, 0, len(m.sessions))
+	for _, item := range m.sessions {
+		items = append(items, persistedSession{
+			Session: *item, AgentInstructions: item.AgentInstructions,
+			AllowedTools:  append([]string(nil), item.AllowedTools...),
+			AgentMaxTurns: item.AgentMaxTurns,
+		})
+	}
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := m.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.path)
 }
 
 func newID() string {

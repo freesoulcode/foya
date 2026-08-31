@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
+	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
@@ -29,6 +30,7 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/websearch"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -46,16 +48,18 @@ type ProviderBuilder func(config.Provider) (provider.Provider, string)
 
 // Backend 是内核业务的统一入口(传输无关)。
 type Backend struct {
-	sessions session.Manager
-	log      *state.MemLog
-	bus      *broker.Broker[event.Event]
-	engine   *agent.Engine
-	approval approval.Gateway
-	terminal terminal.Manager
-	skills   *skill.Manager
-	web      *websearch.Manager
-	mcp      *mcpclient.Manager
-	projects *project.Manager
+	sessions  session.Manager
+	log       *state.MemLog
+	bus       *broker.Broker[event.Event]
+	engine    *agent.Engine
+	approval  approval.Gateway
+	terminal  terminal.Manager
+	skills    *skill.Manager
+	web       *websearch.Manager
+	mcp       *mcpclient.Manager
+	projects  *project.Manager
+	agents    *agentdef.Manager
+	subagents *subagent.Manager
 
 	buildProvider     ProviderBuilder
 	dataDir           string
@@ -81,6 +85,170 @@ func (b *Backend) SetProjectManager(projects *project.Manager) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.projects = projects
+}
+
+func (b *Backend) SetAgentManager(agents *agentdef.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.agents = agents
+}
+
+func (b *Backend) SetSubAgentManager(manager *subagent.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subagents = manager
+}
+
+func (b *Backend) AgentLimits() (config.AgentLimits, error) {
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return config.AgentLimits{}, errors.New("sub-agents are unavailable")
+	}
+	limits := manager.Limits()
+	return config.AgentLimits{
+		MaxGlobalConcurrency: limits.MaxGlobalConcurrency,
+		MaxPerRoot:           limits.MaxPerRoot,
+		MaxTreeTokens:        limits.MaxTreeTokens,
+	}, nil
+}
+
+func (b *Backend) UpdateAgentLimits(limits config.AgentLimits) error {
+	if err := config.ValidateAgentLimits(limits); err != nil {
+		return err
+	}
+	b.mu.RLock()
+	manager := b.subagents
+	dataDir := b.dataDir
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("sub-agents are unavailable")
+	}
+	if err := config.SaveAgentLimits(dataDir, limits); err != nil {
+		return err
+	}
+	manager.UpdateLimits(subagent.Limits{
+		MaxGlobalConcurrency: limits.MaxGlobalConcurrency,
+		MaxPerRoot:           limits.MaxPerRoot,
+		MaxTreeTokens:        limits.MaxTreeTokens,
+	})
+	return nil
+}
+
+func (b *Backend) AgentRuns(sessionID string) ([]subagent.Snapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return nil, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("sub-agents are unavailable")
+	}
+	return manager.List(sessionID), nil
+}
+
+func (b *Backend) AgentRun(sessionID, runID string) (subagent.Snapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return subagent.Snapshot{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return subagent.Snapshot{}, errors.New("sub-agents are unavailable")
+	}
+	item, err := manager.Read(runID)
+	if err == nil && item.ParentSessionID != sessionID {
+		return subagent.Snapshot{}, os.ErrNotExist
+	}
+	return item, err
+}
+
+func (b *Backend) StartAgent(ctx context.Context, request subagent.SpawnRequest) (subagent.Snapshot, error) {
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return subagent.Snapshot{}, errors.New("sub-agents are unavailable")
+	}
+	return manager.Start(ctx, request)
+}
+
+func (b *Backend) WaitAgents(
+	ctx context.Context,
+	sessionID string,
+	ids []string,
+	waitAll bool,
+) ([]subagent.Snapshot, error) {
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("sub-agents are unavailable")
+	}
+	for _, id := range ids {
+		item, err := manager.Read(id)
+		if err != nil {
+			return nil, err
+		}
+		if item.ParentSessionID != sessionID {
+			return nil, os.ErrNotExist
+		}
+	}
+	return manager.Wait(ctx, ids, waitAll)
+}
+
+func (b *Backend) CancelAgent(sessionID, runID string) error {
+	if _, err := b.AgentRun(sessionID, runID); err != nil {
+		return err
+	}
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	return manager.Cancel(runID)
+}
+
+func (b *Backend) AgentBudget(sessionID string) (subagent.Budget, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return subagent.Budget{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager == nil {
+		return subagent.Budget{}, errors.New("sub-agents are unavailable")
+	}
+	return manager.Budget(sessionID), nil
+}
+
+// Agents returns effective builtin and user-level agent definitions.
+func (b *Backend) Agents(ctx context.Context) ([]agentdef.Definition, error) {
+	b.mu.RLock()
+	manager := b.agents
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("agents are unavailable")
+	}
+	return manager.List(ctx, "", "")
+}
+
+// ProjectAgents returns effective definitions with the project's definitions
+// taking precedence over user and builtin scopes.
+func (b *Backend) ProjectAgents(ctx context.Context, projectID string) ([]agentdef.Definition, error) {
+	b.mu.RLock()
+	agentManager := b.agents
+	projectManager := b.projects
+	b.mu.RUnlock()
+	if agentManager == nil || projectManager == nil {
+		return nil, errors.New("project agents are unavailable")
+	}
+	item, ok := projectManager.Get(projectID)
+	if !ok {
+		return nil, project.ErrNotFound
+	}
+	return agentManager.List(ctx, item.ID, item.Path)
 }
 
 func (b *Backend) Projects() ([]project.Project, error) {
@@ -447,19 +615,33 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 	if _, ok := b.sessions.Get(id); !ok {
 		return session.ErrNotFound
 	}
-	b.stopSessionAndWait(id, deleteTurnGrace)
-	b.terminal.CloseSession(id)
-	if err := b.sessions.Delete(id); err != nil {
-		return err
+	all := b.sessions.List()
+	var ordered []string
+	var visit func(string)
+	visit = func(parentID string) {
+		for _, item := range all {
+			if item.ParentID == parentID {
+				visit(item.ID)
+			}
+		}
+		ordered = append(ordered, parentID)
 	}
-	b.log.Delete(id)
-	ev := event.Event{
-		Kind:    event.KindSessionDeleted,
-		Session: id,
-		Time:    time.Now(),
-		Payload: map[string]string{"id": id},
+	visit(id)
+	for _, sessionID := range ordered {
+		b.stopSessionAndWait(sessionID, deleteTurnGrace)
+		b.terminal.CloseSession(sessionID)
+		if err := b.sessions.Delete(sessionID); err != nil {
+			return err
+		}
+		b.log.Delete(sessionID)
+		ev := event.Event{
+			Kind:    event.KindSessionDeleted,
+			Session: sessionID,
+			Time:    time.Now(),
+			Payload: map[string]string{"id": sessionID},
+		}
+		_ = b.bus.PublishMustDeliver(ctx, "session:"+sessionID, ev)
 	}
-	_ = b.bus.PublishMustDeliver(ctx, "session:"+id, ev)
 	return nil
 }
 
@@ -473,13 +655,44 @@ func (b *Backend) broadcastSession(ctx context.Context, s *session.Session) {
 
 // ListSessions 列出会话。
 func (b *Backend) ListSessions() []*session.Session {
-	return b.sessions.List()
+	all := b.sessions.List()
+	out := make([]*session.Session, 0, len(all))
+	for _, item := range all {
+		if item.ParentID == "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// ChildSessions returns direct children of one parent session.
+func (b *Backend) ChildSessions(parentID string) ([]*session.Session, error) {
+	if _, ok := b.sessions.Get(parentID); !ok {
+		return nil, session.ErrNotFound
+	}
+	all := b.sessions.List()
+	out := make([]*session.Session, 0)
+	for _, item := range all {
+		if item.ParentID == parentID {
+			out = append(out, item)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 // CancelTurn 中断指定会话当前正在运行的回合(用户点停止)。
 // 队列保留且暂停自动发送,由用户选择“立即发送”或再次发送后恢复。
 func (b *Backend) CancelTurn(sessionID string) {
 	b.cancelCurrentTurn(sessionID)
+	b.mu.RLock()
+	manager := b.subagents
+	b.mu.RUnlock()
+	if manager != nil {
+		manager.CancelTree(sessionID)
+	}
 }
 
 // ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。

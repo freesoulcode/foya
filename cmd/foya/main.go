@@ -38,6 +38,9 @@ func main() {
 		case "skills":
 			runSkills(os.Args[2:])
 			return
+		case "agents":
+			runAgents(os.Args[2:])
+			return
 		case "projects":
 			runProjects(os.Args[2:])
 			return
@@ -175,6 +178,30 @@ func runExec(args []string) {
 			return
 		}
 	}
+}
+
+func runAgents(args []string) {
+	flags := flag.NewFlagSet("foya agents", flag.ExitOnError)
+	projectID := flags.String("project", "", "project id")
+	_ = flags.Parse(args)
+	if flags.NArg() != 0 {
+		fatal(fmt.Errorf("usage: foya agents [--project <id>]"))
+	}
+	app := newApp()
+	defer app.Close()
+	var (
+		items any
+		err   error
+	)
+	if *projectID == "" {
+		items, err = app.Backend().Agents(context.Background())
+	} else {
+		items, err = app.Backend().ProjectAgents(context.Background(), *projectID)
+	}
+	if err != nil {
+		fatal(err)
+	}
+	printJSON(items)
 }
 
 func runSkills(args []string) {

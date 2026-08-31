@@ -38,11 +38,12 @@ const (
 
 // Request 是一次审批请求。
 type Request struct {
-	ID       string `json:"id"`
-	Session  string `json:"session"`
-	ToolName string `json:"tool_name"`
-	Action   string `json:"action"` // read / write / execute
-	Detail   string `json:"detail"`
+	ID               string `json:"id"`
+	Session          string `json:"session"`
+	ExecutionSession string `json:"execution_session,omitempty"`
+	ToolName         string `json:"tool_name"`
+	Action           string `json:"action"` // read / write / execute
+	Detail           string `json:"detail"`
 }
 
 // Gateway 是审批网关。
@@ -60,6 +61,7 @@ type ctxKey int
 const (
 	ctxKeyMode ctxKey = iota
 	ctxKeySession
+	ctxKeyExecutionSession
 )
 
 // WithMode 把审批档位注入上下文。
@@ -70,6 +72,12 @@ func WithMode(ctx context.Context, mode Mode) context.Context {
 // WithSession 把会话 ID 注入上下文。
 func WithSession(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, ctxKeySession, sessionID)
+}
+
+// WithExecutionSession records the child session performing the action when
+// approval UI is intentionally routed through its parent session.
+func WithExecutionSession(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, ctxKeyExecutionSession, sessionID)
 }
 
 // gateway 是 Gateway 的内存实现。
@@ -112,6 +120,9 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 	}
 	if sess, ok := ctx.Value(ctxKeySession).(string); ok {
 		req.Session = sess
+	}
+	if sess, ok := ctx.Value(ctxKeyExecutionSession).(string); ok {
+		req.ExecutionSession = sess
 	}
 
 	ch := make(chan Decision, 1)

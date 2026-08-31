@@ -32,6 +32,15 @@ const (
 	KindHistoryBranched     Kind = "history_branched"
 	KindTurnStarted         Kind = "turn_started"
 	KindTurnComplete        Kind = "turn_complete" // 回合结束(必达)
+	KindSubAgentQueued      Kind = "subagent_queued"
+	KindSubAgentRunning     Kind = "subagent_running"
+	KindSubAgentStarted     Kind = "subagent_started"
+	KindSubAgentCompleted   Kind = "subagent_completed"
+	KindSubAgentFailed      Kind = "subagent_failed"
+	KindSubAgentCancelled   Kind = "subagent_cancelled"
+	KindSubAgentInterrupted Kind = "subagent_interrupted"
+	KindAgentBudgetUpdated  Kind = "agent_budget_updated"
+	KindAgentBudgetExceeded Kind = "agent_budget_exceeded"
 	KindError               Kind = "error"
 )
 

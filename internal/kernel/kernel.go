@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/freesoulcode/foya/internal/agent"
+	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
@@ -19,6 +20,7 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
@@ -34,8 +36,19 @@ type App struct {
 
 // New 按配置装配内核。
 func New(cfg config.Config) (*App, error) {
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	if saved, ok, err := config.LoadAgentLimits(cfg.DataDir); err != nil {
+		return nil, err
+	} else if ok {
+		cfg.Agents = saved
+	}
+	sessions, err := session.NewPersistentManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	log, err := state.NewPersistentLog(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	bus := broker.New[event.Event]()
 	terminalManager := terminal.NewManager()
 
@@ -47,6 +60,7 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewWriteTool(gw))
 	tools.Register(tool.NewEditTool(gw))
 	homeDir, _ := os.UserHomeDir()
+	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
 	skills, err := skill.NewManager(cfg.DataDir, homeDir, nil)
 	if err != nil {
 		return nil, err
@@ -73,10 +87,37 @@ func New(cfg config.Config) (*App, error) {
 
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
-	engine.SetProjectResolver(func(projectID string) (string, bool) {
+	resolveProject := func(projectID string) (string, bool) {
 		item, ok := projects.Get(projectID)
 		return item.Path, ok
-	})
+	}
+	engine.SetProjectResolver(resolveProject)
+	subagents := subagent.NewManager(
+		agents,
+		sessions,
+		engine,
+		log,
+		log,
+		bus,
+		resolveProject,
+		subagent.Limits{
+			MaxGlobalConcurrency: cfg.Agents.MaxGlobalConcurrency,
+			MaxPerRoot:           cfg.Agents.MaxPerRoot,
+			MaxChildrenPerRoot:   config.InternalMaxChildrenPerRoot,
+			MaxTreeTokens:        cfg.Agents.MaxTreeTokens,
+		},
+	)
+	if err := subagents.EnablePersistence(cfg.DataDir); err != nil {
+		return nil, err
+	}
+	engine.SetUsageObserver(subagents.ObserveUsage)
+	tools.Register(subagent.NewSearchTool(agents, resolveProject))
+	tools.Register(subagent.NewTool(subagents))
+	tools.Register(subagent.NewSpawnTool(subagents))
+	tools.Register(subagent.NewWaitTool(subagents))
+	tools.Register(subagent.NewReadTool(subagents))
+	tools.Register(subagent.NewCancelTool(subagents))
+	tools.Register(subagent.NewListTool(subagents))
 
 	be := backend.New(
 		sessions,
@@ -95,6 +136,8 @@ func New(cfg config.Config) (*App, error) {
 	connections := loadConnections(cfg)
 	be.SetConnections(connections)
 	be.SetCapabilityManagers(skills, web, mcpManager)
+	be.SetAgentManager(agents)
+	be.SetSubAgentManager(subagents)
 	be.SetProjectManager(projects)
 	appCtx, cancel := context.WithCancel(context.Background())
 	go mcpManager.Start(appCtx)

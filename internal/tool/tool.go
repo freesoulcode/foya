@@ -53,6 +53,13 @@ type Tool interface {
 	Run(ctx context.Context, call Call) (Result, error)
 }
 
+// ParallelTool marks tools that are safe to execute concurrently with other
+// parallel tool calls from the same model response.
+type ParallelTool interface {
+	Tool
+	Parallel() bool
+}
+
 // Registry 管理工具集合。
 type Registry interface {
 	Register(t Tool)         // 内置工具

@@ -5,6 +5,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 // 会话元信息(与 Go session.Session 对齐的子集)。
 export interface Session {
   id: string;
+  parent_id?: string;
+  spawned_by?: {
+    parent_run_id?: string;
+    parent_turn_id?: string;
+    parent_tool_call_id: string;
+  };
+  agent_ref?: string;
+  agent_name?: string;
+  agent_digest?: string;
   phase: string;
   connection_id: string;
   model: string;
@@ -141,6 +150,11 @@ export interface ToolCallView {
   input: string;
   status: "running" | "done" | "error";
   output?: string;
+  child_session_id?: string;
+  agent_ref?: string;
+  agent_name?: string;
+  agent_run?: AgentRunSnapshot;
+  child_messages?: ChatMessage[];
   // 文件变更 diff(仅 write/edit 工具),统一 diff 文本,前端行内着色展示。
   diff?: string;
 }
@@ -183,10 +197,76 @@ export interface SkillInfo {
   ref: string;
   name: string;
   description?: string;
-  scope: "builtin" | "global" | "project";
+  scope: "builtin" | "user" | "project";
   path?: string;
   enabled: boolean;
   allowed_tools?: string[];
+}
+
+export interface AgentInfo {
+  ref: string;
+  name: string;
+  description: string;
+  scope: "builtin" | "user" | "project";
+  path?: string;
+  model?: string;
+  tools?: string[];
+  max_turns?: number;
+  timeout?: string;
+  digest: string;
+}
+
+export type AgentRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface AgentRunSnapshot {
+  id: string;
+  status: AgentRunStatus;
+  root_session_id: string;
+  root_run_id: string;
+  parent_session_id: string;
+  parent_tool_call_id?: string;
+  child_session_id?: string;
+  agent_ref?: string;
+  agent_name?: string;
+  task: string;
+  depth: number;
+  tokens_used?: number;
+  output?: string;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface AgentBudget {
+  root_session_id: string;
+  root_run_id: string;
+  tokens_used: number;
+  max_tokens?: number;
+  exceeded: boolean;
+}
+
+export interface AgentLimits {
+  max_global_concurrency: number;
+  max_per_root: number;
+  max_tree_tokens: number;
+}
+
+export interface StartAgentRequest {
+  task: string;
+  root_run_id?: string;
+  agent_ref?: string;
+  context?: {
+    mode?: "none" | "selected" | "summary" | "last_n_turns";
+    message_seqs?: number[];
+    last_turns?: number;
+  };
 }
 
 export interface ProjectInfo {
@@ -327,6 +407,29 @@ export const api = {
   listSessions: () =>
     invoke<string>("list_sessions").then((r) => (JSON.parse(r) as Session[]) ?? []),
 
+  listChildSessions: (sessionId: string) =>
+    invoke<string>("list_child_sessions", { sessionId }).then(
+      (r) => (JSON.parse(r) as Session[]) ?? []
+    ),
+
+  listAgentRuns: (sessionId: string) =>
+    invoke<string>("list_agent_runs", { sessionId }).then(
+      (r) => (JSON.parse(r) as AgentRunSnapshot[]) ?? []
+    ),
+
+  startAgent: (sessionId: string, request: StartAgentRequest) =>
+    invoke<string>("start_agent", { sessionId, request }).then(
+      (r) => JSON.parse(r) as AgentRunSnapshot
+    ),
+
+  cancelAgent: (sessionId: string, runId: string) =>
+    invoke("cancel_agent", { sessionId, runId }),
+
+  loadAgentBudget: (sessionId: string) =>
+    invoke<string>("load_agent_budget", { sessionId }).then(
+      (r) => JSON.parse(r) as AgentBudget
+    ),
+
   loadHistory: (sessionId: string) =>
     invoke<string>("load_history", { sessionId }).then(
       (r) => (JSON.parse(r) as ChatMessage[]) ?? []
@@ -427,6 +530,11 @@ export const api = {
       (r) => (JSON.parse(r) as SkillInfo[]) ?? []
     ),
 
+  listAgents: () =>
+    invoke<string>("list_agents").then(
+      (r) => (JSON.parse(r) as AgentInfo[]) ?? []
+    ),
+
   listProjects: () =>
     invoke<string>("list_projects").then(
       (r) => (JSON.parse(r) as ProjectInfo[]) ?? []
@@ -451,6 +559,21 @@ export const api = {
   listProjectSkills: (projectId: string) =>
     invoke<string>("list_project_skills", { projectId }).then(
       (r) => (JSON.parse(r) as SkillInfo[]) ?? []
+    ),
+
+  listProjectAgents: (projectId: string) =>
+    invoke<string>("list_project_agents", { projectId }).then(
+      (r) => (JSON.parse(r) as AgentInfo[]) ?? []
+    ),
+
+  getAgentLimits: () =>
+    invoke<string>("get_agent_limits").then(
+      (r) => JSON.parse(r) as AgentLimits
+    ),
+
+  updateAgentLimits: (limits: AgentLimits) =>
+    invoke<string>("update_agent_limits", { limits }).then(
+      (r) => JSON.parse(r) as AgentLimits
     ),
 
   setSkillEnabled: (skillRef: string, enabled: boolean) =>

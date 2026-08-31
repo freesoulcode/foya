@@ -11,6 +11,7 @@
 - [架构](./docs/架构.md) — 宏观四层分层
 - [节点抽象设计](./docs/节点抽象设计.md) — 内核核心节点接口
 - [前端架构](./docs/前端架构.md) — Vue 前端分层
+- [自定义智能体](./docs/自定义智能体.md) — 用户级/项目级 Agent 定义与派工
 
 ## 目录结构
 
@@ -19,6 +20,8 @@ cmd/foya/          入口:内核 daemon + exec 子命令
 internal/
   kernel/          内核组合根 (App)
   agent/           回合引擎 AgentLoop、Turn
+  agentdef/        用户级/项目级 Agent 定义发现
+  subagent/        Child Session、并发调度与结果回传
   broker/          事件总线 Broker[T](两级投递)
   event/           Event 类型与单调序号
   session/         会话与多会话管理
@@ -48,11 +51,11 @@ make test    # 运行测试
 ## 已实现
 
 - Go 常驻内核、本地 Unix socket、REST + SSE。
-- 多会话 Agent Loop、工具调用、审批、取消、队列与上下文压缩。
+- 多会话 Agent Loop、并发子 Agent、工具调用、审批、取消、队列与上下文压缩。
 - OpenAI 兼容模型连接和 BYOK 配置。
 - `bash`、`read`、`write`、`edit`、Skills、Web Search 与 WebFetch。
 - MCP stdio、Streamable HTTP、legacy SSE，以及 tools/resources/prompts。
-- `foya exec` 和 Skills、MCP、Web Search 管理命令。
+- `foya exec` 和 Agents、Skills、MCP、Web Search 管理命令。
 - Tauri + Vue 桌面端及对应设置界面。
 
 完整 MCP OAuth、客户端归属 MCP 和富媒体 artifact 仍在开发中。
