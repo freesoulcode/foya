@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/freesoulcode/foya/internal/agent"
+	approvalpkg "github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
@@ -483,7 +484,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	approval := req.ApprovalMode
 	if approval == "" {
-		approval = "ask"
+		approval = string(approvalpkg.ModeManual)
 	}
 
 	sess, err := s.backend.CreateSession(session.CreateOptions{
@@ -496,6 +497,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, session.ErrInvalidReasoningEffort) {
 			writeErr(w, http.StatusBadRequest, "invalid_reasoning_effort", err.Error())
+			return
+		}
+		if errors.Is(err, session.ErrInvalidApprovalMode) {
+			writeErr(w, http.StatusBadRequest, "invalid_approval_mode", err.Error())
 			return
 		}
 		if errors.Is(err, backend.ErrConnectionNotFound) {
@@ -573,6 +578,10 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, session.ErrInvalidReasoningEffort) {
 			writeErr(w, http.StatusBadRequest, "invalid_reasoning_effort", err.Error())
+			return
+		}
+		if errors.Is(err, session.ErrInvalidApprovalMode) {
+			writeErr(w, http.StatusBadRequest, "invalid_approval_mode", err.Error())
 			return
 		}
 		if errors.Is(err, backend.ErrConnectionNotFound) {
@@ -947,7 +956,10 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 	if req.RequestID == "" {
 		req.RequestID = requestID
 	}
-	s.backend.ResolveApproval(req.RequestID, req.Decision)
+	if err := s.backend.ResolveApproval(req.RequestID, req.Decision); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_approval_decision", err.Error())
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

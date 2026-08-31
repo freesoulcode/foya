@@ -1,10 +1,11 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
-use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 const BROWSER_VIEW_PREFIX: &str = "foya-workbar-browser";
@@ -1442,11 +1443,13 @@ async fn search_mcp_registry(_query: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let sidecar_child = Arc::new(Mutex::new(None::<CommandChild>));
+    let setup_child = Arc::clone(&sidecar_child);
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             // macOS 用 titleBarStyle=Overlay(在 tauri.conf.json)保留红绿灯;
             // 其他平台关闭原生装饰,改用前端自绘标题栏(WindowControls)。
             #[cfg(not(target_os = "macos"))]
@@ -1471,11 +1474,27 @@ pub fn run() {
                     sidecar = sidecar.env(key, val);
                 }
             }
-            let (mut rx, _child) = sidecar.spawn()?;
+            let (mut rx, child) = sidecar.spawn()?;
+            *setup_child.lock().expect("sidecar child lock poisoned") = Some(child);
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stdout(line) = event {
-                        println!("[foya-kernel] {}", String::from_utf8_lossy(&line));
+                    match event {
+                        CommandEvent::Stdout(line) => {
+                            println!("[foya-kernel] {}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Stderr(line) => {
+                            eprintln!("[foya-kernel] {}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Error(error) => {
+                            eprintln!("[foya-kernel] process error: {error}");
+                        }
+                        CommandEvent::Terminated(status) => {
+                            eprintln!(
+                                "[foya-kernel] exited: code={:?} signal={:?}",
+                                status.code, status.signal
+                            );
+                        }
+                        _ => {}
                     }
                 }
             });
@@ -1548,6 +1567,18 @@ pub fn run() {
             cancel_turn,
             delete_session
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(child) = sidecar_child
+                .lock()
+                .expect("sidecar child lock poisoned")
+                .take()
+            {
+                let _ = child.kill();
+            }
+        }
+    });
 }

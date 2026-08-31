@@ -22,6 +22,7 @@ import (
 const (
 	webFetchMaxBytes = 5 * 1024 * 1024
 	webFetchMaxText  = 200_000
+	webAccessScope   = "internet"
 )
 
 type webSearchTool struct {
@@ -113,7 +114,11 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("invalid arguments: " + err.Error()), nil
 	}
 	decision, err := t.gateway.Request(ctx, approval.Request{
-		ToolName: t.Name(), Action: "read", Detail: "联网搜索: " + params.Query,
+		ToolName: t.Name(),
+		Action:   "network",
+		Detail:   "联网搜索: " + params.Query,
+		Resource: params.Query,
+		Scope:    webAccessScope,
 	})
 	if err != nil {
 		return errResult("search approval interrupted: " + err.Error()), nil
@@ -164,7 +169,11 @@ func (t *webFetchTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("invalid or unsafe URL"), nil
 	}
 	decision, err := t.gateway.Request(ctx, approval.Request{
-		ToolName: t.Name(), Action: "read", Detail: "读取网页: " + location.String(),
+		ToolName: t.Name(),
+		Action:   "network",
+		Detail:   "读取网页: " + location.String(),
+		Resource: location.String(),
+		Scope:    webAccessScope,
 	})
 	if err != nil {
 		return errResult("fetch approval interrupted: " + err.Error()), nil

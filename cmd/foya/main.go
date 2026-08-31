@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/config"
@@ -97,7 +98,15 @@ func listenUnix(path string) (net.Listener, string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("create socket dir: %w", err)
 	}
-	// 清理上次残留的 socket 文件(否则 bind 报 address already in use)。
+	// 只清理无进程监听的残留 socket。直接删除活跃 socket 会让多个内核
+	// 同时修改同一份持久化数据，且新客户端可能继续连到旧版本。
+	if _, err := os.Lstat(path); err == nil {
+		conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil, "", fmt.Errorf("kernel is already listening on unix:%s", path)
+		}
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, "", fmt.Errorf("remove stale socket: %w", err)
 	}
@@ -127,7 +136,7 @@ func runExec(args []string) {
 	projectID := flags.String("project", "", "project id")
 	connection := flags.String("connection", "", "model connection id")
 	model := flags.String("model", "", "model id")
-	mode := flags.String("approval", "ask", "explore, ask, or bypass")
+	mode := flags.String("approval", string(approval.ModeManual), "manual, auto, or full_access")
 	_ = flags.Parse(args)
 	prompt := strings.TrimSpace(strings.Join(flags.Args(), " "))
 	if prompt == "" {
@@ -170,7 +179,9 @@ func runExec(args []string) {
 			if strings.EqualFold(strings.TrimSpace(answer), "y") {
 				decision = approval.DecisionApproved
 			}
-			app.Backend().ResolveApproval(request.ID, string(decision))
+			if err := app.Backend().ResolveApproval(request.ID, string(decision)); err != nil {
+				fatal(err)
+			}
 		case event.KindError:
 			fmt.Fprintln(os.Stderr, "\n", item.Payload)
 		case event.KindTurnComplete:

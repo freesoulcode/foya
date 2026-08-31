@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 // 和 approvalMode 等会话级信息。
 type Input struct {
 	ProjectPath  string    // 当前项目目录
-	ApprovalMode string    // 审批档位:explore / ask / bypass
+	ApprovalMode string    // 审批档位:manual / auto / full_access
 	Platform     string    // 留空则自动推断
 	Shell        string    // 留空则自动推断
 	Now          time.Time // 留空则取 time.Now()
@@ -33,6 +34,7 @@ func Assemble(in Input) string {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	platform, shell := effectiveEnvironment(in, runtime.GOOS)
 
 	fragments := []string{
 		staticPrefix,
@@ -40,13 +42,27 @@ func Assemble(in Input) string {
 		permissionFragment(in.ApprovalMode),
 		envFragment(EnvInput{
 			Cwd:      in.ProjectPath,
-			Platform: in.Platform,
-			Shell:    in.Shell,
+			Platform: platform,
+			Shell:    shell,
 			Now:      now,
 		}),
 	}
 
 	return joinFragments(fragments)
+}
+
+func effectiveEnvironment(in Input, goos string) (platform, shell string) {
+	platform = in.Platform
+	shell = in.Shell
+	if goos == "windows" && in.ApprovalMode != "full_access" {
+		if platform == "" {
+			platform = "linux (WSL2 sandbox on Windows host)"
+		}
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+	}
+	return platform, shell
 }
 
 // joinFragments 跳过空片段,用空行连接。

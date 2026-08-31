@@ -1,16 +1,15 @@
 package tool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
 const maxOutputLen = 30000
@@ -23,14 +22,15 @@ type BashParams struct {
 // bashTool 执行 shell 命令。
 type bashTool struct {
 	gw        approval.Gateway
+	runner    sandbox.Runner
 	shell     string
 	shellFlag string
 }
 
 // NewBashTool 创建 bash 工具。
-func NewBashTool(gw approval.Gateway) Tool {
+func NewBashTool(gw approval.Gateway, runner sandbox.Runner) Tool {
 	shell, flag := defaultShell()
-	return &bashTool{gw: gw, shell: shell, shellFlag: flag}
+	return &bashTool{gw: gw, runner: runner, shell: shell, shellFlag: flag}
 }
 
 func (t *bashTool) Name() string        { return "bash" }
@@ -59,10 +59,13 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("command is empty"), nil
 	}
 
+	workDir := CWDFromContext(ctx)
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "bash",
 		Action:   "execute",
 		Detail:   params.Command,
+		Resource: params.Command,
+		Scope:    workDir,
 	})
 	if err != nil {
 		return errResult("审批中断: " + err.Error()), nil
@@ -71,25 +74,22 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("用户拒绝执行命令"), nil
 	}
 
-	workDir := CWDFromContext(ctx)
 	cmdCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, t.shell, t.shellFlag, params.Command)
-	if workDir != "" {
-		cmd.Dir = workDir
+	if t.runner == nil {
+		return errResult("execution boundary is unavailable"), nil
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
-	output := stdout.String()
-	if stderr.Len() > 0 {
+	result, runErr := t.runner.Run(cmdCtx, sandbox.ExecRequest{
+		Argv: []string{t.shell, t.shellFlag, params.Command},
+		Dir:  workDir,
+	}, executionProfile(ctx))
+	output := string(result.Stdout)
+	if len(result.Stderr) > 0 {
 		if output != "" {
 			output += "\n"
 		}
-		output += stderr.String()
+		output += string(result.Stderr)
 	}
 	if runErr != nil {
 		if output == "" {
@@ -101,6 +101,7 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 	output = truncate(output, maxOutputLen)
 	return Result{
 		Content: []ContentPart{{Type: "text", Text: output}},
+		IsError: runErr != nil,
 	}, nil
 }
 

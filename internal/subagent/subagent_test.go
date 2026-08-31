@@ -198,7 +198,7 @@ Return evidence-backed findings.
 	sessions := session.NewMemManager()
 	parent, err := sessions.Create(session.CreateOptions{
 		ConnectionID: "connection-1", Model: "parent-model",
-		ProjectID: "project-1", ApprovalMode: "ask",
+		ProjectID: "project-1", ApprovalMode: "manual",
 	})
 	if err != nil {
 		t.Fatal(err)

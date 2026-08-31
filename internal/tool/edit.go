@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
 // EditOp 是一处精确替换。
@@ -24,13 +24,14 @@ type EditParams struct {
 }
 
 type editTool struct {
-	gw approval.Gateway
+	gw     approval.Gateway
+	runner sandbox.Runner
 }
 
 // NewEditTool 创建 edit 工具:对已有文件做精确文本替换。
 // 每处 old_text 必须在文件中唯一匹配(出现且仅出现一次),否则拒绝并提示。
-func NewEditTool(gw approval.Gateway) Tool {
-	return &editTool{gw: gw}
+func NewEditTool(gw approval.Gateway, runner sandbox.Runner) Tool {
+	return &editTool{gw: gw, runner: runner}
 }
 
 func (t *editTool) Name() string       { return "edit" }
@@ -73,23 +74,19 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("edits must not be empty"), nil
 	}
 
+	path := absoluteToolPath(ctx, params.Path)
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "edit",
 		Action:   "write",
-		Detail:   fmt.Sprintf("编辑文件: %s (%d 处替换)", params.Path, len(params.Edits)),
+		Detail:   fmt.Sprintf("编辑文件: %s (%d 处替换)", path, len(params.Edits)),
+		Resource: path,
+		Scope:    approvalPathScope(ctx, path),
 	})
 	if err != nil {
 		return errResult("审批中断: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
 		return errResult("用户拒绝编辑文件"), nil
-	}
-
-	path := params.Path
-	if !filepath.IsAbs(path) {
-		if wd := CWDFromContext(ctx); wd != "" {
-			path = filepath.Join(wd, path)
-		}
 	}
 
 	data, err := os.ReadFile(path)
@@ -115,7 +112,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		applied++
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := writeFileAtBoundary(ctx, t.runner, path, []byte(content)); err != nil {
 		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
 	}
 

@@ -9,6 +9,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -21,10 +23,19 @@ import (
 type Mode string
 
 const (
-	ModeExplore Mode = "explore" // 只读探索,不问
-	ModeAsk     Mode = "ask"     // 危险操作询问
-	ModeBypass  Mode = "bypass"  // 不问(信任自动化)
+	ModeManual     Mode = "manual"
+	ModeAuto       Mode = "auto"
+	ModeFullAccess Mode = "full_access"
 )
+
+func ValidMode(mode Mode) bool {
+	switch mode {
+	case ModeManual, ModeAuto, ModeFullAccess:
+		return true
+	default:
+		return false
+	}
+}
 
 // Decision 是审批决策。
 type Decision string
@@ -36,14 +47,31 @@ const (
 	DecisionDenied             Decision = "denied"
 )
 
+var (
+	ErrInvalidMode         = errors.New("invalid approval mode")
+	ErrInvalidDecision     = errors.New("invalid approval decision")
+	ErrGuardianUnavailable = errors.New("guardian is unavailable")
+)
+
 // Request 是一次审批请求。
 type Request struct {
 	ID               string `json:"id"`
 	Session          string `json:"session"`
 	ExecutionSession string `json:"execution_session,omitempty"`
 	ToolName         string `json:"tool_name"`
-	Action           string `json:"action"` // read / write / execute
+	Action           string `json:"action"` // read / write / execute / network
 	Detail           string `json:"detail"`
+	Resource         string `json:"resource,omitempty"`
+	Scope            string `json:"scope,omitempty"`
+}
+
+type Review struct {
+	Approved bool
+	Reason   string
+}
+
+type Reviewer interface {
+	Review(context.Context, Request) (Review, error)
 }
 
 // Gateway 是审批网关。
@@ -52,7 +80,8 @@ type Gateway interface {
 	Request(ctx context.Context, req Request) (Decision, error)
 	// Resolve 由客户端经 REST 回执触发;按 requestID 解除阻塞。
 	// 采用 take 语义:同一请求只有第一个决策生效(多端竞争安全)。
-	Resolve(requestID string, d Decision)
+	Resolve(requestID string, d Decision) error
+	ClearSession(sessionID string)
 }
 
 // ctxKey 是审批相关上下文值的键类型。
@@ -62,6 +91,7 @@ const (
 	ctxKeyMode ctxKey = iota
 	ctxKeySession
 	ctxKeyExecutionSession
+	ctxKeyReviewer
 )
 
 // WithMode 把审批档位注入上下文。
@@ -80,10 +110,27 @@ func WithExecutionSession(ctx context.Context, sessionID string) context.Context
 	return context.WithValue(ctx, ctxKeyExecutionSession, sessionID)
 }
 
+func WithReviewer(ctx context.Context, reviewer Reviewer) context.Context {
+	return context.WithValue(ctx, ctxKeyReviewer, reviewer)
+}
+
+type pendingRequest struct {
+	request Request
+	result  chan Decision
+}
+
+type grantKey struct {
+	session  string
+	tool     string
+	action   string
+	resource string
+}
+
 // gateway 是 Gateway 的内存实现。
 type gateway struct {
 	mu      sync.Mutex
-	pending map[string]chan Decision
+	pending map[string]pendingRequest
+	grants  map[grantKey]struct{}
 	bus     *broker.Broker[event.Event]
 	log     *state.MemLog
 }
@@ -91,7 +138,8 @@ type gateway struct {
 // NewGateway 创建内存版审批网关。
 func NewGateway(bus *broker.Broker[event.Event], log *state.MemLog) Gateway {
 	return &gateway{
-		pending: make(map[string]chan Decision),
+		pending: make(map[string]pendingRequest),
+		grants:  make(map[grantKey]struct{}),
 		bus:     bus,
 		log:     log,
 	}
@@ -99,22 +147,10 @@ func NewGateway(bus *broker.Broker[event.Event], log *state.MemLog) Gateway {
 
 // Request 由工具内部调用。根据审批档位决定自动放行/拒绝/等待用户。
 func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
-	mode := modeFromContext(ctx)
-
-	switch mode {
-	case ModeBypass:
-		return DecisionAutoApprove, nil
-	case ModeExplore:
-		if req.Action == "read" {
-			return DecisionAutoApprove, nil
-		}
-		return DecisionDenied, nil
-	case ModeAsk:
-		// 继续,等待用户决策
-	default:
+	mode := ModeFromContext(ctx)
+	if !ValidMode(mode) {
+		return DecisionDenied, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
-
-	// 补全请求元数据。
 	if req.ID == "" {
 		req.ID = newID()
 	}
@@ -125,9 +161,31 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 		req.ExecutionSession = sess
 	}
 
+	if mode == ModeFullAccess || req.Action == "read" {
+		return DecisionAutoApprove, nil
+	}
+	if g.hasGrant(req) {
+		return DecisionApprovedForSession, nil
+	}
+
+	if mode == ModeAuto {
+		reviewer, ok := ctx.Value(ctxKeyReviewer).(Reviewer)
+		if !ok || reviewer == nil {
+			return DecisionDenied, ErrGuardianUnavailable
+		}
+		review, err := reviewer.Review(ctx, req)
+		if err != nil {
+			return DecisionDenied, fmt.Errorf("guardian review: %w", err)
+		}
+		if review.Approved {
+			return DecisionAutoApprove, nil
+		}
+		return DecisionDenied, nil
+	}
+
 	ch := make(chan Decision, 1)
 	g.mu.Lock()
-	g.pending[req.ID] = ch
+	g.pending[req.ID] = pendingRequest{request: req, result: ch}
 	g.mu.Unlock()
 
 	ev := event.Event{
@@ -164,24 +222,67 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 }
 
 // Resolve 由客户端经 REST 回执触发。take 语义:只有第一个决策生效。
-func (g *gateway) Resolve(requestID string, d Decision) {
+func (g *gateway) Resolve(requestID string, d Decision) error {
+	if d != DecisionApproved && d != DecisionApprovedForSession && d != DecisionDenied {
+		return fmt.Errorf("%w: %q", ErrInvalidDecision, d)
+	}
 	g.mu.Lock()
-	ch, ok := g.pending[requestID]
+	pending, ok := g.pending[requestID]
 	if ok {
 		delete(g.pending, requestID)
+		if d == DecisionApprovedForSession && pending.request.Session != "" {
+			g.grants[requestGrantKey(pending.request)] = struct{}{}
+		}
 	}
 	g.mu.Unlock()
 	if !ok {
-		return
+		return nil
 	}
-	ch <- d
+	pending.result <- d
+	return nil
 }
 
-func modeFromContext(ctx context.Context) Mode {
+func (g *gateway) ClearSession(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for key := range g.grants {
+		if key.session == sessionID {
+			delete(g.grants, key)
+		}
+	}
+}
+
+func (g *gateway) hasGrant(req Request) bool {
+	if req.Session == "" {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.grants[requestGrantKey(req)]
+	return ok
+}
+
+func requestGrantKey(req Request) grantKey {
+	resource := req.Scope
+	if resource == "" {
+		resource = req.Resource
+	}
+	if resource == "" {
+		resource = req.Detail
+	}
+	return grantKey{
+		session:  req.Session,
+		tool:     req.ToolName,
+		action:   req.Action,
+		resource: resource,
+	}
+}
+
+func ModeFromContext(ctx context.Context) Mode {
 	if m, ok := ctx.Value(ctxKeyMode).(Mode); ok {
 		return m
 	}
-	return ModeAsk
+	return ModeManual
 }
 
 func newID() string {

@@ -22,7 +22,7 @@ const open = computed({
 // 当前(最早的一个)待审批请求;逐个处理。
 const current = computed(() => {
   const keys = Object.keys(pendingApprovals.value);
-  if (keys.length === 0 || !activeId.value) return null;
+  if (keys.length === 0) return null;
   // 优先显示当前会话的审批;否则取第一个。
   return (
     pendingApprovals.value[
@@ -33,7 +33,7 @@ const current = computed(() => {
 });
 
 function approve() {
-  if (current.value && activeId.value) {
+  if (current.value) {
     void resolveApproval(
       current.value.session,
       current.value.id,
@@ -42,8 +42,18 @@ function approve() {
   }
 }
 
+function approveForSession() {
+  if (current.value) {
+    void resolveApproval(
+      current.value.session,
+      current.value.id,
+      "approved_for_session"
+    );
+  }
+}
+
 function deny() {
-  if (current.value && activeId.value) {
+  if (current.value) {
     void resolveApproval(
       current.value.session,
       current.value.id,
@@ -61,6 +71,8 @@ const actionLabel = computed(() => {
       return "写入文件";
     case "read":
       return "读取文件";
+    case "network":
+      return "访问网络";
     default:
       return current.value.action;
   }
@@ -89,11 +101,16 @@ const actionLabel = computed(() => {
           <div class="mb-1 text-xs font-medium text-muted-foreground">内容</div>
           <pre class="whitespace-pre-wrap break-all font-mono text-xs">{{ current.detail }}</pre>
         </div>
+        <div v-if="current.scope" class="rounded-lg bg-muted/60 p-3">
+          <div class="mb-1 text-xs font-medium text-muted-foreground">授权范围</div>
+          <div class="break-all font-mono text-xs">{{ current.scope }}</div>
+        </div>
       </div>
 
-      <DialogFooter class="gap-2">
+      <DialogFooter class="flex-wrap gap-2">
         <Button variant="outline" @click="deny">拒绝</Button>
-        <Button @click="approve">允许</Button>
+        <Button variant="outline" @click="approve">仅本次允许</Button>
+        <Button @click="approveForSession">本 Session 内允许</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

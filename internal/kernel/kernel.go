@@ -17,6 +17,7 @@ import (
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/provider/openai"
+	"github.com/freesoulcode/foya/internal/sandbox"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
@@ -54,11 +55,12 @@ func New(cfg config.Config) (*App, error) {
 
 	// 审批网关与工具注册表。
 	gw := approval.NewGateway(bus, log)
+	executionRunner := sandbox.NewRunner()
 	tools := tool.NewRegistry()
-	tools.Register(tool.NewBashTool(gw))
+	tools.Register(tool.NewBashTool(gw, executionRunner))
 	tools.Register(tool.NewReadTool(gw))
-	tools.Register(tool.NewWriteTool(gw))
-	tools.Register(tool.NewEditTool(gw))
+	tools.Register(tool.NewWriteTool(gw, executionRunner))
+	tools.Register(tool.NewEditTool(gw, executionRunner))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
 	skills, err := skill.NewManager(cfg.DataDir, homeDir, nil)

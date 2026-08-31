@@ -1,9 +1,13 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/freesoulcode/foya/internal/approval"
 )
 
 func TestPersistentManagerRestoresChildRuntimeSnapshot(t *testing.T) {
@@ -166,5 +170,54 @@ func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
 	if child.AgentInstructions != "instructions" || child.AgentMaxTurns != 5 ||
 		len(child.AllowedTools) != 1 || child.AllowedTools[0] != "read" {
 		t.Fatalf("runtime snapshot = %+v", child)
+	}
+}
+
+func TestApprovalModesRejectLegacyValues(t *testing.T) {
+	manager := NewMemManager()
+	for _, mode := range []string{"explore", "ask", "bypass"} {
+		if _, err := manager.Create(CreateOptions{ApprovalMode: mode}); !errors.Is(err, ErrInvalidApprovalMode) {
+			t.Fatalf("Create mode %q error = %v", mode, err)
+		}
+	}
+
+	created, err := manager.Create(CreateOptions{ApprovalMode: string(approval.ModeManual)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []approval.Mode{
+		approval.ModeManual,
+		approval.ModeAuto,
+		approval.ModeFullAccess,
+	} {
+		value := string(mode)
+		if _, err := manager.Update(created.ID, nil, nil, nil, nil, &value); err != nil {
+			t.Fatalf("Update mode %q: %v", mode, err)
+		}
+	}
+}
+
+func TestPersistentManagerDropsLegacyApprovalModes(t *testing.T) {
+	dataDir := t.TempDir()
+	data, err := json.Marshal([]persistedSession{
+		{Session: Session{ID: "valid", ApprovalMode: string(approval.ModeManual)}},
+		{Session: Session{ID: "legacy", ApprovalMode: "ask"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "sessions.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewPersistentManager(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.Get("valid"); !ok {
+		t.Fatal("valid session was dropped")
+	}
+	if _, ok := manager.Get("legacy"); ok {
+		t.Fatal("legacy session was loaded")
 	}
 }

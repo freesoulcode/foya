@@ -5,6 +5,7 @@ import {
   type ChatMessage,
   type UpdateSessionPatch,
   type ApprovalMode,
+  type ApprovalDecision,
   type ReasoningEffort,
   type ConnectionModelGroup,
   type QueuedMessage,
@@ -26,7 +27,7 @@ export interface DraftConfig {
 }
 
 // 默认审批档位:危险操作前询问(与内核默认值一致)。
-const DEFAULT_APPROVAL: ApprovalMode = "ask";
+const DEFAULT_APPROVAL: ApprovalMode = "manual";
 
 // 内核事件(与 Go event.Event 对齐的子集)。
 interface KernelEvent {
@@ -83,6 +84,8 @@ export interface PendingApproval {
   tool_name: string;
   action: string;
   detail: string;
+  resource?: string;
+  scope?: string;
 }
 const pendingApprovals = ref<Record<string, PendingApproval>>({});
 
@@ -712,7 +715,11 @@ async function deleteSession(id: string) {
 }
 
 // 回执审批决策(批准/拒绝)。
-async function resolveApproval(sessionId: string, requestId: string, decision: string) {
+async function resolveApproval(
+  sessionId: string,
+  requestId: string,
+  decision: ApprovalDecision
+) {
   await api.resolveApproval(sessionId, requestId, decision);
   delete pendingApprovals.value[requestId];
 }

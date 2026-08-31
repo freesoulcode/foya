@@ -18,7 +18,23 @@ func (allowGateway) Request(context.Context, approval.Request) (approval.Decisio
 	return approval.DecisionAutoApprove, nil
 }
 
-func (allowGateway) Resolve(string, approval.Decision) {}
+func (allowGateway) Resolve(string, approval.Decision) error { return nil }
+
+func (allowGateway) ClearSession(string) {}
+
+type recordingGateway struct {
+	request  approval.Request
+	decision approval.Decision
+}
+
+func (g *recordingGateway) Request(_ context.Context, request approval.Request) (approval.Decision, error) {
+	g.request = request
+	return g.decision, nil
+}
+
+func (*recordingGateway) Resolve(string, approval.Decision) error { return nil }
+
+func (*recordingGateway) ClearSession(string) {}
 
 type staticTransport struct {
 	contentType string
@@ -32,6 +48,42 @@ func (t staticTransport) RoundTrip(request *http.Request) (*http.Response, error
 		Body:       io.NopCloser(strings.NewReader(t.body)),
 		Request:    request,
 	}, nil
+}
+
+func TestWebFetchUsesStableSessionGrantScope(t *testing.T) {
+	gateway := &recordingGateway{decision: approval.DecisionApproved}
+	instance := NewWebFetchTool(gateway).(*webFetchTool)
+	instance.client = &http.Client{Transport: staticTransport{
+		contentType: "text/plain",
+		body:        "ok",
+	}}
+	result, err := instance.Run(context.Background(), Call{
+		Input: []byte(`{"url":"https://example.com/page"}`),
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if gateway.request.Action != "network" ||
+		gateway.request.Resource != "https://example.com/page" ||
+		gateway.request.Scope != webAccessScope {
+		t.Fatalf("approval request = %#v", gateway.request)
+	}
+}
+
+func TestWebSearchUsesStableSessionGrantScope(t *testing.T) {
+	gateway := &recordingGateway{decision: approval.DecisionDenied}
+	instance := NewWebSearchTool(nil, gateway)
+	_, err := instance.Run(context.Background(), Call{
+		Input: []byte(`{"query":"Go release notes"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateway.request.Action != "network" ||
+		gateway.request.Resource != "Go release notes" ||
+		gateway.request.Scope != webAccessScope {
+		t.Fatalf("approval request = %#v", gateway.request)
+	}
 }
 
 func TestValidateWebURL(t *testing.T) {

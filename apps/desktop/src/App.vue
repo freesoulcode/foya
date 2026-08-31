@@ -129,7 +129,7 @@ const composerApproval = computed<ApprovalMode>(
   () =>
     (isDraft.value
       ? draft.approvalMode
-      : (activeSession.value?.approval_mode as ApprovalMode)) || "ask"
+      : activeSession.value?.approval_mode) || "manual"
 );
 const composerContextWindow = computed(
   () =>

@@ -19,7 +19,7 @@ export interface Session {
   model: string;
   reasoning_effort?: ReasoningEffort;
   project_id?: string;
-  approval_mode?: string;
+  approval_mode?: ApprovalMode;
   title?: string;
   title_is_manual?: boolean;
   pinned?: boolean;
@@ -37,7 +37,7 @@ export interface CreateSessionOptions {
   model?: string;
   reasoning_effort?: ReasoningEffort;
   project_id?: string;
-  approval_mode?: string;
+  approval_mode?: ApprovalMode;
 }
 
 // 局部更新会话配置(undefined 表示不变)。project_id 绑定后不可更换。
@@ -46,7 +46,7 @@ export interface UpdateSessionPatch {
   model?: string;
   reasoning_effort?: ReasoningEffort;
   project_id?: string;
-  approval_mode?: string;
+  approval_mode?: ApprovalMode;
   title?: string;
   pinned?: boolean;
 }
@@ -140,7 +140,11 @@ export interface ProjectEntry {
 }
 
 // 审批档位(与 Go approval.Mode 对齐)。
-export type ApprovalMode = "explore" | "ask" | "bypass";
+export type ApprovalMode = "manual" | "auto" | "full_access";
+export type ApprovalDecision =
+  | "approved"
+  | "approved_for_session"
+  | "denied";
 
 // 对话消息(与 Go message.Message 对齐)。
 // error 为前端乐观态:发送失败时标记气泡,不进后端。
@@ -682,7 +686,11 @@ export const api = {
   closeBrowser: (browserId: string) =>
     invoke("close_browser", { browserId }),
 
-  // 回执审批决策(批准/拒绝)。
-  resolveApproval: (sessionId: string, requestId: string, decision: string) =>
+  // 回执审批决策。
+  resolveApproval: (
+    sessionId: string,
+    requestId: string,
+    decision: ApprovalDecision
+  ) =>
     invoke("resolve_approval", { sessionId, requestId, decision }),
 };

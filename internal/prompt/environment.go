@@ -56,7 +56,7 @@ func envFragment(in EnvInput) string {
 func permissionFragment(approvalMode string) string {
 	mode := approvalMode
 	if mode == "" {
-		mode = "ask"
+		mode = "manual"
 	}
 	return strings.Join([]string{
 		"<active_permissions>",

@@ -630,6 +630,7 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 	for _, sessionID := range ordered {
 		b.stopSessionAndWait(sessionID, deleteTurnGrace)
 		b.terminal.CloseSession(sessionID)
+		b.approval.ClearSession(sessionID)
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
 		}
@@ -696,9 +697,9 @@ func (b *Backend) CancelTurn(sessionID string) {
 }
 
 // ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。
-func (b *Backend) ResolveApproval(requestID string, decision string) {
+func (b *Backend) ResolveApproval(requestID string, decision string) error {
 	d := approval.Decision(decision)
-	b.approval.Resolve(requestID, d)
+	return b.approval.Resolve(requestID, d)
 }
 
 // StartTerminal starts an interactive shell in the session project.

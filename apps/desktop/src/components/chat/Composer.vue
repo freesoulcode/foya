@@ -68,7 +68,7 @@ const props = withDefaults(
     reasoningEffort: "",
     projectId: "",
     projects: () => [],
-    approval: "ask",
+    approval: "manual",
     connections: () => [],
     modelsLoading: false,
     modelsError: "",
@@ -158,13 +158,13 @@ function completeCommand(command: SlashCommand) {
 
 // ---- 审批档位 ----
 const approvalOptions: { value: ApprovalMode; label: string; hint: string }[] = [
-  { value: "ask", label: "询问", hint: "危险操作前逐个询问" },
-  { value: "explore", label: "只读", hint: "只读探索，不执行写/执行操作" },
-  { value: "bypass", label: "自动审批", hint: "自动放行所有操作，不再询问" },
+  { value: "manual", label: "手动审批", hint: "沙箱开启，写入、执行和联网前询问" },
+  { value: "auto", label: "自动审批", hint: "沙箱开启，由当前模型判断" },
+  { value: "full_access", label: "完全访问", hint: "关闭沙箱并自动放行" },
 ];
 
 const approvalLabel = computed(
-  () => approvalOptions.find((o) => o.value === props.approval)?.label ?? "询问"
+  () => approvalOptions.find((o) => o.value === props.approval)?.label ?? "手动审批"
 );
 
 const approvalOpen = ref(false);
@@ -418,10 +418,10 @@ function onKeydown(e: KeyboardEvent) {
                 :disabled="disabled"
                 class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-[13px] font-medium transition-colors hover:bg-muted disabled:opacity-50"
                 :class="
-                  approval === 'bypass'
+                  approval === 'full_access'
                     ? 'text-amber-600 dark:text-amber-400'
-                    : approval === 'explore'
-                      ? 'text-emerald-600 dark:text-emerald-400'
+                    : approval === 'auto'
+                      ? 'text-sky-600 dark:text-sky-400'
                       : 'text-foreground'
                 "
                 @click="approvalOpen = !approvalOpen"

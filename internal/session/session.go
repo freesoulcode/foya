@@ -9,10 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/freesoulcode/foya/internal/approval"
 )
 
 var (
@@ -22,6 +25,8 @@ var (
 	ErrProjectLocked = errors.New("session project is locked")
 	// ErrInvalidReasoningEffort 表示推理强度不在内核支持的统一档位中。
 	ErrInvalidReasoningEffort = errors.New("invalid reasoning effort")
+	// ErrInvalidApprovalMode 表示审批模式不是受支持的新模式。
+	ErrInvalidApprovalMode = errors.New("invalid approval mode")
 )
 
 // Phase 是会话当前阶段。
@@ -174,8 +179,13 @@ func NewPersistentManager(dataDir string) (Manager, error) {
 			return nil, err
 		}
 	}
+	droppedInvalid := false
 	for _, stored := range items {
 		if stored.ID == "" {
+			continue
+		}
+		if stored.ApprovalMode != "" && !approval.ValidMode(approval.Mode(stored.ApprovalMode)) {
+			droppedInvalid = true
 			continue
 		}
 		item := stored.Session
@@ -185,12 +195,20 @@ func NewPersistentManager(dataDir string) (Manager, error) {
 		item.AgentMaxTurns = stored.AgentMaxTurns
 		manager.sessions[item.ID] = &item
 	}
+	if droppedInvalid {
+		if err := manager.persistLocked(); err != nil {
+			return nil, err
+		}
+	}
 	return manager, nil
 }
 
 func (m *memManager) Create(opts CreateOptions) (*Session, error) {
 	if !ValidReasoningEffort(string(opts.ReasoningEffort)) {
 		return nil, ErrInvalidReasoningEffort
+	}
+	if opts.ApprovalMode != "" && !approval.ValidMode(approval.Mode(opts.ApprovalMode)) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidApprovalMode, opts.ApprovalMode)
 	}
 	now := time.Now()
 	var spawnedBy *SpawnedBy
@@ -257,6 +275,9 @@ func (m *memManager) Update(
 	}
 	if reasoningEffort != nil && !ValidReasoningEffort(*reasoningEffort) {
 		return nil, ErrInvalidReasoningEffort
+	}
+	if approvalMode != nil && !approval.ValidMode(approval.Mode(*approvalMode)) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidApprovalMode, *approvalMode)
 	}
 	if projectID != nil && s.ProjectID != "" && *projectID != s.ProjectID {
 		return nil, ErrProjectLocked

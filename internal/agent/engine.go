@@ -530,16 +530,27 @@ func (e *Engine) runTurn(
 
 	model := e.currentModel(sessionID)
 	prov, _ := e.currentProvider(sessionID)
+	reasoningEffort := e.resolveReasoningEffort(sessionID)
+	projectPath := e.resolveProjectPath(sessionID)
 
 	// 注入会话级配置到 context:工作目录供工具读,审批档位供网关读。
 	if e.sessions != nil {
-		ctx = tool.WithCWD(ctx, e.resolveProjectPath(sessionID))
+		ctx = tool.WithCWD(ctx, projectPath)
 		ctx = tool.WithProjectID(ctx, e.resolveProjectID(sessionID))
 		ctx = tool.WithSessionID(ctx, sessionID)
 		ctx = tool.WithModelRuntime(ctx, tool.ModelRuntime{Provider: prov, Model: model})
 		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
 		ctx = approval.WithSession(ctx, e.approvalEventSession(sessionID))
 		ctx = approval.WithExecutionSession(ctx, sessionID)
+		if completer, ok := prov.(provider.Completer); ok {
+			ctx = approval.WithReviewer(ctx, guardianReviewer{
+				completer:       completer,
+				model:           model,
+				reasoningEffort: reasoningEffort,
+				userRequest:     userText,
+				projectPath:     projectPath,
+			})
+		}
 	}
 
 	// 标题生成(首条用户消息时后台触发)。
@@ -615,7 +626,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 
 		stream, err := prov.Stream(ctx, provider.Request{
 			Model:           model,
-			ReasoningEffort: e.resolveReasoningEffort(sessionID),
+			ReasoningEffort: reasoningEffort,
 			Messages:        messages,
 			Tools:           toolDefs,
 		})
@@ -1008,7 +1019,7 @@ func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
 	if s, ok := e.sessions.Get(sessionID); ok && s.ApprovalMode != "" {
 		return approval.Mode(s.ApprovalMode)
 	}
-	return approval.ModeAsk
+	return approval.ModeManual
 }
 
 func (e *Engine) approvalEventSession(sessionID string) string {

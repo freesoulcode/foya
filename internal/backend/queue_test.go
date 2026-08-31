@@ -75,7 +75,7 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 		config.Provider{},
 		t.TempDir(),
 	)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model", ApprovalMode: "ask"})
+	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model", ApprovalMode: "manual"})
 	if err != nil {
 		t.Fatal(err)
 	}
