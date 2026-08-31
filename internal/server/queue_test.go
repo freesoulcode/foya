@@ -10,6 +10,7 @@ import (
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
@@ -48,6 +49,7 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 		tool.NewRegistry(),
 		gateway,
 	)
+	dataDir := t.TempDir()
 	be := backend.New(
 		sessions,
 		log,
@@ -57,8 +59,13 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 		terminal.NewManager(),
 		nil,
 		config.Provider{},
-		t.TempDir(),
+		dataDir,
 	)
+	artifactStore, err := artifact.NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.SetArtifactStore(artifactStore)
 	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)

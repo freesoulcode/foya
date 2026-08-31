@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 )
 
@@ -29,9 +30,12 @@ type Call struct {
 
 // ContentPart 是工具结果的一个内容块(文本 / 图片 / artifact 引用)。
 type ContentPart struct {
-	Type string // text / image / artifact_ref
-	Text string
-	Ref  string // artifact 引用(富媒体走引用,不塞进事件流)
+	Type       string // text / image / artifact_ref
+	Text       string
+	Name       string
+	MediaType  string
+	Data       []byte
+	Attachment *message.AttachmentRef
 }
 
 // Result 是工具执行结果。

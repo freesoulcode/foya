@@ -179,7 +179,11 @@ func RequestUnits(messages []message.Message, tools []provider.ToolDef) int64 {
 		Messages []providerVisibleMessage `json:"messages"`
 		Tools    []provider.ToolDef       `json:"tools"`
 	}{providerVisibleMessages(messages), tools})
-	return weightedUnits(string(payload))
+	units := weightedUnits(string(payload))
+	for _, item := range messages {
+		units += int64(len(item.Attachments)) * 4096
+	}
+	return units
 }
 
 // EstimateMessagesTokens estimates a list of model-visible messages.

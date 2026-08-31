@@ -5,6 +5,7 @@ import MessageBubble from "./MessageBubble.vue";
 import type { ChatMessage } from "@/lib/api";
 
 const props = defineProps<{
+  sessionId: string;
   messages: ChatMessage[];
   streaming: boolean;
   compacting?: boolean;
@@ -204,6 +205,7 @@ onBeforeUnmount(() => {
         :ref="(el) => setItemRef(el as HTMLElement | null, i)"
       >
         <MessageBubble
+          :session-id="sessionId"
           :message="m"
           :editable="editable && !streaming && !compacting"
           :streaming="

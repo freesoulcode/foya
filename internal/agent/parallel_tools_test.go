@@ -270,7 +270,7 @@ func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(prov.request.Messages) == 0 ||
-		!strings.Contains(prov.request.Messages[0].Content, "Only analyze market evidence.") {
+		!strings.Contains(prov.request.Messages[0].Parts[0].Text, "Only analyze market evidence.") {
 		t.Fatalf("system prompt does not contain agent instructions: %#v", prov.request.Messages)
 	}
 	if len(prov.request.Tools) != 1 || prov.request.Tools[0].Function.Name != "read" {

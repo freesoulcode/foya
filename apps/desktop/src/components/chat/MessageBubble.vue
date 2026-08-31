@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   BotIcon,
   CopyIcon,
@@ -11,15 +11,56 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
+import { api } from "@/lib/api";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import { Textarea } from "@/components/ui/textarea";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 
 const props = defineProps<{
+  sessionId: string;
   message: ChatMessage;
   streaming?: boolean;
   editable?: boolean;
 }>();
+
+const attachmentURLs = ref<Record<string, string>>({});
+let attachmentLoad = 0;
+
+function releaseAttachmentURLs() {
+  for (const url of Object.values(attachmentURLs.value)) URL.revokeObjectURL(url);
+  attachmentURLs.value = {};
+}
+
+async function loadAttachmentPreviews() {
+  const load = ++attachmentLoad;
+  releaseAttachmentURLs();
+  if (!props.sessionId) return;
+  for (const attachment of props.message.attachments ?? []) {
+    if (attachment.kind !== "image") continue;
+    try {
+      const bytes = await api.readArtifact(props.sessionId, attachment.id);
+      if (load !== attachmentLoad) return;
+      attachmentURLs.value = {
+        ...attachmentURLs.value,
+        [attachment.id]: URL.createObjectURL(
+          new Blob([bytes], { type: attachment.media_type })
+        ),
+      };
+    } catch {
+      // Keep the named attachment visible even when its preview cannot load.
+    }
+  }
+}
+
+watch(
+  () => [props.sessionId, props.message.attachments],
+  () => void loadAttachmentPreviews(),
+  { immediate: true, deep: true }
+);
+onBeforeUnmount(() => {
+  attachmentLoad++;
+  releaseAttachmentURLs();
+});
 
 const emit = defineEmits<{
   (e: "edit", messageSeq: number, text: string): void;
@@ -194,7 +235,7 @@ async function copyAll() {
 }
 
 function beginEdit() {
-  if (!props.editable || !props.message.event_seq) return;
+  if (!props.editable || !props.message.event_seq || props.message.attachments?.length) return;
   editText.value = props.message.content;
   editing.value = true;
   void nextTick(() => {
@@ -265,6 +306,26 @@ function onEditKeydown(event: KeyboardEvent) {
     >
       <!-- 用户消息:纯文本 -->
       <template v-if="isUser">
+        <div
+          v-if="message.attachments?.length"
+          class="mb-2 grid grid-cols-2 gap-2"
+        >
+          <div
+            v-for="attachment in message.attachments"
+            :key="attachment.id"
+            class="overflow-hidden rounded-md border border-border bg-muted"
+          >
+            <img
+              v-if="attachmentURLs[attachment.id]"
+              :src="attachmentURLs[attachment.id]"
+              :alt="attachment.name"
+              class="max-h-64 w-full object-contain"
+            />
+            <p v-else class="px-3 py-2 text-xs text-muted-foreground">
+              {{ attachment.name }}
+            </p>
+          </div>
+        </div>
         <template v-if="editing">
           <Textarea
             ref="editRef"
@@ -359,6 +420,7 @@ function onEditKeydown(event: KeyboardEvent) {
               class="mb-2"
             >
               <ToolActivityGroup
+                :session-id="sessionId"
                 :tools="toolBatchAt(i)"
                 @open-diff="(diff) => emit('open-diff', diff)"
               />
@@ -422,8 +484,14 @@ function onEditKeydown(event: KeyboardEvent) {
         v-if="message.event_seq"
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-        :disabled="!editable"
-        :title="editable ? '编辑消息' : '会话运行时不可编辑'"
+        :disabled="!editable || !!message.attachments?.length"
+        :title="
+          message.attachments?.length
+            ? '带图片的消息暂不支持编辑'
+            : editable
+              ? '编辑消息'
+              : '会话运行时不可编辑'
+        "
         @click="beginEdit"
       >
         <PencilIcon class="size-3.5" />

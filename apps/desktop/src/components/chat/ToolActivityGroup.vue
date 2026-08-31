@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
   BotIcon,
   ChevronRightIcon,
@@ -15,12 +15,57 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { diffFileName, diffStats } from "@/lib/diff";
+import { api } from "@/lib/api";
 import type { ToolCallView } from "@/lib/api";
 import SubAgentActivity from "./SubAgentActivity.vue";
 
 const props = defineProps<{
+  sessionId: string;
   tools: ToolCallView[];
 }>();
+
+const attachmentURLs = ref<Record<string, string>>({});
+const attachmentKey = computed(() =>
+  props.tools.flatMap((tool) => tool.attachments ?? []).map((item) => item.id).join(",")
+);
+let attachmentLoad = 0;
+
+function releaseAttachmentURLs() {
+  for (const url of Object.values(attachmentURLs.value)) URL.revokeObjectURL(url);
+  attachmentURLs.value = {};
+}
+
+async function loadAttachmentPreviews() {
+  const load = ++attachmentLoad;
+  releaseAttachmentURLs();
+  if (!props.sessionId) return;
+  const attachments = props.tools.flatMap((tool) => tool.attachments ?? []);
+  for (const attachment of attachments) {
+    if (attachment.kind !== "image" || attachmentURLs.value[attachment.id]) continue;
+    try {
+      const bytes = await api.readArtifact(props.sessionId, attachment.id);
+      if (load !== attachmentLoad) return;
+      attachmentURLs.value = {
+        ...attachmentURLs.value,
+        [attachment.id]: URL.createObjectURL(
+          new Blob([bytes], { type: attachment.media_type })
+        ),
+      };
+    } catch {
+      // The tool output remains readable when an artifact cannot be loaded.
+    }
+  }
+}
+
+watch(
+  () => [props.sessionId, attachmentKey.value],
+  () => void loadAttachmentPreviews(),
+  { immediate: true }
+);
+onBeforeUnmount(() => {
+  attachmentLoad++;
+  releaseAttachmentURLs();
+});
 
 const emit = defineEmits<{
   (e: "open-diff", diff: string): void;
@@ -233,6 +278,26 @@ function formatInput(input: string): string {
             <div v-if="tool.output">
               <div class="mb-1 text-[10px] uppercase text-muted-foreground">输出</div>
               <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ tool.output }}</pre>
+            </div>
+            <div
+              v-if="tool.attachments?.length"
+              class="mt-2 grid grid-cols-2 gap-2"
+            >
+              <figure
+                v-for="attachment in tool.attachments"
+                :key="attachment.id"
+                class="overflow-hidden rounded-md border border-border bg-muted"
+              >
+                <img
+                  v-if="attachmentURLs[attachment.id]"
+                  :src="attachmentURLs[attachment.id]"
+                  :alt="attachment.name"
+                  class="max-h-64 w-full object-contain"
+                />
+                <figcaption class="truncate px-2 py-1 text-[10px] text-muted-foreground">
+                  {{ attachment.name }}
+                </figcaption>
+              </figure>
             </div>
             <button
               v-if="isFileChangeTool(tool) && tool.diff"

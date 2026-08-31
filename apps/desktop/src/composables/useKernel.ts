@@ -15,6 +15,7 @@ import {
   type AgentRunSnapshot,
   type AgentBudget,
   type ToolCallView,
+  type AttachmentRef,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -311,6 +312,7 @@ function handleEvent(sessionId: string, data: string) {
         output?: string;
         is_error?: boolean;
         diff?: string;
+        attachments?: AttachmentRef[];
       };
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx < 0) break;
@@ -334,6 +336,7 @@ function handleEvent(sessionId: string, data: string) {
       if (p.output) tc.output = p.output;
       if (p.is_error) tc.status = "error";
       if (p.diff) tc.diff = p.diff;
+      if (p.attachments) tc.attachments = p.attachments;
       const seg = msg.segments?.find(
         (s) => s.kind === "tool" && s.tool.id === p.id
       );
@@ -344,6 +347,7 @@ function handleEvent(sessionId: string, data: string) {
         if (p.output) seg.tool.output = p.output;
         if (p.is_error) seg.tool.status = "error";
         if (p.diff) seg.tool.diff = p.diff;
+        if (p.attachments) seg.tool.attachments = p.attachments;
       }
       break;
     }
@@ -354,6 +358,7 @@ function handleEvent(sessionId: string, data: string) {
         output: string;
         is_error: boolean;
         diff?: string;
+        attachments?: AttachmentRef[];
       };
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx >= 0) {
@@ -362,6 +367,7 @@ function handleEvent(sessionId: string, data: string) {
           tc.status = p.is_error ? "error" : "done";
           tc.output = p.output;
           if (p.diff) tc.diff = p.diff;
+          if (p.attachments) tc.attachments = p.attachments;
         }
         // 同步更新 segments 中对应的 tool 段(与 tool_calls 是不同对象引用)。
         const seg = bucket[asstIdx].segments?.find(
@@ -371,6 +377,7 @@ function handleEvent(sessionId: string, data: string) {
           seg.tool.status = p.is_error ? "error" : "done";
           seg.tool.output = p.output;
           if (p.diff) seg.tool.diff = p.diff;
+          if (p.attachments) seg.tool.attachments = p.attachments;
         }
       }
       break;
@@ -576,13 +583,30 @@ async function refreshProjects() {
   }
 }
 
-// 连接内核:拉会话列表,选中或新建一个会话。
+async function listSessionsWhenKernelReady(): Promise<Session[]> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 40; attempt++) {
+    try {
+      return await api.listSessions();
+    } catch (error) {
+      lastError = error;
+      const message = String(error);
+      if (!message.includes("连接内核失败") && !message.includes("client error (Connect)")) {
+        throw error;
+      }
+      if (attempt < 40) await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+  }
+  throw lastError;
+}
+
+// 连接内核:等待 sidecar 就绪后拉会话列表,选中或新建一个会话。
 async function connect() {
   if (ready.value || connecting.value) return;
   connecting.value = true;
   connectError.value = "";
   try {
-    sessions.value = await api.listSessions();
+    sessions.value = await listSessionsWhenKernelReady();
     projects.value = await api.listProjects();
     sessions.value.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     if (sessions.value.length > 0) {
@@ -664,12 +688,14 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
           seg.tool.output = m.content;
           seg.tool.status = m.error ? "error" : "done";
           if (m.diff) seg.tool.diff = m.diff;
+          if (m.attachments) seg.tool.attachments = m.attachments;
         }
         const tc = cur.tool_calls!.find((t) => t.id === m.tool_call_id);
         if (tc) {
           tc.output = m.content;
           tc.status = m.error ? "error" : "done";
           if (m.diff) tc.diff = m.diff;
+          if (m.attachments) tc.attachments = m.attachments;
         }
       }
       continue;
@@ -803,11 +829,11 @@ async function ensureSession(): Promise<string> {
 // 发送一条消息。内核原子决定直接启动或进入队列;用户消息与运行态
 // 统一由 SSE 事件投影,从而让多个客户端保持一致。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
-async function send(text: string) {
-  if (!text.trim()) return;
+async function send(text: string, files: File[] = [], restore?: () => void) {
+  if (!text.trim() && files.length === 0) return;
 
   let id = activeId.value;
-  if (text.trim() === "/compact") {
+  if (text.trim() === "/compact" && files.length === 0) {
     if (!id) return;
     try {
       await api.compactSession(id);
@@ -822,12 +848,14 @@ async function send(text: string) {
     return;
   }
 
-  if (!id) id = await ensureSession();
-
-  ensureBucket(id);
-
+  const uploaded: AttachmentRef[] = [];
   try {
-    const result = await api.submitTurn(id, text);
+    if (!id) id = await ensureSession();
+    ensureBucket(id);
+    for (const file of files) {
+      uploaded.push(await api.uploadImage(id, file));
+    }
+    const result = await api.submitTurn(id, text, uploaded);
     if (result.status === "queued" && result.queued) {
       const current = queuedBySession.value[id] ?? [];
       if (!current.some((item) => item.id === result.queued!.id)) {
@@ -835,11 +863,18 @@ async function send(text: string) {
       }
     }
   } catch (e) {
-    messagesBySession.value[id].push({
-      role: "assistant",
-      content: `⚠️ 发送失败：${String(e)}`,
-      error: true,
-    });
+    restore?.();
+    if (id) {
+      await Promise.allSettled(uploaded.map((item) => api.deleteArtifact(id, item.id)));
+      ensureBucket(id);
+      messagesBySession.value[id].push({
+        role: "assistant",
+        content: `⚠️ 发送失败：${String(e)}`,
+        error: true,
+      });
+    } else {
+      connectError.value = String(e);
+    }
   }
 }
 

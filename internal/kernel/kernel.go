@@ -9,6 +9,7 @@ import (
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
@@ -51,6 +52,10 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	bus := broker.New[event.Event]()
+	artifactStore, err := artifact.NewFileStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	terminalManager := terminal.NewManager()
 
 	// 审批网关与工具注册表。
@@ -138,6 +143,7 @@ func New(cfg config.Config) (*App, error) {
 	connections := loadConnections(cfg)
 	be.SetConnections(connections)
 	be.SetCapabilityManagers(skills, web, mcpManager)
+	be.SetArtifactStore(artifactStore)
 	be.SetAgentManager(agents)
 	be.SetSubAgentManager(subagents)
 	be.SetProjectManager(projects)

@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
@@ -27,6 +29,7 @@ import (
 // 步数上限是可选的第三层兜底,只应由 CLI / eval 等非交互场景显式设置——
 // 交互式任务不该被武断的步数打断,失控由 loopGuard 的两层检测精准终止。
 const maxToolStepsUnlimited = 0
+const maxProviderImageBytes int64 = 20 << 20
 
 // SessionLookup 是引擎读取会话元数据所需的最小依赖。
 type SessionLookup interface {
@@ -61,11 +64,12 @@ func (p *pendingToolCall) input() json.RawMessage {
 
 // Engine 是回合引擎。
 type Engine struct {
-	log      *state.MemLog
-	bus      *broker.Broker[event.Event]
-	sessions titleStore
-	tools    tool.Registry
-	approval approval.Gateway
+	log       *state.MemLog
+	bus       *broker.Broker[event.Event]
+	sessions  titleStore
+	tools     tool.Registry
+	approval  approval.Gateway
+	artifacts artifact.Store
 
 	mu       sync.RWMutex
 	provider provider.Provider
@@ -166,6 +170,12 @@ func NewEngine(
 		tools:        tools,
 		approval:     gw,
 	}
+}
+
+func (e *Engine) SetArtifactStore(store artifact.Store) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.artifacts = store
 }
 
 // SwitchProvider 运行时热替换 provider 与默认模型。
@@ -324,6 +334,67 @@ func (e *Engine) prepareModelRequest(
 	return messages, units, nil
 }
 
+func (e *Engine) materializeProviderMessages(
+	ctx context.Context,
+	sessionID string,
+	messages []message.Message,
+	model string,
+) ([]provider.InputMessage, error) {
+	e.mu.RLock()
+	store := e.artifacts
+	e.mu.RUnlock()
+	prov, _ := e.currentProvider(sessionID)
+	imageInput := (*bool)(nil)
+	if resolver, ok := prov.(provider.CapabilityResolver); ok {
+		imageInput = resolver.ModelCapabilities(model).ImageInput
+	}
+
+	out := make([]provider.InputMessage, 0, len(messages))
+	var usedImageBytes int64
+	for _, item := range messages {
+		projected := provider.TextMessage(item)
+		for _, attachment := range item.Attachments {
+			if attachment.Kind != "image" {
+				projected.Parts = append(projected.Parts, provider.InputPart{
+					Type: "text", Text: "[Attachment: " + attachment.Name + "]",
+				})
+				continue
+			}
+			if imageInput != nil && !*imageInput {
+				projected.Parts = append(projected.Parts, provider.InputPart{
+					Type: "text", Text: "[Image attachment omitted: selected model does not support image input]",
+				})
+				continue
+			}
+			if store == nil {
+				projected.Parts = append(projected.Parts, provider.InputPart{
+					Type: "text", Text: "[Image attachment unavailable: artifact store is not configured]",
+				})
+				continue
+			}
+			data, stored, err := store.Read(ctx, sessionID, attachment.ID)
+			if err != nil {
+				projected.Parts = append(projected.Parts, provider.InputPart{
+					Type: "text", Text: "[Image attachment unavailable: " + attachment.Name + "]",
+				})
+				continue
+			}
+			if usedImageBytes+int64(len(data)) > maxProviderImageBytes {
+				projected.Parts = append(projected.Parts, provider.InputPart{
+					Type: "text", Text: "[Image attachment omitted: per-request image budget exceeded]",
+				})
+				continue
+			}
+			usedImageBytes += int64(len(data))
+			projected.Parts = append(projected.Parts, provider.InputPart{
+				Type: "image", Data: data, MediaType: stored.MediaType, Detail: "auto",
+			})
+		}
+		out = append(out, projected)
+	}
+	return out, nil
+}
+
 // CompactSession performs a standalone/manual compaction while the session is idle.
 func (e *Engine) CompactSession(
 	ctx context.Context,
@@ -387,7 +458,7 @@ func (e *Engine) compactHistory(
 	summary, err := completer.Complete(ctx, provider.Request{
 		Model:           model,
 		ReasoningEffort: e.resolveReasoningEffort(sessionID),
-		Messages:        input,
+		Messages:        provider.TextMessages(input),
 	})
 	if err != nil {
 		e.emit(context.WithoutCancel(ctx), sessionID, event.KindCompactionFailed, err.Error(), true)
@@ -468,13 +539,14 @@ func validCompactionSummary(summary string) bool {
 
 // toolCallPayload 是 tool_begin/tool_end 事件的负载。
 type toolCallPayload struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Input   string `json:"input,omitempty"`
-	Output  string `json:"output,omitempty"`
-	Status  string `json:"status,omitempty"` // queued / running / done / error
-	IsError bool   `json:"is_error,omitempty"`
-	Diff    string `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Input       string                  `json:"input,omitempty"`
+	Output      string                  `json:"output,omitempty"`
+	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
+	Status      string                  `json:"status,omitempty"` // queued / running / done / error
+	IsError     bool                    `json:"is_error,omitempty"`
+	Diff        string                  `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
 }
 
 type turnStartedPayload struct {
@@ -488,22 +560,27 @@ type turnCompletePayload struct {
 }
 
 type executedToolCall struct {
-	call   message.ToolCall
-	output string
-	isErr  bool
-	diff   string
-	sig    string
+	call        message.ToolCall
+	output      string
+	attachments []message.AttachmentRef
+	isErr       bool
+	diff        string
+	sig         string
 }
 
 // RunTurn executes a regular user turn.
 func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error {
-	return e.runTurn(ctx, sessionID, userText, false)
+	return e.RunInput(ctx, sessionID, message.UserInput{Text: userText})
+}
+
+func (e *Engine) RunInput(ctx context.Context, sessionID string, input message.UserInput) error {
+	return e.runTurn(ctx, sessionID, input, false)
 }
 
 // RunEditedTurn executes the replacement turn after an earlier user message was
 // edited. The notice keeps the model aware that the project tree was not rewound.
 func (e *Engine) RunEditedTurn(ctx context.Context, sessionID, userText string) error {
-	return e.runTurn(ctx, sessionID, userText, true)
+	return e.runTurn(ctx, sessionID, message.UserInput{Text: userText}, true)
 }
 
 // InvalidateHistoryEstimate drops request-size baselines tied to a superseded
@@ -516,7 +593,8 @@ func (e *Engine) InvalidateHistoryEstimate(sessionID string) {
 // 同一时刻一个会话只能有一个回合;重复提交返回错误。可用 Cancel 中断。
 func (e *Engine) runTurn(
 	ctx context.Context,
-	sessionID, userText string,
+	sessionID string,
+	input message.UserInput,
 	editedHistory bool,
 ) error {
 	// 注册 per-session cancel:同一会话只允许一个活跃回合。
@@ -548,6 +626,7 @@ func (e *Engine) runTurn(
 
 	model := e.currentModel(sessionID)
 	prov, _ := e.currentProvider(sessionID)
+	userText := input.Text
 	reasoningEffort := e.resolveReasoningEffort(sessionID)
 	projectPath := e.resolveProjectPath(sessionID)
 
@@ -575,14 +654,26 @@ func (e *Engine) runTurn(
 	if e.sessions != nil {
 		if hist, err := e.log.History(ctx, sessionID); err == nil && !hasUserMessage(hist) {
 			if s, ok := e.sessions.Get(sessionID); ok && s.ParentID == "" && s.Title == "" && !s.TitleIsManual {
+				titleSource := userText
+				if strings.TrimSpace(titleSource) == "" && len(input.Attachments) > 0 {
+					names := make([]string, 0, len(input.Attachments))
+					for _, attachment := range input.Attachments {
+						names = append(names, attachment.Name)
+					}
+					titleSource = "图片: " + strings.Join(names, ", ")
+				}
 				detached := context.WithoutCancel(ctx)
-				go e.generateTitle(detached, sessionID, userText)
+				go e.generateTitle(detached, sessionID, titleSource)
 			}
 		}
 	}
 
 	// 用户消息入日志。
-	userMsg := message.Message{Role: message.RoleUser, Content: userText}
+	userMsg := message.Message{
+		Role:        message.RoleUser,
+		Content:     userText,
+		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
+	}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
 	e.emit(ctx, sessionID, event.KindTurnStarted, turnStartedPayload{
 		RunID: runID, StartedAt: turnStartedAt,
@@ -644,10 +735,16 @@ Inspect the current project tree before modifying files; do not assume it matche
 			return err
 		}
 
+		providerMessages, err := e.materializeProviderMessages(ctx, sessionID, messages, model)
+		if err != nil {
+			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
+			completeTurn()
+			return err
+		}
 		stream, err := prov.Stream(ctx, provider.Request{
 			Model:           model,
 			ReasoningEffort: reasoningEffort,
-			Messages:        messages,
+			Messages:        providerMessages,
 			Tools:           toolDefs,
 		})
 		if err != nil {
@@ -801,14 +898,15 @@ Inspect the current project tree before modifying files; do not assume it matche
 			})
 			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Output: item.output, IsError: item.isErr,
-				Diff: item.diff,
+				Attachments: item.attachments, Diff: item.diff,
 			}, true)
 
 			toolMsg := message.Message{
-				Role:       message.RoleTool,
-				ToolCallID: tc.ID,
-				Content:    item.output,
-				Diff:       item.diff,
+				Role:        message.RoleTool,
+				ToolCallID:  tc.ID,
+				Content:     item.output,
+				Attachments: append([]message.AttachmentRef(nil), item.attachments...),
+				Diff:        item.diff,
 			}
 			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
 		}
@@ -875,6 +973,7 @@ func (e *Engine) executeToolCalls(
 		}, true)
 		result := e.executeTool(ctx, sessionID, item.call)
 		item.output = resultText(result)
+		item.attachments = e.persistToolImages(ctx, sessionID, item.call.Name, result)
 		item.isErr = result.IsError
 		item.diff = result.Diff
 		if ctx.Err() != nil {
@@ -888,7 +987,7 @@ func (e *Engine) executeToolCalls(
 		}
 		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
 			ID: item.call.ID, Name: item.call.Name, Output: item.output,
-			IsError: item.isErr, Diff: item.diff, Status: status,
+			Attachments: item.attachments, IsError: item.isErr, Diff: item.diff, Status: status,
 		}, true)
 	}
 
@@ -1046,6 +1145,15 @@ func resultText(r tool.Result) string {
 				sb += "\n"
 			}
 			sb += p.Text
+		} else if p.Type == "image" {
+			if sb != "" {
+				sb += "\n"
+			}
+			name := p.Name
+			if name == "" {
+				name = "image"
+			}
+			sb += "[Image: " + name + "]"
 		}
 	}
 	if sb == "" {
@@ -1055,6 +1163,61 @@ func resultText(r tool.Result) string {
 		sb = "Error: " + sb
 	}
 	return sb
+}
+
+func (e *Engine) persistToolImages(
+	ctx context.Context,
+	sessionID, toolName string,
+	result tool.Result,
+) []message.AttachmentRef {
+	e.mu.RLock()
+	store := e.artifacts
+	e.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	var refs []message.AttachmentRef
+	var created []message.AttachmentRef
+	for index, part := range result.Content {
+		if part.Type == "artifact_ref" && part.Attachment != nil {
+			refs = append(refs, *part.Attachment)
+			continue
+		}
+		if part.Type != "image" || len(part.Data) == 0 {
+			continue
+		}
+		name := part.Name
+		if name == "" {
+			name = fmt.Sprintf("%s-image-%d", toolName, index+1)
+		}
+		ref, err := store.PutImage(ctx, sessionID, name, bytes.NewReader(part.Data))
+		if err == nil {
+			refs = append(refs, ref)
+			created = append(created, ref)
+		}
+	}
+	if len(created) == 0 {
+		return refs
+	}
+	ids := make([]string, 0, len(created))
+	for _, ref := range created {
+		ids = append(ids, ref.ID)
+	}
+	if err := store.Commit(ctx, sessionID, ids); err != nil {
+		createdIDs := make(map[string]struct{}, len(created))
+		for _, ref := range created {
+			createdIDs[ref.ID] = struct{}{}
+			_ = store.Delete(context.WithoutCancel(ctx), sessionID, ref.ID)
+		}
+		kept := refs[:0]
+		for _, ref := range refs {
+			if _, ok := createdIDs[ref.ID]; !ok {
+				kept = append(kept, ref)
+			}
+		}
+		return kept
+	}
+	return refs
 }
 
 // resolveProjectPath resolves the stable project identity to its current path.

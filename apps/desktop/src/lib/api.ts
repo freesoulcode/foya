@@ -56,6 +56,7 @@ export interface QueuedMessage {
   id: string;
   session_id: string;
   text: string;
+  attachments?: AttachmentRef[];
   position: number;
   created_at: string;
   updated_at: string;
@@ -65,6 +66,17 @@ export interface SubmitTurnResult {
   run_id?: string;
   status: "started" | "queued";
   queued?: QueuedMessage;
+}
+
+export interface AttachmentRef {
+  id: string;
+  name: string;
+  kind: "image";
+  media_type: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  sha256?: string;
 }
 
 export interface BranchEffect {
@@ -100,6 +112,7 @@ export interface CompactSessionResult {
 export interface ConnectionModelCatalog {
   models: string[];
   context_windows: Record<string, number>;
+  capabilities?: Record<string, { image_input?: boolean }>;
 }
 
 export interface ConnectionModelGroup extends ConnectionConfig {
@@ -161,6 +174,7 @@ export interface ToolCallView {
   child_messages?: ChatMessage[];
   // 文件变更 diff(仅 write/edit 工具),统一 diff 文本,前端行内着色展示。
   diff?: string;
+  attachments?: AttachmentRef[];
 }
 
 // assistant 气泡内的有序段落:一个回合可能是「思考→工具→思考→回复」的交错序列,
@@ -173,6 +187,7 @@ export type MessageSegment =
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  attachments?: AttachmentRef[];
   event_seq?: number;
   reasoning?: string;
   tool_calls?: ToolCallView[];
@@ -448,10 +463,25 @@ export const api = {
       (r) => JSON.parse(r) as ContextUsage | null
     ),
 
-  submitTurn: (sessionId: string, message: string) =>
-    invoke<string>("submit_turn", { sessionId, message }).then(
+  submitTurn: (sessionId: string, message: string, attachments: AttachmentRef[] = []) =>
+    invoke<string>("submit_turn", { sessionId, message, attachments }).then(
       (r) => JSON.parse(r) as SubmitTurnResult
     ),
+
+  uploadImage: async (sessionId: string, file: File) => {
+    const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+    return invoke<string>("upload_image", { sessionId, name: file.name, data }).then(
+      (r) => (JSON.parse(r) as { attachment: AttachmentRef }).attachment
+    );
+  },
+
+  readArtifact: (sessionId: string, artifactId: string) =>
+    invoke<number[]>("read_artifact", { sessionId, artifactId }).then(
+      (bytes) => new Uint8Array(bytes)
+    ),
+
+  deleteArtifact: (sessionId: string, artifactId: string) =>
+    invoke("delete_artifact", { sessionId, artifactId }),
 
   editTurn: (
     sessionId: string,
@@ -478,8 +508,12 @@ export const api = {
       (r) => (JSON.parse(r) as QueuedMessage[]) ?? []
     ),
 
-  enqueueMessage: (sessionId: string, message: string) =>
-    invoke<string>("enqueue_message", { sessionId, message }).then(
+  enqueueMessage: (
+    sessionId: string,
+    message: string,
+    attachments: AttachmentRef[] = []
+  ) =>
+    invoke<string>("enqueue_message", { sessionId, message, attachments }).then(
       (r) => JSON.parse(r) as QueuedMessage
     ),
 

@@ -303,6 +303,7 @@ onMounted(connect);
             <MessageList
               ref="messageListRef"
               v-model:active-turn="activeTurn"
+              :session-id="activeId"
               :messages="messages"
               :streaming="streaming"
               :compacting="activeCompacting"

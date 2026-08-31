@@ -1,12 +1,37 @@
 package mcpclient
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestMCPResultPartsPreserveImageBytes(t *testing.T) {
+	imageData := []byte{0x89, 'P', 'N', 'G'}
+	parts := mcpResultParts(&mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "captured"},
+			&mcp.ImageContent{MIMEType: "image/png", Data: imageData},
+		},
+	}, "screenshot")
+	if len(parts) != 2 || parts[0].Type != "text" || parts[0].Text != "captured" {
+		t.Fatalf("unexpected MCP content parts: %#v", parts)
+	}
+	image := parts[1]
+	if image.Type != "image" || image.Name != "screenshot-image" ||
+		image.MediaType != "image/png" || !bytes.Equal(image.Data, imageData) {
+		t.Fatalf("MCP image part = %#v", image)
+	}
+	imageData[0] = 0
+	if image.Data[0] != 0x89 {
+		t.Fatal("MCP image bytes were not copied")
+	}
+}
 
 func TestMCPToolNameIsStableAndCollisionResistant(t *testing.T) {
 	prefix := strings.Repeat("a", 80)

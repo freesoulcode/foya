@@ -3,12 +3,15 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
@@ -31,6 +34,8 @@ var (
 	ErrSessionQueueNotEmpty = errors.New("session has queued messages")
 	// ErrHistoryChanged rejects a stale side-effect confirmation.
 	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
+	// ErrAttachmentEditUnsupported avoids silently dropping attachments from an edited turn.
+	ErrAttachmentEditUnsupported = errors.New("messages with attachments cannot be edited")
 )
 
 const (
@@ -80,13 +85,27 @@ func newTurnScheduler() *turnScheduler {
 // SubmitTurn starts immediately when the session is idle. While a turn is
 // active, it atomically appends to that session's FIFO queue.
 func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submission, error) {
+	return b.SubmitInput(ctx, sessionID, message.UserInput{Text: text})
+}
+
+// SubmitInput starts or queues one structured user input.
+func (b *Backend) SubmitInput(
+	ctx context.Context,
+	sessionID string,
+	input message.UserInput,
+) (Submission, error) {
 	if _, ok := b.sessions.Get(sessionID); !ok {
 		return Submission{}, session.ErrNotFound
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
+	input.Text = strings.TrimSpace(input.Text)
+	if input.Text == "" && len(input.Attachments) == 0 {
 		return Submission{}, ErrEmptyMessage
 	}
+	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
+	if err != nil {
+		return Submission{}, err
+	}
+	input.Attachments = attachments
 
 	b.turns.mu.Lock()
 	if _, deleted := b.turns.deleted[sessionID]; deleted {
@@ -94,7 +113,7 @@ func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submi
 		return Submission{}, session.ErrNotFound
 	}
 	if _, running := b.turns.runners[sessionID]; running || b.turns.compacting[sessionID] {
-		item := queue.NewMessage(sessionID, text, len(b.turns.queues[sessionID]))
+		item := queue.NewMessage(sessionID, input, len(b.turns.queues[sessionID]))
 		b.turns.queues[sessionID] = append(b.turns.queues[sessionID], item)
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
@@ -104,38 +123,96 @@ func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submi
 	// A queue can remain while idle after the user explicitly stops a turn.
 	// Preserve FIFO: append the new message, then resume with the oldest item.
 	if len(b.turns.queues[sessionID]) > 0 {
-		item := queue.NewMessage(sessionID, text, len(b.turns.queues[sessionID]))
+		item := queue.NewMessage(sessionID, input, len(b.turns.queues[sessionID]))
 		b.turns.queues[sessionID] = append(b.turns.queues[sessionID], item)
 		next := b.popQueueLocked(sessionID)
 		runner, turnCtx := b.createRunnerLocked(sessionID)
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		go b.runTurnLoop(sessionID, next.Text, runner, turnCtx, false)
+		go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx, false)
 		return Submission{Status: SubmissionQueued, Queued: &item}, nil
 	}
 
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, text, runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, input, runner, turnCtx, false)
 	return Submission{Status: SubmissionStarted}, nil
+}
+
+func (b *Backend) resolveAttachments(
+	ctx context.Context,
+	sessionID string,
+	refs []message.AttachmentRef,
+) ([]message.AttachmentRef, error) {
+	if len(refs) > artifact.MaxAttachments {
+		return nil, fmt.Errorf("at most %d attachments are allowed", artifact.MaxAttachments)
+	}
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	b.mu.RLock()
+	store := b.artifacts
+	b.mu.RUnlock()
+	if store == nil {
+		return nil, errors.New("artifact store is unavailable")
+	}
+	out := make([]message.AttachmentRef, 0, len(refs))
+	var total int64
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, duplicate := seen[ref.ID]; duplicate {
+			return nil, errors.New("duplicate attachment")
+		}
+		seen[ref.ID] = struct{}{}
+		_, canonical, err := store.Read(ctx, sessionID, ref.ID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid attachment %q: %w", ref.ID, err)
+		}
+		total += canonical.Bytes
+		if total > artifact.MaxTurnBytes {
+			return nil, fmt.Errorf("attachments exceed %d bytes", artifact.MaxTurnBytes)
+		}
+		out = append(out, canonical)
+	}
+	ids := make([]string, 0, len(out))
+	for _, ref := range out {
+		ids = append(ids, ref.ID)
+	}
+	if err := store.Commit(ctx, sessionID, ids); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // EnqueueMessage explicitly appends an item without starting a turn.
 func (b *Backend) EnqueueMessage(ctx context.Context, sessionID, text string) (queue.Message, error) {
+	return b.EnqueueInput(ctx, sessionID, message.UserInput{Text: text})
+}
+
+func (b *Backend) EnqueueInput(
+	ctx context.Context,
+	sessionID string,
+	input message.UserInput,
+) (queue.Message, error) {
 	if _, ok := b.sessions.Get(sessionID); !ok {
 		return queue.Message{}, session.ErrNotFound
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
+	input.Text = strings.TrimSpace(input.Text)
+	if input.Text == "" && len(input.Attachments) == 0 {
 		return queue.Message{}, ErrEmptyMessage
 	}
+	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
+	if err != nil {
+		return queue.Message{}, err
+	}
+	input.Attachments = attachments
 
 	b.turns.mu.Lock()
 	if _, deleted := b.turns.deleted[sessionID]; deleted {
 		b.turns.mu.Unlock()
 		return queue.Message{}, session.ErrNotFound
 	}
-	item := queue.NewMessage(sessionID, text, len(b.turns.queues[sessionID]))
+	item := queue.NewMessage(sessionID, input, len(b.turns.queues[sessionID]))
 	b.turns.queues[sessionID] = append(b.turns.queues[sessionID], item)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
@@ -286,7 +363,7 @@ func (b *Backend) DispatchQueuedMessage(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, selected.Text, runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, queueInput(selected), runner, turnCtx, false)
 	return selected, nil
 }
 
@@ -342,7 +419,7 @@ func (b *Backend) CompactSession(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, next.Text, runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx, false)
 	return checkpoint, err
 }
 
@@ -362,6 +439,15 @@ func (b *Backend) EditTurn(
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return EditSubmission{}, ErrEmptyMessage
+	}
+	history, err := b.log.History(ctx, sessionID)
+	if err != nil {
+		return EditSubmission{}, err
+	}
+	for _, item := range history {
+		if item.EventSeq == uint64(targetUserSeq) && len(item.Attachments) > 0 {
+			return EditSubmission{}, ErrAttachmentEditUnsupported
+		}
 	}
 
 	b.turns.mu.Lock()
@@ -423,7 +509,7 @@ func (b *Backend) EditTurn(
 	}
 	b.turns.mu.Unlock()
 
-	go b.runTurnLoop(sessionID, text, runner, turnCtx, true)
+	go b.runTurnLoop(sessionID, message.UserInput{Text: text}, runner, turnCtx, true)
 	return EditSubmission{
 		Status:  EditStarted,
 		Effects: branch.Effects,
@@ -459,7 +545,8 @@ func (b *Backend) createRunnerLocked(sessionID string) (*sessionRunner, context.
 }
 
 func (b *Backend) runTurnLoop(
-	sessionID, text string,
+	sessionID string,
+	input message.UserInput,
 	runner *sessionRunner,
 	turnCtx context.Context,
 	editedHistory bool,
@@ -467,10 +554,10 @@ func (b *Backend) runTurnLoop(
 	defer close(runner.done)
 	for {
 		if editedHistory {
-			_ = b.engine.RunEditedTurn(turnCtx, sessionID, text)
+			_ = b.engine.RunEditedTurn(turnCtx, sessionID, input.Text)
 			editedHistory = false
 		} else {
-			_ = b.engine.RunTurn(turnCtx, sessionID, text)
+			_ = b.engine.RunInput(turnCtx, sessionID, input)
 		}
 
 		b.turns.mu.Lock()
@@ -499,7 +586,14 @@ func (b *Backend) runTurnLoop(
 		turnCtx, runner.cancel = context.WithCancel(context.Background())
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		text = next.Text
+		input = queueInput(next)
+	}
+}
+
+func queueInput(item queue.Message) message.UserInput {
+	return message.UserInput{
+		Text:        item.Text,
+		Attachments: append([]message.AttachmentRef(nil), item.Attachments...),
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/kernel"
 	"github.com/freesoulcode/foya/internal/mcpclient"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/server"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/websearch"
@@ -137,14 +138,16 @@ func runExec(args []string) {
 	connection := flags.String("connection", "", "model connection id")
 	model := flags.String("model", "", "model id")
 	mode := flags.String("approval", string(approval.ModeManual), "manual, auto, or full_access")
+	var images stringListFlag
+	flags.Var(&images, "image", "image path (repeatable)")
 	_ = flags.Parse(args)
 	prompt := strings.TrimSpace(strings.Join(flags.Args(), " "))
-	if prompt == "" {
+	if prompt == "" && len(images) == 0 {
 		data, _ := io.ReadAll(os.Stdin)
 		prompt = strings.TrimSpace(string(data))
 	}
-	if prompt == "" {
-		fmt.Fprintln(os.Stderr, "usage: foya exec [flags] <prompt>")
+	if prompt == "" && len(images) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: foya exec [flags] [--image <path>] <prompt>")
 		os.Exit(2)
 	}
 	app := newApp()
@@ -157,8 +160,23 @@ func runExec(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	attachments := make([]message.AttachmentRef, 0, len(images))
+	for _, path := range images {
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			fatal(openErr)
+		}
+		ref, putErr := app.Backend().PutImage(ctx, sess.ID, filepath.Base(path), file)
+		_ = file.Close()
+		if putErr != nil {
+			fatal(putErr)
+		}
+		attachments = append(attachments, ref)
+	}
 	events := app.Backend().Subscribe(ctx, sess.ID)
-	if _, err := app.Backend().SubmitTurn(ctx, sess.ID, prompt); err != nil {
+	if _, err := app.Backend().SubmitInput(ctx, sess.ID, message.UserInput{
+		Text: prompt, Attachments: attachments,
+	}); err != nil {
 		fatal(err)
 	}
 	reader := bufio.NewReader(os.Stdin)
@@ -189,6 +207,14 @@ func runExec(args []string) {
 			return
 		}
 	}
+}
+
+type stringListFlag []string
+
+func (values *stringListFlag) String() string { return strings.Join(*values, ",") }
+func (values *stringListFlag) Set(value string) error {
+	*values = append(*values, value)
+	return nil
 }
 
 func runAgents(args []string) {

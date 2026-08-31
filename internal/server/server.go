@@ -17,12 +17,15 @@ import (
 
 	"github.com/freesoulcode/foya/internal/agent"
 	approvalpkg "github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/mcpclient"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/protocol"
+	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
@@ -56,6 +59,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
+	s.mux.HandleFunc("POST /sessions/{id}/artifacts", s.handleUploadArtifact)
+	s.mux.HandleFunc("GET /sessions/{id}/artifacts/{artifact_id}", s.handleReadArtifact)
+	s.mux.HandleFunc("DELETE /sessions/{id}/artifacts/{artifact_id}", s.handleDeleteArtifact)
 	s.mux.HandleFunc("GET /sessions/{id}/children", s.handleChildSessions)
 	s.mux.HandleFunc("POST /sessions/{id}/agents", s.handleStartAgent)
 	s.mux.HandleFunc("GET /sessions/{id}/agents", s.handleListAgentRuns)
@@ -699,15 +705,20 @@ func (s *Server) handleListConnectionModels(w http.ResponseWriter, r *http.Reque
 	}
 	ids := make([]string, 0, len(models))
 	contextWindows := make(map[string]int64)
+	capabilities := make(map[string]provider.ModelCapabilities)
 	for _, model := range models {
 		ids = append(ids, model.ID)
 		if model.ContextWindow > 0 {
 			contextWindows[model.ID] = model.ContextWindow
 		}
+		if model.Capabilities.ImageInput != nil {
+			capabilities[model.ID] = model.Capabilities
+		}
 	}
 	writeJSON(w, http.StatusOK, protocol.ConnectionModelsResponse{
 		Models:         ids,
 		ContextWindows: contextWindows,
+		Capabilities:   capabilities,
 	})
 }
 
@@ -755,6 +766,80 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, msgs)
 }
 
+func (s *Server) handleUploadArtifact(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, artifact.MaxImageBytes+(1<<20))
+	if err := r.ParseMultipartForm(artifact.MaxImageBytes); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "image_too_large", err.Error())
+		} else {
+			writeErr(w, http.StatusBadRequest, "invalid_artifact", err.Error())
+		}
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "missing_artifact", "multipart field \"file\" is required")
+		return
+	}
+	defer file.Close()
+	ref, err := s.backend.PutImage(r.Context(), r.PathValue("id"), header.Filename, file)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, artifact.ErrUnsupportedType):
+			writeErr(w, http.StatusUnsupportedMediaType, "unsupported_image", err.Error())
+		case errors.Is(err, artifact.ErrImageTooLarge), errors.Is(err, artifact.ErrTooManyPixels):
+			writeErr(w, http.StatusRequestEntityTooLarge, "image_too_large", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "artifact_store_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, protocol.ArtifactResponse{Attachment: ref})
+}
+
+func (s *Server) handleReadArtifact(w http.ResponseWriter, r *http.Request) {
+	data, ref, err := s.backend.ReadArtifact(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("artifact_id"),
+	)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			writeErr(w, http.StatusNotFound, "artifact_not_found", err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, "artifact_read_failed", err.Error())
+		}
+		return
+	}
+	w.Header().Set("Content-Type", ref.MediaType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.DeleteArtifact(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("artifact_id"),
+	)
+	if err != nil {
+		if errors.Is(err, artifact.ErrCommitted) {
+			writeErr(w, http.StatusConflict, "artifact_committed", err.Error())
+		} else if errors.Is(err, session.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			writeErr(w, http.StatusNotFound, "artifact_not_found", err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, "artifact_delete_failed", err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleUsage 返回会话最近一次模型请求的 token 使用情况。
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	usage, err := s.backend.Usage(r.Context(), r.PathValue("id"))
@@ -778,7 +863,10 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	result, err := s.backend.SubmitTurn(r.Context(), id, req.Message)
+	result, err := s.backend.SubmitInput(r.Context(), id, message.UserInput{
+		Text:        req.Message,
+		Attachments: req.Attachments,
+	})
 	if err != nil {
 		writeQueueErr(w, err)
 		return
@@ -822,6 +910,8 @@ func (s *Server) handleEditTurn(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "empty_message", err.Error())
 		case errors.Is(err, backend.ErrMessageUnchanged):
 			writeErr(w, http.StatusConflict, "message_unchanged", err.Error())
+		case errors.Is(err, backend.ErrAttachmentEditUnsupported):
+			writeErr(w, http.StatusConflict, "attachment_edit_unsupported", err.Error())
 		case errors.Is(err, backend.ErrSessionBusy):
 			writeErr(w, http.StatusConflict, "session_busy", err.Error())
 		case errors.Is(err, backend.ErrSessionQueueNotEmpty):
@@ -889,7 +979,10 @@ func (s *Server) handleEnqueueMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	item, err := s.backend.EnqueueMessage(r.Context(), r.PathValue("id"), req.Message)
+	item, err := s.backend.EnqueueInput(r.Context(), r.PathValue("id"), message.UserInput{
+		Text:        req.Message,
+		Attachments: req.Attachments,
+	})
 	if err != nil {
 		writeQueueErr(w, err)
 		return
@@ -1118,7 +1211,9 @@ func writeQueueErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, backend.ErrQueuedMessageNotFound):
 		writeErr(w, http.StatusNotFound, "queued_message_not_found", err.Error())
 	case errors.Is(err, backend.ErrEmptyMessage),
-		errors.Is(err, backend.ErrInvalidQueuePosition):
+		errors.Is(err, backend.ErrInvalidQueuePosition),
+		errors.Is(err, artifact.ErrInvalidID),
+		errors.Is(err, artifact.ErrUnsupportedType):
 		writeErr(w, http.StatusBadRequest, "invalid_queue_message", err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, "queue_failed", err.Error())

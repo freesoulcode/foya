@@ -57,5 +57,6 @@ make test    # 运行测试
 - MCP stdio、Streamable HTTP、legacy SSE，以及 tools/resources/prompts。
 - `foya exec` 和 Agents、Skills、MCP、Web Search 管理命令。
 - Tauri + Vue 桌面端及对应设置界面。
+- 图片 Artifact、用户图片输入、工具图片回灌与 OpenAI 多模态请求。
 
-完整 MCP OAuth、客户端归属 MCP 和富媒体 artifact 仍在开发中。
+完整 MCP OAuth、客户端归属 MCP 和图片之外的富媒体类型仍在开发中。

@@ -62,9 +62,9 @@ func (g guardianReviewer) Review(ctx context.Context, req approval.Request) (app
 	text, err := g.completer.Complete(reviewCtx, provider.Request{
 		Model:           g.model,
 		ReasoningEffort: g.reasoningEffort,
-		Messages: []message.Message{
-			{Role: message.RoleSystem, Content: guardianSystemPrompt},
-			{Role: message.RoleUser, Content: string(payload)},
+		Messages: []provider.InputMessage{
+			provider.TextMessage(message.Message{Role: message.RoleSystem, Content: guardianSystemPrompt}),
+			provider.TextMessage(message.Message{Role: message.RoleUser, Content: string(payload)}),
 		},
 	})
 	if err != nil {

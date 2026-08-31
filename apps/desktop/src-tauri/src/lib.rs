@@ -307,6 +307,42 @@ mod kernel {
         }
     }
 
+    pub async fn request_bytes(
+        method: &str,
+        path: &str,
+        content_type: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        let uri = socket_uri(path)?;
+        let mut builder = Request::builder().method(method_from_str(method)).uri(uri);
+        if let Some(content_type) = content_type {
+            builder = builder.header("content-type", content_type);
+        }
+        let req = builder
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| format!("构造请求失败: {e}"))?;
+        let resp = client()
+            .request(req)
+            .await
+            .map_err(|e| format!("连接内核失败: {e}"))?;
+        let status = resp.status();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?
+            .to_bytes();
+        if status.is_success() {
+            Ok(bytes.to_vec())
+        } else {
+            Err(format!(
+                "内核返回 {}: {}",
+                status.as_u16(),
+                String::from_utf8_lossy(&bytes)
+            ))
+        }
+    }
+
     /// 订阅某会话的 SSE 事件流,逐条经 Channel 推给前端(每个 data 行一条)。
     pub async fn subscribe(
         session_id: &str,
@@ -407,14 +443,67 @@ async fn update_session(session_id: String, patch: serde_json::Value) -> Result<
 /// 提交一轮对话。
 #[cfg(unix)]
 #[tauri::command]
-async fn submit_turn(session_id: String, message: String) -> Result<String, String> {
-    let body = serde_json::json!({ "message": message }).to_string();
+async fn submit_turn(
+    session_id: String,
+    message: String,
+    attachments: Option<Vec<serde_json::Value>>,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "message": message,
+        "attachments": attachments.unwrap_or_default(),
+    })
+    .to_string();
     kernel::request(
         "POST",
         &format!("/sessions/{session_id}/turns"),
         Some(&body),
     )
     .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn upload_image(session_id: String, name: String, data: Vec<u8>) -> Result<String, String> {
+    let boundary = "foya-image-upload-boundary";
+    let safe_name = name.replace(['"', '\r', '\n'], "_");
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let response = kernel::request_bytes(
+        "POST",
+        &format!("/sessions/{session_id}/artifacts"),
+        Some(&format!("multipart/form-data; boundary={boundary}")),
+        body,
+    )
+    .await?;
+    String::from_utf8(response).map_err(|e| format!("附件响应不是 UTF-8: {e}"))
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn read_artifact(session_id: String, artifact_id: String) -> Result<Vec<u8>, String> {
+    kernel::request_bytes(
+        "GET",
+        &format!("/sessions/{session_id}/artifacts/{artifact_id}"),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_artifact(session_id: String, artifact_id: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/sessions/{session_id}/artifacts/{artifact_id}"),
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// 编辑一条已完成的用户消息并从该位置创建新分支。
@@ -458,8 +547,16 @@ async fn list_queued_messages(session_id: String) -> Result<String, String> {
 /// 显式追加一条待发送消息。
 #[cfg(unix)]
 #[tauri::command]
-async fn enqueue_message(session_id: String, message: String) -> Result<String, String> {
-    let body = serde_json::json!({ "message": message }).to_string();
+async fn enqueue_message(
+    session_id: String,
+    message: String,
+    attachments: Option<Vec<serde_json::Value>>,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "message": message,
+        "attachments": attachments.unwrap_or_default(),
+    })
+    .to_string();
     kernel::request(
         "POST",
         &format!("/sessions/{session_id}/queue"),
@@ -1145,7 +1242,29 @@ fn update_session(_session_id: String, _patch: serde_json::Value) -> Result<Stri
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn submit_turn(_session_id: String, _message: String) -> Result<String, String> {
+fn submit_turn(
+    _session_id: String,
+    _message: String,
+    _attachments: Option<Vec<serde_json::Value>>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn upload_image(_session_id: String, _name: String, _data: Vec<u8>) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn read_artifact(_session_id: String, _artifact_id: String) -> Result<Vec<u8>, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn delete_artifact(_session_id: String, _artifact_id: String) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -1175,7 +1294,11 @@ fn list_queued_messages(_session_id: String) -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn enqueue_message(_session_id: String, _message: String) -> Result<String, String> {
+fn enqueue_message(
+    _session_id: String,
+    _message: String,
+    _attachments: Option<Vec<serde_json::Value>>,
+) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -1504,6 +1627,9 @@ pub fn run() {
             create_session,
             update_session,
             submit_turn,
+            upload_image,
+            read_artifact,
+            delete_artifact,
             edit_turn,
             compact_session,
             list_queued_messages,

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,47 @@ import (
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 )
+
+func TestToChatMsgsEncodesUserAndToolImages(t *testing.T) {
+	imageData := []byte{0x89, 'P', 'N', 'G'}
+	converted := toChatMsgs([]provider.InputMessage{
+		{
+			Role: message.RoleUser,
+			Parts: []provider.InputPart{
+				{Type: "text", Text: "describe this"},
+				{Type: "image", Data: imageData, MediaType: "image/png"},
+			},
+		},
+		{
+			Role:       message.RoleTool,
+			ToolCallID: "call-1",
+			Parts: []provider.InputPart{
+				{Type: "text", Text: "[Image: screenshot.png]"},
+				{Type: "image", Data: imageData, MediaType: "image/png"},
+			},
+		},
+	})
+	data, err := json.Marshal(converted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range [][]byte{
+		[]byte(`"role":"user"`),
+		[]byte(`"role":"tool"`),
+		[]byte(`"tool_call_id":"call-1"`),
+		[]byte(`"type":"image_url"`),
+		[]byte(`"url":"data:image/png;base64,iVBORw=="`),
+		[]byte(`"detail":"auto"`),
+		[]byte(`Image produced by tool call call-1.`),
+	} {
+		if !bytes.Contains(data, fragment) {
+			t.Fatalf("serialized messages missing %s: %s", fragment, data)
+		}
+	}
+	if count := bytes.Count(data, []byte(`"type":"image_url"`)); count != 2 {
+		t.Fatalf("image part count = %d, want 2: %s", count, data)
+	}
+}
 
 func TestExtractContextWindow(t *testing.T) {
 	var model oai.Model
@@ -39,6 +81,36 @@ func TestEffectiveContextWindowPrecedence(t *testing.T) {
 	}
 	if got := effectiveContextWindow(0, 0); got != 200_000 {
 		t.Fatalf("default context window = %d", got)
+	}
+}
+
+func TestListModelsCachesAdvertisedImageCapabilities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[
+			{"id":"vision-model","object":"model","created":1,"owned_by":"test","input_modalities":["text","image"]},
+			{"id":"text-model","object":"model","created":1,"owned_by":"test","supports_vision":false}
+		]}`)
+	}))
+	defer server.Close()
+
+	p := New(Config{BaseURL: server.URL + "/v1", APIKey: "test"})
+	models, err := p.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0].Capabilities.ImageInput == nil ||
+		!*models[0].Capabilities.ImageInput || models[1].Capabilities.ImageInput == nil ||
+		*models[1].Capabilities.ImageInput {
+		t.Fatalf("unexpected model capabilities: %#v", models)
+	}
+	cached := p.ModelCapabilities("text-model")
+	if cached.ImageInput == nil || *cached.ImageInput {
+		t.Fatalf("cached capabilities = %#v", cached)
 	}
 }
 
@@ -76,7 +148,9 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 	p := New(Config{BaseURL: server.URL + "/v1", APIKey: "test", Model: "test-model"})
 	stream, err := p.Stream(context.Background(), provider.Request{
 		ReasoningEffort: "high",
-		Messages:        []message.Message{{Role: message.RoleUser, Content: "hello"}},
+		Messages: []provider.InputMessage{
+			provider.TextMessage(message.Message{Role: message.RoleUser, Content: "hello"}),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -21,7 +21,7 @@ type compactionProvider struct {
 	contextWindow int64
 	overflowFirst bool
 	streamCalls   int
-	captured      [][]message.Message
+	captured      [][]provider.InputMessage
 	efforts       []string
 }
 
@@ -54,7 +54,7 @@ func (p *compactionProvider) Stream(
 	p.mu.Lock()
 	p.streamCalls++
 	call := p.streamCalls
-	p.captured = append(p.captured, append([]message.Message(nil), req.Messages...))
+	p.captured = append(p.captured, append([]provider.InputMessage(nil), req.Messages...))
 	p.efforts = append(p.efforts, req.ReasoningEffort)
 	p.mu.Unlock()
 
@@ -229,10 +229,14 @@ func appendMessage(
 	}
 }
 
-func messagesText(messages []message.Message) string {
+func messagesText(messages []provider.InputMessage) string {
 	var parts []string
 	for _, msg := range messages {
-		parts = append(parts, msg.Content)
+		for _, part := range msg.Parts {
+			if part.Type == "text" {
+				parts = append(parts, part.Text)
+			}
+		}
 	}
 	return strings.Join(parts, "\n")
 }

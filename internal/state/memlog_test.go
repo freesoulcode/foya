@@ -1,9 +1,12 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -277,5 +280,39 @@ func TestPersistentLogRestoresTypedHistoryAndDeletion(t *testing.T) {
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("deleted events restored: %+v", deleted)
+	}
+}
+
+func TestPersistentLogStoresAndRestoresOnlyAttachmentReferences(t *testing.T) {
+	dataDir := t.TempDir()
+	log, err := NewPersistentLog(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := message.AttachmentRef{
+		ID: "artifact-1", Name: "screen.png", Kind: "image",
+		MediaType: "image/png", Bytes: 123, Width: 10, Height: 8, SHA256: "checksum",
+	}
+	appendMessage(t, log, "session-1", message.Message{
+		Role: message.RoleUser, Content: "describe", Attachments: []message.AttachmentRef{ref},
+	})
+
+	onDisk, err := os.ReadFile(filepath.Join(dataDir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(onDisk, []byte("data:image/")) || bytes.Contains(onDisk, []byte(`"data"`)) {
+		t.Fatalf("event log contains inline image data: %s", onDisk)
+	}
+	restored, err := NewPersistentLog(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := restored.History(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || len(history[0].Attachments) != 1 || history[0].Attachments[0] != ref {
+		t.Fatalf("restored attachments = %#v", history)
 	}
 }

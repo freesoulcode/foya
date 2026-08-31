@@ -63,6 +63,11 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 	if err != nil {
 		return mcpError("MCP tool failed: " + err.Error()), nil
 	}
+	parts := mcpResultParts(result, t.remoteName)
+	return foyatool.Result{Content: parts, IsError: result.IsError}, nil
+}
+
+func mcpResultParts(result *mcp.CallToolResult, toolName string) []foyatool.ContentPart {
 	parts := make([]foyatool.ContentPart, 0, len(result.Content)+1)
 	for _, content := range result.Content {
 		switch value := content.(type) {
@@ -70,8 +75,10 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 			parts = append(parts, foyatool.ContentPart{Type: "text", Text: value.Text})
 		case *mcp.ImageContent:
 			parts = append(parts, foyatool.ContentPart{
-				Type: "text",
-				Text: fmt.Sprintf("[MCP image omitted from model context: %s, %d bytes]", value.MIMEType, len(value.Data)),
+				Type:      "image",
+				Name:      toolName + "-image",
+				MediaType: value.MIMEType,
+				Data:      append([]byte(nil), value.Data...),
 			})
 		case *mcp.AudioContent:
 			parts = append(parts, foyatool.ContentPart{
@@ -93,7 +100,7 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 	if len(parts) == 0 {
 		parts = append(parts, foyatool.ContentPart{Type: "text", Text: "(no output)"})
 	}
-	return foyatool.Result{Content: parts, IsError: result.IsError}, nil
+	return parts
 }
 
 func mcpToolName(serverID, toolName string) string {

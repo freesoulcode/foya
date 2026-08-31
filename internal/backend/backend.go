@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
@@ -60,6 +62,7 @@ type Backend struct {
 	projects  *project.Manager
 	agents    *agentdef.Manager
 	subagents *subagent.Manager
+	artifacts artifact.Store
 
 	buildProvider     ProviderBuilder
 	dataDir           string
@@ -97,6 +100,59 @@ func (b *Backend) SetSubAgentManager(manager *subagent.Manager) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.subagents = manager
+}
+
+func (b *Backend) SetArtifactStore(store artifact.Store) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.artifacts = store
+	b.engine.SetArtifactStore(store)
+}
+
+func (b *Backend) PutImage(
+	ctx context.Context,
+	sessionID, name string,
+	source io.Reader,
+) (message.AttachmentRef, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return message.AttachmentRef{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	store := b.artifacts
+	b.mu.RUnlock()
+	if store == nil {
+		return message.AttachmentRef{}, errors.New("artifact store is unavailable")
+	}
+	return store.PutImage(ctx, sessionID, name, source)
+}
+
+func (b *Backend) ReadArtifact(
+	ctx context.Context,
+	sessionID, artifactID string,
+) ([]byte, message.AttachmentRef, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return nil, message.AttachmentRef{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	store := b.artifacts
+	b.mu.RUnlock()
+	if store == nil {
+		return nil, message.AttachmentRef{}, errors.New("artifact store is unavailable")
+	}
+	return store.Read(ctx, sessionID, artifactID)
+}
+
+func (b *Backend) DeleteArtifact(ctx context.Context, sessionID, artifactID string) error {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return session.ErrNotFound
+	}
+	b.mu.RLock()
+	store := b.artifacts
+	b.mu.RUnlock()
+	if store == nil {
+		return errors.New("artifact store is unavailable")
+	}
+	return store.Delete(ctx, sessionID, artifactID)
 }
 
 func (b *Backend) AgentLimits() (config.AgentLimits, error) {
@@ -635,6 +691,12 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 			return err
 		}
 		b.log.Delete(sessionID)
+		b.mu.RLock()
+		artifactStore := b.artifacts
+		b.mu.RUnlock()
+		if artifactStore != nil {
+			_ = artifactStore.DeleteSession(ctx, sessionID)
+		}
 		ev := event.Event{
 			Kind:    event.KindSessionDeleted,
 			Session: sessionID,

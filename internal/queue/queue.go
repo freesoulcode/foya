@@ -5,16 +5,19 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"github.com/freesoulcode/foya/internal/message"
 )
 
 // Message is a user message waiting to start a turn.
 type Message struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"session_id"`
-	Text      string    `json:"text"`
-	Position  int       `json:"position"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string                  `json:"id"`
+	SessionID   string                  `json:"session_id"`
+	Text        string                  `json:"text"`
+	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
+	Position    int                     `json:"position"`
+	CreatedAt   time.Time               `json:"created_at"`
+	UpdatedAt   time.Time               `json:"updated_at"`
 }
 
 // Snapshot is the complete ordered queue projected to clients.
@@ -23,15 +26,16 @@ type Snapshot struct {
 }
 
 // NewMessage creates a queued message with a stable client-facing ID.
-func NewMessage(sessionID, text string, position int) Message {
+func NewMessage(sessionID string, input message.UserInput, position int) Message {
 	now := time.Now()
 	return Message{
-		ID:        newID(),
-		SessionID: sessionID,
-		Text:      text,
-		Position:  position,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          newID(),
+		SessionID:   sessionID,
+		Text:        input.Text,
+		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
+		Position:    position,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 

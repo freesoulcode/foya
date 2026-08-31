@@ -38,8 +38,51 @@ type Usage struct {
 
 // ModelInfo 是模型列表中的可用元数据。ContextWindow 为 0 表示端点未提供。
 type ModelInfo struct {
-	ID            string `json:"id"`
-	ContextWindow int64  `json:"context_window,omitempty"`
+	ID            string            `json:"id"`
+	ContextWindow int64             `json:"context_window,omitempty"`
+	Capabilities  ModelCapabilities `json:"capabilities,omitempty"`
+}
+
+// ModelCapabilities describes model input features. Nil means the provider did
+// not advertise the capability, rather than explicitly rejecting it.
+type ModelCapabilities struct {
+	ImageInput *bool `json:"image_input,omitempty"`
+}
+
+// InputPart is provider-ready content. Image bytes exist only while materializing
+// a request and are never persisted in the event log.
+type InputPart struct {
+	Type      string
+	Text      string
+	Data      []byte
+	MediaType string
+	Detail    string
+}
+
+// InputMessage is the provider-facing projection of one canonical message.
+type InputMessage struct {
+	Role       message.Role
+	Parts      []InputPart
+	ToolCalls  []message.ToolCall
+	ToolCallID string
+}
+
+// TextMessage projects a canonical message without binary attachments.
+func TextMessage(item message.Message) InputMessage {
+	return InputMessage{
+		Role:       item.Role,
+		Parts:      []InputPart{{Type: "text", Text: item.Content}},
+		ToolCalls:  item.ToolCalls,
+		ToolCallID: item.ToolCallID,
+	}
+}
+
+func TextMessages(items []message.Message) []InputMessage {
+	out := make([]InputMessage, 0, len(items))
+	for _, item := range items {
+		out = append(out, TextMessage(item))
+	}
+	return out
 }
 
 // SearchResult 是跨 Provider 统一的网页搜索结果。
@@ -76,7 +119,7 @@ type StreamEvent struct {
 type Request struct {
 	Model           string
 	ReasoningEffort string
-	Messages        []message.Message
+	Messages        []InputMessage
 	Tools           []ToolDef
 }
 
@@ -91,6 +134,12 @@ type Provider interface {
 // OpenAI 兼容服务通常通过 GET /models 返回模型列表;不支持的 provider 可不实现。
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
+// CapabilityResolver reports capabilities that cannot be reliably inferred
+// from the generic model-list endpoint.
+type CapabilityResolver interface {
+	ModelCapabilities(model string) ModelCapabilities
 }
 
 // Completer 是可选能力:非流式一次性生成短文本。

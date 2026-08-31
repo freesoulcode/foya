@@ -7,13 +7,20 @@ package protocol
 
 import (
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/queue"
 )
 
 // SubmitTurnRequest 发起一个回合。
 type SubmitTurnRequest struct {
-	Session string `json:"session"`
-	Message string `json:"message"`
+	Session     string                  `json:"session"`
+	Message     string                  `json:"message"`
+	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
+}
+
+type ArtifactResponse struct {
+	Attachment message.AttachmentRef `json:"attachment"`
 }
 
 // CreateSessionRequest 新建会话时的可选参数。
@@ -63,7 +70,8 @@ type EditTurnResponse struct {
 
 // QueueMessageRequest 显式向待发送队列追加消息。
 type QueueMessageRequest struct {
-	Message string `json:"message"`
+	Message     string                  `json:"message"`
+	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
 }
 
 // UpdateQueuedMessageRequest 修改队列消息正文或位置。
@@ -89,8 +97,9 @@ type ConnectionConfig struct {
 }
 
 type ConnectionModelsResponse struct {
-	Models         []string         `json:"models"`
-	ContextWindows map[string]int64 `json:"context_windows,omitempty"`
+	Models         []string                              `json:"models"`
+	ContextWindows map[string]int64                      `json:"context_windows,omitempty"`
+	Capabilities   map[string]provider.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 // ProviderConfig 是 provider 配置的线格式(读写设置界面用)。

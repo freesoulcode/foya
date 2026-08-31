@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from "vue";
+import { ref, computed, nextTick, watch, onUnmounted } from "vue";
 import { onClickOutside } from "@vueuse/core";
 import {
   ArrowUpIcon,
@@ -14,6 +14,7 @@ import {
   CheckIcon,
   RefreshCwIcon,
   Minimize2Icon,
+  PaperclipIcon,
 } from "@lucide/vue";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -81,7 +82,7 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: "send", text: string): void;
+  (e: "send", text: string, files: File[], restore: () => void): void;
   (e: "stop"): void;
   (e: "edit-queued", id: string, text: string): void;
   (e: "reorder-queued", id: string, position: number): void;
@@ -100,6 +101,58 @@ const emit = defineEmits<{
 const input = ref("");
 const textareaRef = ref<InstanceType<typeof Textarea> | null>(null);
 const inputFocused = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const attachmentError = ref("");
+const pendingImages = ref<Array<{ file: File; url: string }>>([]);
+
+function addImages(files: File[]) {
+  attachmentError.value = "";
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    if (file.size > 20 * 1024 * 1024) {
+      attachmentError.value = `${file.name} 超过 20MB`;
+      continue;
+    }
+    if (pendingImages.value.length >= 8) {
+      attachmentError.value = "每条消息最多添加 8 张图片";
+      break;
+    }
+    pendingImages.value.push({ file, url: URL.createObjectURL(file) });
+  }
+}
+
+function removeImage(index: number) {
+  const [removed] = pendingImages.value.splice(index, 1);
+  if (removed) URL.revokeObjectURL(removed.url);
+}
+
+function onFilesSelected(event: Event) {
+  const target = event.target as HTMLInputElement;
+  addImages(Array.from(target.files ?? []));
+  target.value = "";
+}
+
+function onPaste(event: ClipboardEvent) {
+  const images = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+    file.type.startsWith("image/")
+  );
+  if (images.length === 0) return;
+  event.preventDefault();
+  addImages(images);
+}
+
+function onDrop(event: DragEvent) {
+  const images = Array.from(event.dataTransfer?.files ?? []).filter((file) =>
+    file.type.startsWith("image/")
+  );
+  if (images.length === 0) return;
+  event.preventDefault();
+  addImages(images);
+}
+
+onUnmounted(() => {
+  for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
+});
 
 interface SlashCommand {
   value: string;
@@ -289,9 +342,15 @@ function createProjectFromPicker(event: Event) {
 // ---- 发送 ----
 function submit() {
   const text = input.value.trim();
-  if (!text || props.disabled) return;
+  if ((!text && pendingImages.value.length === 0) || props.disabled) return;
+  const files = pendingImages.value.map((item) => item.file);
   input.value = "";
-  emit("send", text);
+  for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
+  pendingImages.value = [];
+  emit("send", text, files, () => {
+    if (!input.value) input.value = text;
+    addImages(files);
+  });
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -341,6 +400,8 @@ function onKeydown(e: KeyboardEvent) {
       <!-- 输入卡片 -->
       <div
         class="composer-card relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+        @dragover.prevent
+        @drop="onDrop"
       >
         <div
           v-if="commandMenuOpen"
@@ -379,6 +440,34 @@ function onKeydown(e: KeyboardEvent) {
           </button>
         </div>
 
+        <div v-if="pendingImages.length" class="flex gap-2 overflow-x-auto px-3 pt-3">
+          <div
+            v-for="(item, index) in pendingImages"
+            :key="item.url"
+            class="relative size-16 shrink-0 overflow-hidden rounded-md border border-border bg-muted"
+          >
+            <img :src="item.url" :alt="item.file.name" class="size-full object-cover" />
+            <button
+              type="button"
+              class="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm"
+              title="移除图片"
+              @click="removeImage(index)"
+            >
+              <XIcon class="size-3" />
+            </button>
+          </div>
+        </div>
+        <p v-if="attachmentError" class="px-4 pt-2 text-xs text-destructive">
+          {{ attachmentError }}
+        </p>
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          class="hidden"
+          @change="onFilesSelected"
+        />
         <Textarea
           ref="textareaRef"
           v-model="input"
@@ -399,11 +488,21 @@ function onKeydown(e: KeyboardEvent) {
           @focus="inputFocused = true"
           @blur="inputFocused = false"
           @keydown="onKeydown"
+          @paste="onPaste"
         />
 
         <!-- 底部工具栏 -->
         <div class="flex min-w-0 items-center gap-2 px-2 pb-2">
           <div class="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              :disabled="disabled"
+              class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+              title="添加图片"
+              @click="fileInputRef?.click()"
+            >
+              <PaperclipIcon class="size-4" />
+            </button>
             <!-- 绑定文件夹(+) -->
             <button
               v-if="!projectLocked"
@@ -616,7 +715,7 @@ function onKeydown(e: KeyboardEvent) {
             <button
               type="button"
               class="flex size-8 items-center justify-center rounded-lg bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
-              :disabled="disabled || !input.trim()"
+              :disabled="disabled || (!input.trim() && pendingImages.length === 0)"
               :title="streaming ? '加入待发送队列 (Enter)' : '发送 (Enter)'"
               @click="submit"
             >

@@ -10,11 +10,13 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -30,7 +32,10 @@ import (
 type Provider struct {
 	model         string
 	contextWindow int64
+	official      bool
 	client        oai.Client
+	mu            sync.RWMutex
+	capabilities  map[string]provider.ModelCapabilities
 }
 
 // Config 是 provider 装配参数。
@@ -56,12 +61,38 @@ func New(cfg Config) *Provider {
 	return &Provider{
 		model:         cfg.Model,
 		contextWindow: cfg.ContextWindow,
+		official:      cfg.BaseURL == "" || strings.Contains(strings.ToLower(cfg.BaseURL), "api.openai.com"),
 		client:        oai.NewClient(opts...),
+		capabilities:  make(map[string]provider.ModelCapabilities),
 	}
 }
 
 // Name 返回 provider 名。
 func (p *Provider) Name() string { return "openai" }
+
+func (p *Provider) ModelCapabilities(model string) provider.ModelCapabilities {
+	p.mu.RLock()
+	capabilities, ok := p.capabilities[model]
+	p.mu.RUnlock()
+	if ok {
+		return capabilities
+	}
+	if !p.official {
+		return provider.ModelCapabilities{}
+	}
+	value := strings.ToLower(model)
+	supported := strings.HasPrefix(value, "gpt-4o") ||
+		strings.HasPrefix(value, "gpt-4.1") ||
+		strings.HasPrefix(value, "gpt-5") ||
+		strings.HasPrefix(value, "o3") ||
+		strings.HasPrefix(value, "o4")
+	if !supported {
+		return provider.ModelCapabilities{}
+	}
+	return provider.ModelCapabilities{ImageInput: boolPointer(true)}
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 // SearchWeb uses the Responses API hosted web-search tool. OpenAI-compatible
 // endpoints that do not implement Responses return an error and the caller
@@ -131,21 +162,35 @@ func (p *Provider) SearchWeb(ctx context.Context, model, query string, limit int
 
 // ---- 类型转换 ----
 
-// toChatMsgs 把领域消息转为 SDK 消息参数,正确处理工具调用和工具结果。
-func toChatMsgs(msgs []message.Message) []oai.ChatCompletionMessageParamUnion {
+// toChatMsgs 把已物化的 Provider 消息转为 SDK 参数。
+func toChatMsgs(msgs []provider.InputMessage) []oai.ChatCompletionMessageParamUnion {
 	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
+		text := inputText(m.Parts)
 		switch m.Role {
 		case message.RoleSystem:
-			out = append(out, oai.SystemMessage(m.Content))
+			out = append(out, oai.SystemMessage(text))
 		case message.RoleUser:
-			out = append(out, oai.UserMessage(m.Content))
+			if parts := userContentParts(m.Parts); len(parts) > 1 || hasImagePart(m.Parts) {
+				out = append(out, oai.UserMessage(parts))
+			} else {
+				out = append(out, oai.UserMessage(text))
+			}
 		case message.RoleTool:
-			out = append(out, oai.ToolMessage(m.Content, m.ToolCallID))
+			out = append(out, oai.ToolMessage(text, m.ToolCallID))
+			if hasImagePart(m.Parts) {
+				parts := []oai.ChatCompletionContentPartUnionParam{{
+					OfText: &oai.ChatCompletionContentPartTextParam{
+						Text: "Image produced by tool call " + m.ToolCallID + ".",
+					},
+				}}
+				parts = append(parts, imageContentParts(m.Parts)...)
+				out = append(out, oai.UserMessage(parts))
+			}
 		case message.RoleAssistant:
 			asst := oai.ChatCompletionAssistantMessageParam{}
-			if m.Content != "" {
-				asst.Content.OfString = oai.String(m.Content)
+			if text != "" {
+				asst.Content.OfString = oai.String(text)
 			}
 			if len(m.ToolCalls) > 0 {
 				calls := make([]oai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
@@ -161,6 +206,64 @@ func toChatMsgs(msgs []message.Message) []oai.ChatCompletionMessageParamUnion {
 				asst.ToolCalls = calls
 			}
 			out = append(out, oai.ChatCompletionMessageParamUnion{OfAssistant: &asst})
+		}
+	}
+	return out
+}
+
+func inputText(parts []provider.InputPart) string {
+	var values []string
+	for _, part := range parts {
+		if part.Type == "text" && part.Text != "" {
+			values = append(values, part.Text)
+		}
+	}
+	return strings.Join(values, "\n")
+}
+
+func hasImagePart(parts []provider.InputPart) bool {
+	for _, part := range parts {
+		if part.Type == "image" && len(part.Data) > 0 && strings.HasPrefix(part.MediaType, "image/") {
+			return true
+		}
+	}
+	return false
+}
+
+func imageContentParts(parts []provider.InputPart) []oai.ChatCompletionContentPartUnionParam {
+	var out []oai.ChatCompletionContentPartUnionParam
+	for _, part := range parts {
+		if part.Type != "image" || len(part.Data) == 0 || !strings.HasPrefix(part.MediaType, "image/") {
+			continue
+		}
+		detail := part.Detail
+		if detail == "" {
+			detail = "auto"
+		}
+		out = append(out, oai.ChatCompletionContentPartUnionParam{
+			OfImageURL: &oai.ChatCompletionContentPartImageParam{
+				ImageURL: oai.ChatCompletionContentPartImageImageURLParam{
+					URL:    "data:" + part.MediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data),
+					Detail: detail,
+				},
+			},
+		})
+	}
+	return out
+}
+
+func userContentParts(parts []provider.InputPart) []oai.ChatCompletionContentPartUnionParam {
+	out := make([]oai.ChatCompletionContentPartUnionParam, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			if part.Text != "" {
+				out = append(out, oai.ChatCompletionContentPartUnionParam{
+					OfText: &oai.ChatCompletionContentPartTextParam{Text: part.Text},
+				})
+			}
+		case "image":
+			out = append(out, imageContentParts([]provider.InputPart{part})...)
 		}
 	}
 	return out
@@ -342,19 +445,56 @@ func (p *Provider) ListModels(ctx context.Context) ([]provider.ModelInfo, error)
 		return nil, err
 	}
 	models := make([]provider.ModelInfo, 0, len(page.Data))
+	capabilitiesByModel := make(map[string]provider.ModelCapabilities, len(page.Data))
 	for _, m := range page.Data {
 		if m.ID != "" {
 			contextWindow := effectiveContextWindow(
 				extractContextWindow(m.JSON.ExtraFields),
 				p.contextWindow,
 			)
+			capabilities := p.ModelCapabilities(m.ID)
+			if imageInput, ok := extractImageInput(m.JSON.ExtraFields); ok {
+				capabilities.ImageInput = boolPointer(imageInput)
+			}
 			models = append(models, provider.ModelInfo{
 				ID:            m.ID,
 				ContextWindow: contextWindow,
+				Capabilities:  capabilities,
 			})
+			capabilitiesByModel[m.ID] = capabilities
 		}
 	}
+	p.mu.Lock()
+	p.capabilities = capabilitiesByModel
+	p.mu.Unlock()
 	return models, nil
+}
+
+func extractImageInput(fields map[string]respjson.Field) (bool, bool) {
+	for _, key := range []string{"supports_image_input", "supports_vision"} {
+		field, ok := fields[key]
+		if !ok || field.Raw() == "" {
+			continue
+		}
+		var value bool
+		if json.Unmarshal([]byte(field.Raw()), &value) == nil {
+			return value, true
+		}
+	}
+	field, ok := fields["input_modalities"]
+	if !ok || field.Raw() == "" {
+		return false, false
+	}
+	var modalities []string
+	if json.Unmarshal([]byte(field.Raw()), &modalities) != nil {
+		return false, false
+	}
+	for _, modality := range modalities {
+		if strings.EqualFold(modality, "image") {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 func effectiveContextWindow(reported, configured int64) int64 {
@@ -395,7 +535,8 @@ func extractContextWindow(fields map[string]respjson.Field) int64 {
 
 // 确保实现了接口。
 var (
-	_ provider.Provider    = (*Provider)(nil)
-	_ provider.ModelLister = (*Provider)(nil)
-	_ provider.Completer   = (*Provider)(nil)
+	_ provider.Provider           = (*Provider)(nil)
+	_ provider.ModelLister        = (*Provider)(nil)
+	_ provider.CapabilityResolver = (*Provider)(nil)
+	_ provider.Completer          = (*Provider)(nil)
 )

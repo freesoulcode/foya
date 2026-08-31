@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 )
 
 const maxReadLen = 50000
@@ -78,6 +80,18 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return errResult(fmt.Sprintf("读取失败: %v", err)), nil
+	}
+	mediaType := strings.Split(http.DetectContentType(data), ";")[0]
+	if strings.HasPrefix(mediaType, "image/") {
+		if int64(len(data)) > artifact.MaxImageBytes {
+			return errResult(fmt.Sprintf("图片超过 %d 字节限制", artifact.MaxImageBytes)), nil
+		}
+		return Result{Content: []ContentPart{{
+			Type:      "image",
+			Name:      filepath.Base(path),
+			MediaType: mediaType,
+			Data:      data,
+		}}}, nil
 	}
 
 	content := string(data)

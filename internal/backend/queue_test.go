@@ -1,13 +1,17 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
@@ -38,7 +42,11 @@ func (p *controlledProvider) Stream(ctx context.Context, req provider.Request) (
 	var text string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == message.RoleUser {
-			text = req.Messages[i].Content
+			for _, part := range req.Messages[i].Parts {
+				if part.Type == "text" {
+					text += part.Text
+				}
+			}
 			break
 		}
 	}
@@ -64,6 +72,7 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 	gateway := approval.NewGateway(bus, log)
 	prov := newControlledProvider()
 	engine := agent.NewEngine(log, bus, sessions, prov, "test-model", tool.NewRegistry(), gateway)
+	dataDir := t.TempDir()
 	be := New(
 		sessions,
 		log,
@@ -73,13 +82,44 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 		terminal.NewManager(),
 		nil,
 		config.Provider{},
-		t.TempDir(),
+		dataDir,
 	)
+	artifactStore, err := artifact.NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.SetArtifactStore(artifactStore)
 	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model", ApprovalMode: "manual"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return be, sess.ID, prov
+}
+
+func TestEnqueueInputPreservesCanonicalAttachment(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	imageData, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := be.PutImage(context.Background(), sessionID, "pixel.png", bytes.NewReader(imageData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		Attachments: []message.AttachmentRef{{ID: ref.ID, Name: "spoofed.jpg"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Text != "" || len(item.Attachments) != 1 || item.Attachments[0] != ref {
+		t.Fatalf("queued image input = %#v", item)
+	}
+	if err := be.DeleteArtifact(context.Background(), sessionID, ref.ID); !errors.Is(err, artifact.ErrCommitted) {
+		t.Fatalf("delete queued attachment error = %v", err)
+	}
 }
 
 func awaitStarted(t *testing.T, p *controlledProvider, want string) {
@@ -292,6 +332,21 @@ func TestEditTurnStartsFromActiveHistoryPrefix(t *testing.T) {
 		t.Fatalf("active history = %#v", history)
 	}
 	prov.releases <- struct{}{}
+}
+
+func TestEditTurnRejectsMessageWithAttachments(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role:    message.RoleUser,
+		Content: "describe",
+		Attachments: []message.AttachmentRef{{
+			ID: "artifact-1", Name: "screen.png", Kind: "image", MediaType: "image/png",
+		}},
+	})
+	_, err := be.EditTurn(context.Background(), sessionID, target, "edited", false, 0)
+	if !errors.Is(err, ErrAttachmentEditUnsupported) {
+		t.Fatalf("edit attachment message error = %v", err)
+	}
 }
 
 func TestEditTurnRequiresConfirmationForRetainedEffects(t *testing.T) {

@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import {
   CheckIcon,
   GripVerticalIcon,
+  ImageIcon,
   ListOrderedIcon,
   LoaderCircleIcon,
   PencilIcon,
@@ -244,12 +245,23 @@ watch(
                 </button>
               </div>
             </template>
-            <p
-              v-else
-              class="line-clamp-2 whitespace-pre-wrap break-words text-[12px] leading-[18px] text-foreground"
-            >
-              {{ item.text }}
-            </p>
+            <template v-else>
+              <p
+                v-if="item.text"
+                class="line-clamp-2 whitespace-pre-wrap break-words text-[12px] leading-[18px] text-foreground"
+              >
+                {{ item.text }}
+              </p>
+              <div
+                v-if="item.attachments?.length"
+                class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
+              >
+                <ImageIcon class="size-3 shrink-0" />
+                <span class="truncate">
+                  {{ item.attachments.map((attachment) => attachment.name).join("、") }}
+                </span>
+              </div>
+            </template>
           </div>
 
           <div

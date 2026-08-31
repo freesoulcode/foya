@@ -72,9 +72,9 @@ func Generate(
 	text, err := c.Complete(ctx, provider.Request{
 		Model:           model,
 		ReasoningEffort: reasoningEffort,
-		Messages: []message.Message{
-			{Role: message.RoleSystem, Content: systemPrompt},
-			{Role: message.RoleUser, Content: fmt.Sprintf(userPromptTpl, source)},
+		Messages: []provider.InputMessage{
+			provider.TextMessage(message.Message{Role: message.RoleSystem, Content: systemPrompt}),
+			provider.TextMessage(message.Message{Role: message.RoleUser, Content: fmt.Sprintf(userPromptTpl, source)}),
 		},
 	})
 	if err != nil {
