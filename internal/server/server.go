@@ -596,27 +596,29 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 
 func publicConnection(connection config.Connection) protocol.ConnectionConfig {
 	return protocol.ConnectionConfig{
-		ID:           connection.ID,
-		Name:         connection.Name,
-		Kind:         connection.Kind,
-		AuthKind:     connection.AuthKind,
-		BaseURL:      connection.BaseURL,
-		HasAPIKey:    connection.APIKey != "",
-		DefaultModel: connection.DefaultModel,
-		SortOrder:    connection.SortOrder,
+		ID:            connection.ID,
+		Name:          connection.Name,
+		Kind:          connection.Kind,
+		AuthKind:      connection.AuthKind,
+		BaseURL:       connection.BaseURL,
+		HasAPIKey:     connection.APIKey != "",
+		DefaultModel:  connection.DefaultModel,
+		ContextWindow: connection.ContextWindow,
+		SortOrder:     connection.SortOrder,
 	}
 }
 
 func toConnection(input protocol.ConnectionConfig) config.Connection {
 	return config.Connection{
-		ID:           input.ID,
-		Name:         input.Name,
-		Kind:         input.Kind,
-		AuthKind:     input.AuthKind,
-		BaseURL:      input.BaseURL,
-		APIKey:       input.APIKey,
-		DefaultModel: input.DefaultModel,
-		SortOrder:    input.SortOrder,
+		ID:            input.ID,
+		Name:          input.Name,
+		Kind:          input.Kind,
+		AuthKind:      input.AuthKind,
+		BaseURL:       input.BaseURL,
+		APIKey:        input.APIKey,
+		DefaultModel:  input.DefaultModel,
+		ContextWindow: input.ContextWindow,
+		SortOrder:     input.SortOrder,
 	}
 }
 

@@ -158,19 +158,25 @@ func loadConnections(cfg config.Config) []config.Connection {
 		return nil
 	}
 	return []config.Connection{{
-		ID:           "default",
-		Name:         "已导入连接",
-		Kind:         legacy.Kind,
-		AuthKind:     "api_key",
-		BaseURL:      legacy.BaseURL,
-		APIKey:       legacy.APIKey,
-		DefaultModel: legacy.Model,
+		ID:            "default",
+		Name:          "已导入连接",
+		Kind:          legacy.Kind,
+		AuthKind:      "api_key",
+		BaseURL:       legacy.BaseURL,
+		APIKey:        legacy.APIKey,
+		DefaultModel:  legacy.Model,
+		ContextWindow: legacy.ContextWindow,
 	}}
 }
 
 // buildProvider 按配置构造 OpenAI 兼容 provider,返回 provider 与默认模型名。
 func buildProvider(pc config.Provider) (provider.Provider, string) {
-	p := openai.New(openai.Config{BaseURL: pc.BaseURL, APIKey: pc.APIKey, Model: pc.Model})
+	p := openai.New(openai.Config{
+		BaseURL:       pc.BaseURL,
+		APIKey:        pc.APIKey,
+		Model:         pc.Model,
+		ContextWindow: pc.ContextWindow,
+	})
 	return p, pc.Model
 }
 

@@ -28,16 +28,20 @@ import (
 
 // Provider 是 OpenAI 兼容 provider。
 type Provider struct {
-	model  string
-	client oai.Client
+	model         string
+	contextWindow int64
+	client        oai.Client
 }
 
 // Config 是 provider 装配参数。
 type Config struct {
-	BaseURL string
-	APIKey  string
-	Model   string
+	BaseURL       string
+	APIKey        string
+	Model         string
+	ContextWindow int64
 }
+
+const defaultContextWindow int64 = 200_000
 
 // New 创建一个 OpenAI 兼容 provider。
 func New(cfg Config) *Provider {
@@ -50,8 +54,9 @@ func New(cfg Config) *Provider {
 		opts = append(opts, option.WithAPIKey(cfg.APIKey))
 	}
 	return &Provider{
-		model:  cfg.Model,
-		client: oai.NewClient(opts...),
+		model:         cfg.Model,
+		contextWindow: cfg.ContextWindow,
+		client:        oai.NewClient(opts...),
 	}
 }
 
@@ -339,13 +344,27 @@ func (p *Provider) ListModels(ctx context.Context) ([]provider.ModelInfo, error)
 	models := make([]provider.ModelInfo, 0, len(page.Data))
 	for _, m := range page.Data {
 		if m.ID != "" {
+			contextWindow := effectiveContextWindow(
+				extractContextWindow(m.JSON.ExtraFields),
+				p.contextWindow,
+			)
 			models = append(models, provider.ModelInfo{
 				ID:            m.ID,
-				ContextWindow: extractContextWindow(m.JSON.ExtraFields),
+				ContextWindow: contextWindow,
 			})
 		}
 	}
 	return models, nil
+}
+
+func effectiveContextWindow(reported, configured int64) int64 {
+	if reported > 0 {
+		return reported
+	}
+	if configured > 0 {
+		return configured
+	}
+	return defaultContextWindow
 }
 
 func extractContextWindow(fields map[string]respjson.Field) int64 {

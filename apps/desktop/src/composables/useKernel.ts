@@ -535,7 +535,7 @@ async function refreshConnections() {
         } catch (cause) {
           return {
             ...connection,
-            models: connection.default_model ? [connection.default_model] : [],
+            models: [],
             context_windows: {},
             models_error: String(cause),
           };
@@ -546,7 +546,7 @@ async function refreshConnections() {
       const first = connectionModels.value.find((connection) => connection.models.length > 0);
       if (first) {
         draft.connectionID = first.id ?? "";
-        draft.model = first.default_model || first.models[0] || "";
+        draft.model = first.models[0] || "";
       }
     }
   } catch (e) {
@@ -611,7 +611,7 @@ function newSession(projectID = "") {
   streaming.value = false;
   const first = connectionModels.value.find((connection) => connection.models.length > 0);
   draft.connectionID = first?.id ?? "";
-  draft.model = first?.default_model || first?.models[0] || "";
+  draft.model = first?.models[0] || "";
   draft.reasoningEffort = "";
   draft.projectID = projectID;
   draft.approvalMode = DEFAULT_APPROVAL;

@@ -54,24 +54,26 @@ var ErrInvalidAgentLimits = errors.New("invalid agent limits")
 
 // Provider 是旧版单连接启动配置(BYOK:用户自带 base_url + key + model)。
 type Provider struct {
-	Kind    string `json:"kind"`
-	BaseURL string `json:"base_url"`
-	APIKey  string `json:"api_key"`
-	Model   string `json:"model"`
+	Kind          string `json:"kind"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Model         string `json:"model"`
+	ContextWindow int64  `json:"context_window,omitempty"`
 }
 
 // Connection 是一个可独立使用的模型账号或端点。
 // 本阶段 AuthKind 固定为 api_key；后续可扩展 oauth_subscription 而不影响
 // Session 的 connection_id + model 绑定关系。
 type Connection struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Kind         string `json:"kind"`
-	AuthKind     string `json:"auth_kind"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key,omitempty"`
-	DefaultModel string `json:"default_model"`
-	SortOrder    int    `json:"sort_order"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`
+	AuthKind      string `json:"auth_kind"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key,omitempty"`
+	DefaultModel  string `json:"default_model"`
+	ContextWindow int64  `json:"context_window,omitempty"`
+	SortOrder     int    `json:"sort_order"`
 	// LegacyDefault is read only to migrate older connection catalogs. The
 	// first connection by SortOrder is now the new-session preference.
 	LegacyDefault bool `json:"is_default,omitempty"`
@@ -79,10 +81,11 @@ type Connection struct {
 
 func (c Connection) Provider() Provider {
 	return Provider{
-		Kind:    c.Kind,
-		BaseURL: c.BaseURL,
-		APIKey:  c.APIKey,
-		Model:   c.DefaultModel,
+		Kind:          c.Kind,
+		BaseURL:       c.BaseURL,
+		APIKey:        c.APIKey,
+		Model:         c.DefaultModel,
+		ContextWindow: c.ContextWindow,
 	}
 }
 
@@ -113,10 +116,11 @@ func envInt(name string, fallback int) int {
 // providerFromEnv 从环境变量装配 provider 配置。
 func providerFromEnv() Provider {
 	return Provider{
-		Kind:    "openai",
-		BaseURL: os.Getenv("FOYA_PROVIDER_BASE_URL"),
-		APIKey:  os.Getenv("FOYA_PROVIDER_API_KEY"),
-		Model:   os.Getenv("FOYA_PROVIDER_MODEL"),
+		Kind:          "openai",
+		BaseURL:       os.Getenv("FOYA_PROVIDER_BASE_URL"),
+		APIKey:        os.Getenv("FOYA_PROVIDER_API_KEY"),
+		Model:         os.Getenv("FOYA_PROVIDER_MODEL"),
+		ContextWindow: int64(envInt("FOYA_PROVIDER_CONTEXT_WINDOW", 0)),
 	}
 }
 

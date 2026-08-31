@@ -241,6 +241,11 @@ const pickerModelLabel = computed(() => pickerModel.value ?? props.model);
 const pickerConnectionLabel = computed(
   () => pickerConnectionID.value ?? props.connectionId
 );
+const availableConnections = computed(() =>
+  props.connections.filter(
+    (connection) => connection.models.length > 0 && !connection.models_error
+  )
+);
 const pickerReasoningLabel = computed(
   () => pickerReasoningEffort.value ?? props.reasoningEffort
 );
@@ -532,7 +537,7 @@ function onKeydown(e: KeyboardEvent) {
 
                   <template v-else>
                     <section
-                      v-for="connection in connections"
+                      v-for="connection in availableConnections"
                       :key="connection.id"
                       class="mb-2 last:mb-0"
                     >
@@ -560,20 +565,14 @@ function onKeydown(e: KeyboardEvent) {
                           <ChevronDownIcon class="size-4 -rotate-90" />
                         </span>
                       </button>
-                      <p
-                        v-if="connection.models.length === 0"
-                        class="px-2.5 py-1 text-[11px] text-muted-foreground"
-                      >
-                        {{ connection.models_error || "该连接没有可用模型" }}
-                      </p>
                     </section>
                   </template>
 
                   <p
-                    v-if="!modelsLoading && !modelsError && connections.length === 0"
+                    v-if="!modelsLoading && !modelsError && availableConnections.length === 0"
                     class="px-2.5 py-2 text-[12px] text-muted-foreground"
                   >
-                    尚未添加模型连接，请先在设置中添加 API 连接。
+                    没有可用模型，请在设置中检查模型连接。
                   </p>
                 </div>
 

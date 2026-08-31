@@ -195,6 +195,7 @@ export interface ConnectionConfig {
   auth_kind: "api_key";
   base_url: string;
   default_model: string;
+  context_window?: number;
   api_key?: string;
   has_api_key?: boolean;
   sort_order: number;

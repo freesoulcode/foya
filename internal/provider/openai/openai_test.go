@@ -30,6 +30,18 @@ func TestExtractContextWindow(t *testing.T) {
 	}
 }
 
+func TestEffectiveContextWindowPrecedence(t *testing.T) {
+	if got := effectiveContextWindow(128_000, 64_000); got != 128_000 {
+		t.Fatalf("reported context window = %d", got)
+	}
+	if got := effectiveContextWindow(0, 64_000); got != 64_000 {
+		t.Fatalf("configured context window = %d", got)
+	}
+	if got := effectiveContextWindow(0, 0); got != 200_000 {
+		t.Fatalf("default context window = %d", got)
+	}
+}
+
 func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

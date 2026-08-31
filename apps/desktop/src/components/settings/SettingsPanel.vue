@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import {
   ArrowLeftIcon,
+  AlertCircleIcon,
   BlocksIcon,
   BotIcon,
   BookOpenIcon,
@@ -84,7 +85,7 @@ type SettingsSection =
   | "appearance";
 interface DragPreview {
   name: string;
-  model: string;
+  detail: string;
   x: number;
   y: number;
   width: number;
@@ -94,9 +95,11 @@ const connections = ref<ConnectionConfig[]>([]);
 const selectedID = ref<string | null>(null);
 const name = ref("");
 const baseURL = ref("");
-const defaultModel = ref("");
+const contextWindowValue = ref("");
+const contextWindowUnit = ref<"K" | "M">("K");
 const apiKey = ref("");
 const hasKey = ref(false);
+const connectionErrors = ref<Record<string, string>>({});
 const loading = ref(false);
 const saving = ref(false);
 const deleting = ref(false);
@@ -185,16 +188,60 @@ const themeOptions: Array<{ value: Theme; label: string; icon: typeof SunIcon }>
 const selectedConnection = computed(
   () => connections.value.find((connection) => connection.id === selectedID.value) ?? null
 );
+const selectedConnectionError = computed(
+  () => connectionErrors.value[selectedID.value ?? ""] ?? ""
+);
 const isNewConnection = computed(() => selectedID.value === null);
 
 function resetForm(connection?: ConnectionConfig) {
   selectedID.value = connection?.id ?? null;
   name.value = connection?.name ?? "";
   baseURL.value = connection?.base_url ?? "";
-  defaultModel.value = connection?.default_model ?? "";
+  setContextWindow(connection?.context_window);
   hasKey.value = Boolean(connection?.has_api_key);
   apiKey.value = "";
   error.value = "";
+}
+
+function setContextWindow(value?: number) {
+  if (!value || value <= 0) {
+    contextWindowValue.value = "";
+    contextWindowUnit.value = "K";
+    return;
+  }
+  contextWindowUnit.value = value >= 1_000_000 ? "M" : "K";
+  const divisor = contextWindowUnit.value === "M" ? 1_000_000 : 1_000;
+  contextWindowValue.value = String(value / divisor);
+}
+
+function parseContextWindow(): number {
+  const normalized = contextWindowValue.value.trim();
+  if (!normalized) return 0;
+  const multiplier = contextWindowUnit.value === "M" ? 1_000_000 : 1_000;
+  const parsed = Math.round(Number(normalized) * multiplier);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error("上下文窗口必须是正数");
+  }
+  return parsed;
+}
+
+function selectContextWindowUnit(value: unknown) {
+  if (value === "K" || value === "M") contextWindowUnit.value = value;
+}
+
+async function checkConnection(connection: ConnectionConfig) {
+  const id = connection.id ?? "";
+  if (!id) return;
+  try {
+    const catalog = await api.listConnectionModels(id);
+    const message = catalog.models.length === 0 ? "未发现可用模型" : "";
+    connectionErrors.value = { ...connectionErrors.value, [id]: message };
+  } catch (cause) {
+    connectionErrors.value = {
+      ...connectionErrors.value,
+      [id]: String(cause),
+    };
+  }
 }
 
 async function loadConnections() {
@@ -202,6 +249,8 @@ async function loadConnections() {
   error.value = "";
   try {
     connections.value = await api.listConnections();
+    connectionErrors.value = {};
+    await Promise.all(connections.value.map(checkConnection));
     const current = connections.value.find((connection) => connection.id === selectedID.value);
     resetForm(current ?? connections.value[0]);
   } catch (cause) {
@@ -637,7 +686,8 @@ function formPayload(): ConnectionConfig {
     kind: "openai",
     auth_kind: "api_key",
     base_url: baseURL.value.trim(),
-    default_model: defaultModel.value.trim(),
+    default_model: selectedConnection.value?.default_model ?? "",
+    context_window: parseContextWindow(),
     sort_order: selectedConnection.value?.sort_order ?? connections.value.length,
     ...(apiKey.value.trim() ? { api_key: apiKey.value.trim() } : {}),
   };
@@ -655,6 +705,7 @@ async function save() {
     if (index >= 0) connections.value[index] = saved;
     else connections.value.push(saved);
     resetForm(saved);
+    await checkConnection(saved);
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -674,7 +725,7 @@ function beginPointerDrag(event: PointerEvent, connection: ConnectionConfig) {
   const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
   dragPreview.value = {
     name: connection.name,
-    model: connection.default_model,
+    detail: connection.base_url,
     x: event.clientX + 14,
     y: event.clientY + 14,
     width: bounds.width,
@@ -757,7 +808,11 @@ async function remove() {
   error.value = "";
   try {
     await api.deleteConnection(selectedID.value);
+    const removedID = selectedID.value;
     connections.value = connections.value.filter((connection) => connection.id !== selectedID.value);
+    const remainingErrors = { ...connectionErrors.value };
+    delete remainingErrors[removedID];
+    connectionErrors.value = remainingErrors;
     resetForm(connections.value[0]);
   } catch (cause) {
     error.value = String(cause);
@@ -857,12 +912,18 @@ async function remove() {
                     />
                     <button
                       type="button"
-                      class="min-w-0 flex-1 px-2.5 py-2 text-left"
+                      class="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
                     >
-                      <span class="block truncate text-sm font-medium">{{ connection.name }}</span>
-                      <span class="block truncate text-xs text-muted-foreground">
-                        {{ connection.default_model || "未设置默认模型" }}
+                      <span class="min-w-0 flex-1">
+                        <span class="block truncate text-sm font-medium">{{ connection.name }}</span>
+                        <span class="block truncate text-xs text-muted-foreground">
+                          {{ connectionErrors[connection.id ?? ""] ? "连接检查失败" : connection.base_url }}
+                        </span>
                       </span>
+                      <AlertCircleIcon
+                        v-if="connectionErrors[connection.id ?? '']"
+                        class="size-4 shrink-0 text-destructive"
+                      />
                     </button>
                   </div>
                 </template>
@@ -910,8 +971,30 @@ async function remove() {
                   />
                 </div>
                 <div class="space-y-1.5">
-                  <Label for="connection-model">默认模型</Label>
-                  <Input id="connection-model" v-model="defaultModel" placeholder="例如：gpt-5" :disabled="loading" />
+                  <Label for="connection-context-window">上下文窗口（可选）</Label>
+                  <div class="flex gap-2">
+                    <Input
+                      id="connection-context-window"
+                      v-model="contextWindowValue"
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      placeholder="默认 200"
+                      :disabled="loading"
+                    />
+                    <Select
+                      :model-value="contextWindowUnit"
+                      @update:model-value="selectContextWindowUnit"
+                    >
+                      <SelectTrigger class="w-24 shrink-0">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="K">K</SelectItem>
+                        <SelectItem value="M">M</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <div class="space-y-1.5">
                   <Label for="connection-key">API Key</Label>
@@ -924,6 +1007,13 @@ async function remove() {
                   />
                 </div>
                 <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+                <div
+                  v-if="selectedConnectionError"
+                  class="flex items-start gap-2 text-sm text-destructive"
+                >
+                  <AlertCircleIcon class="mt-0.5 size-4 shrink-0" />
+                  <span class="break-all">{{ selectedConnectionError }}</span>
+                </div>
                 <div class="flex justify-end pt-2">
                   <Button :disabled="saving || deleting || loading" @click="save">
                     <KeyRoundIcon class="size-4" />
@@ -1494,7 +1584,7 @@ async function remove() {
         <div class="min-w-0">
           <span class="block truncate text-sm font-medium">{{ dragPreview.name }}</span>
           <span class="block truncate text-xs text-muted-foreground">
-            {{ dragPreview.model || "未设置默认模型" }}
+            {{ dragPreview.detail }}
           </span>
         </div>
       </div>

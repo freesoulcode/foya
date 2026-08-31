@@ -35,9 +35,11 @@ const progressClass = computed(() => {
 });
 
 function compactTokens(value: number) {
-  if (value < 1024) return String(value);
-  const scaled = value / 1024;
-  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)}K`;
+  if (value < 1_000) return String(value);
+  const divisor = value >= 1_000_000 ? 1_000_000 : 1_000;
+  const suffix = value >= 1_000_000 ? "M" : "K";
+  const scaled = value / divisor;
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1).replace(/\.0$/, "")}${suffix}`;
 }
 
 function exactTokens(value: number) {
@@ -96,7 +98,7 @@ function percent(value: number) {
         </dd>
         <template v-if="contextWindow">
           <dt class="text-muted-foreground">模型窗口</dt>
-          <dd class="tabular-nums text-foreground">{{ exactTokens(contextWindow) }}</dd>
+          <dd class="tabular-nums text-foreground">{{ compactTokens(contextWindow) }}</dd>
         </template>
       </dl>
     </HoverCardContent>

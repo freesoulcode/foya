@@ -886,6 +886,9 @@ func (b *Backend) SetConnections(connections []config.Connection) {
 }
 
 func (b *Backend) CreateConnection(input config.Connection) (config.Connection, error) {
+	if input.ContextWindow < 0 {
+		return config.Connection{}, fmt.Errorf("context_window must be zero or greater")
+	}
 	if input.ID == "" {
 		input.ID = newConnectionID()
 	}
@@ -919,6 +922,9 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 	current, exists := b.Connection(id)
 	if !exists {
 		return config.Connection{}, fmt.Errorf("%w: %q", ErrConnectionNotFound, id)
+	}
+	if patch.ContextWindow < 0 {
+		return config.Connection{}, fmt.Errorf("context_window must be zero or greater")
 	}
 	patch.ID = id
 	if patch.Name == "" {

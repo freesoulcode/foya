@@ -76,15 +76,16 @@ type UpdateQueuedMessageRequest struct {
 // ConnectionConfig is the public, redacted Connection representation.
 // APIKey is accepted only on writes; reads expose HasAPIKey instead.
 type ConnectionConfig struct {
-	ID           string `json:"id,omitempty"`
-	Name         string `json:"name"`
-	Kind         string `json:"kind"`
-	AuthKind     string `json:"auth_kind"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key,omitempty"`
-	HasAPIKey    bool   `json:"has_api_key,omitempty"`
-	DefaultModel string `json:"default_model"`
-	SortOrder    int    `json:"sort_order"`
+	ID            string `json:"id,omitempty"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`
+	AuthKind      string `json:"auth_kind"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key,omitempty"`
+	HasAPIKey     bool   `json:"has_api_key,omitempty"`
+	DefaultModel  string `json:"default_model"`
+	ContextWindow int64  `json:"context_window,omitempty"`
+	SortOrder     int    `json:"sort_order"`
 }
 
 type ConnectionModelsResponse struct {

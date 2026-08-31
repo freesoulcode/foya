@@ -41,17 +41,21 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	}
 
 	var connection connectionResponse
-	if code := requestJSON(t, handler, http.MethodPost, "/connections", map[string]string{
-		"name":          "DeepSeek",
-		"kind":          "openai",
-		"auth_kind":     "api_key",
-		"base_url":      "https://api.deepseek.com/v1",
-		"api_key":       "secret",
-		"default_model": "deepseek-chat",
+	if code := requestJSON(t, handler, http.MethodPost, "/connections", map[string]any{
+		"name":           "DeepSeek",
+		"kind":           "openai",
+		"auth_kind":      "api_key",
+		"base_url":       "https://api.deepseek.com/v1",
+		"api_key":        "secret",
+		"default_model":  "deepseek-chat",
+		"context_window": 256000,
 	}, &connection); code != http.StatusCreated {
 		t.Fatalf("create connection status = %d", code)
 	}
-	if connection.APIKey != "" || !connection.HasAPIKey || connection.ID == "" {
+	if connection.APIKey != "" ||
+		!connection.HasAPIKey ||
+		connection.ID == "" ||
+		connection.ContextWindow != 256000 {
 		t.Fatalf("public connection = %#v", connection)
 	}
 
@@ -79,9 +83,10 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 }
 
 type connectionResponse struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	APIKey       string `json:"api_key"`
-	HasAPIKey    bool   `json:"has_api_key"`
-	DefaultModel string `json:"default_model"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	APIKey        string `json:"api_key"`
+	HasAPIKey     bool   `json:"has_api_key"`
+	DefaultModel  string `json:"default_model"`
+	ContextWindow int64  `json:"context_window"`
 }
