@@ -14,6 +14,7 @@ type Message struct {
 	ID          string                  `json:"id"`
 	SessionID   string                  `json:"session_id"`
 	Text        string                  `json:"text"`
+	Command     string                  `json:"command,omitempty"`
 	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
 	Position    int                     `json:"position"`
 	CreatedAt   time.Time               `json:"created_at"`
@@ -32,6 +33,7 @@ func NewMessage(sessionID string, input message.UserInput, position int) Message
 		ID:          newID(),
 		SessionID:   sessionID,
 		Text:        input.Text,
+		Command:     input.Command,
 		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
 		Position:    position,
 		CreatedAt:   now,

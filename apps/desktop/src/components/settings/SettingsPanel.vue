@@ -7,6 +7,7 @@ import {
   BotIcon,
   BookOpenIcon,
   BrainIcon,
+  CommandIcon,
   DownloadIcon,
   FileJsonIcon,
   GlobeIcon,
@@ -65,6 +66,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import ContextItemsSettings from "@/components/settings/ContextItemsSettings.vue";
+import CommandsSettings from "@/components/settings/CommandsSettings.vue";
 import HooksSettings from "@/components/settings/HooksSettings.vue";
 import {
   Dialog,
@@ -85,6 +87,7 @@ type SettingsSection =
   | "rules"
   | "memory"
   | "skills"
+  | "commands"
   | "hooks"
   | "mcp"
   | "web-search"
@@ -187,6 +190,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
   { id: "rules", label: "规则", icon: ScrollTextIcon },
   { id: "memory", label: "记忆", icon: BrainIcon },
   { id: "skills", label: "技能", icon: BookOpenIcon },
+  { id: "commands", label: "命令", icon: CommandIcon },
   { id: "hooks", label: "Hooks", icon: FileJsonIcon },
   { id: "mcp", label: "MCP", icon: BlocksIcon },
   { id: "web-search", label: "联网搜索", icon: GlobeIcon },
@@ -228,7 +232,7 @@ function setContextWindow(value?: number) {
 }
 
 function parseContextWindow(): number {
-  const normalized = contextWindowValue.value.trim();
+  const normalized = String(contextWindowValue.value ?? "").trim();
   if (!normalized) return 0;
   const multiplier = contextWindowUnit.value === "M" ? 1_000_000 : 1_000;
   const parsed = Math.round(Number(normalized) * multiplier);
@@ -1139,6 +1143,10 @@ async function remove() {
         <HooksSettings
           v-else-if="section === 'hooks'"
           :current-project-id="props.currentProjectId"
+        />
+        <CommandsSettings
+          v-else-if="section === 'commands'"
+          :current-project-id="currentProjectId"
         />
 
         <div v-else-if="section === 'skills'" class="mx-auto w-full max-w-3xl p-6">

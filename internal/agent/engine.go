@@ -24,6 +24,7 @@ import (
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/title"
 	"github.com/freesoulcode/foya/internal/tool"
+	"github.com/freesoulcode/foya/internal/workflow"
 )
 
 // maxToolStepsUnlimited 表示不设步数上限(交互式桌面默认)。
@@ -85,9 +86,11 @@ type Engine struct {
 		ruleIndex []string,
 		memories []string,
 	)
-	usageObserver func(sessionID string, usage provider.Usage)
-	modelWindows  map[string]int64
-	catalogLoaded bool
+	usageObserver    func(sessionID string, usage provider.Usage)
+	workflowPolicy   func(sessionID string) (workflow.Policy, bool)
+	workflowComplete func(sessionID, content string) error
+	modelWindows     map[string]int64
+	catalogLoaded    bool
 
 	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
@@ -135,6 +138,24 @@ func (e *Engine) SetUsageObserver(observer func(string, provider.Usage)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.usageObserver = observer
+}
+
+// SetWorkflowPolicyResolver supplies explicit workflow constraints. The
+// resolver is evaluated for every model step, so state transitions immediately
+// update both the system instruction and visible tool surface.
+func (e *Engine) SetWorkflowPolicyResolver(resolve func(string) (workflow.Policy, bool)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workflowPolicy = resolve
+}
+
+// SetWorkflowCompletionHandler installs the kernel-owned persistence hook for
+// a final workflow response. It intentionally runs after model completion so
+// workflow state never appears as a model-visible tool call.
+func (e *Engine) SetWorkflowCompletionHandler(handler func(sessionID, content string) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workflowComplete = handler
 }
 
 func (e *Engine) observeUsage(sessionID string, usage provider.Usage) {
@@ -743,6 +764,7 @@ func (e *Engine) runTurn(
 	userMsg := message.Message{
 		Role:        message.RoleUser,
 		Content:     userText,
+		Command:     input.Command,
 		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
 	}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
@@ -980,6 +1002,9 @@ Inspect the current project tree before modifying files; do not assume it matche
 					)
 					continue
 				}
+			}
+			if err := e.completeWorkflow(sessionID, accText); err != nil {
+				e.emit(ctx, sessionID, event.KindError, "保存工作流失败: "+err.Error(), true)
 			}
 			break
 		}
@@ -1246,27 +1271,34 @@ func (e *Engine) executeTool(ctx context.Context, sessionID string, tc message.T
 
 func (e *Engine) toolDefsForSession(sessionID string) []provider.ToolDef {
 	defs := e.tools.Specs()
-	if e.sessions == nil {
-		return defs
-	}
-	s, ok := e.sessions.Get(sessionID)
-	if !ok || s.AllowedTools == nil {
-		return defs
-	}
-	allowed := make(map[string]bool, len(s.AllowedTools))
-	for _, name := range s.AllowedTools {
-		allowed[name] = true
-	}
-	filtered := defs[:0]
-	for _, def := range defs {
-		if allowed[def.Function.Name] {
-			filtered = append(filtered, def)
+	if e.sessions != nil {
+		s, ok := e.sessions.Get(sessionID)
+		if ok && s.AllowedTools != nil {
+			allowed := make(map[string]bool, len(s.AllowedTools))
+			for _, name := range s.AllowedTools {
+				allowed[name] = true
+			}
+			filtered := defs[:0]
+			for _, def := range defs {
+				if allowed[def.Function.Name] {
+					filtered = append(filtered, def)
+				}
+			}
+			defs = filtered
 		}
 	}
-	return filtered
+	if policy, ok := e.workflowPolicyForSession(sessionID); ok {
+		return filterToolDefs(defs, policy.AllowedTools)
+	}
+	return defs
 }
 
 func (e *Engine) toolAllowed(sessionID, name string) bool {
+	if policy, ok := e.workflowPolicyForSession(sessionID); ok {
+		if !toolNameAllowed(policy.AllowedTools, name) {
+			return false
+		}
+	}
 	if e.sessions == nil {
 		return true
 	}
@@ -1283,13 +1315,62 @@ func (e *Engine) toolAllowed(sessionID, name string) bool {
 }
 
 func (e *Engine) agentInstructions(sessionID string) string {
+	var instructions []string
 	if e.sessions == nil {
+		if policy, ok := e.workflowPolicyForSession(sessionID); ok {
+			return policy.Instructions
+		}
 		return ""
 	}
 	if s, ok := e.sessions.Get(sessionID); ok {
-		return s.AgentInstructions
+		instructions = append(instructions, s.AgentInstructions)
 	}
-	return ""
+	if policy, ok := e.workflowPolicyForSession(sessionID); ok {
+		instructions = append(instructions, policy.Instructions)
+	}
+	return strings.TrimSpace(strings.Join(instructions, "\n\n"))
+}
+
+func (e *Engine) workflowPolicyForSession(sessionID string) (workflow.Policy, bool) {
+	e.mu.RLock()
+	resolve := e.workflowPolicy
+	e.mu.RUnlock()
+	if resolve == nil {
+		return workflow.Policy{}, false
+	}
+	return resolve(sessionID)
+}
+
+func (e *Engine) completeWorkflow(sessionID, content string) error {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	e.mu.RLock()
+	complete := e.workflowComplete
+	e.mu.RUnlock()
+	if complete == nil {
+		return nil
+	}
+	return complete(sessionID, content)
+}
+
+func filterToolDefs(defs []provider.ToolDef, allowed []string) []provider.ToolDef {
+	filtered := make([]provider.ToolDef, 0, len(defs))
+	for _, def := range defs {
+		if toolNameAllowed(allowed, def.Function.Name) {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+func toolNameAllowed(allowed []string, name string) bool {
+	for _, item := range allowed {
+		if item == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) persistentContext(

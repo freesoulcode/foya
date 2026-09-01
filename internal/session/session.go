@@ -38,6 +38,15 @@ const (
 	PhaseCompact Phase = "compaction"
 )
 
+// AgentMode controls the tool surface independently from a transient turn phase.
+type AgentMode string
+
+const (
+	AgentModeExecute   AgentMode = "execute"
+	AgentModePlan      AgentMode = "plan"
+	AgentModePlanReady AgentMode = "plan_ready"
+)
+
 // ReasoningEffort 是推理模型的会话级推理强度。
 // 空值表示不覆盖模型服务的默认行为。
 type ReasoningEffort string
@@ -68,6 +77,8 @@ type Session struct {
 	AgentName       string          `json:"agent_name,omitempty"`
 	AgentDigest     string          `json:"agent_digest,omitempty"`
 	Phase           Phase           `json:"phase"`
+	AgentMode       AgentMode       `json:"agent_mode,omitempty"`
+	PrePlanMode     AgentMode       `json:"pre_plan_mode,omitempty"`
 	ConnectionID    string          `json:"connection_id"`
 	Model           string          `json:"model"`
 	ReasoningEffort ReasoningEffort `json:"reasoning_effort,omitempty"`
@@ -123,6 +134,7 @@ type Manager interface {
 	Update(id string, connectionID, model, reasoningEffort, projectID, approvalMode *string) (*Session, error)
 	// SetPhase 更新由内核控制的执行阶段。
 	SetPhase(id string, phase Phase) (*Session, error)
+	SetAgentMode(id string, mode, prePlanMode AgentMode) (*Session, error)
 	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
 	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
 	// AI 结果永不覆盖手动改名。
@@ -190,6 +202,9 @@ func NewPersistentManager(dataDir string) (Manager, error) {
 		}
 		item := stored.Session
 		item.Phase = PhaseIdle
+		if item.AgentMode == "" {
+			item.AgentMode = AgentModeExecute
+		}
 		item.AgentInstructions = stored.AgentInstructions
 		item.AllowedTools = append([]string(nil), stored.AllowedTools...)
 		item.AgentMaxTurns = stored.AgentMaxTurns
@@ -224,6 +239,7 @@ func (m *memManager) Create(opts CreateOptions) (*Session, error) {
 		AgentName:         opts.AgentName,
 		AgentDigest:       opts.AgentDigest,
 		Phase:             PhaseIdle,
+		AgentMode:         AgentModeExecute,
 		ConnectionID:      opts.ConnectionID,
 		Model:             opts.Model,
 		ReasoningEffort:   opts.ReasoningEffort,
@@ -312,6 +328,27 @@ func (m *memManager) SetPhase(id string, phase Phase) (*Session, error) {
 		return nil, ErrNotFound
 	}
 	s.Phase = phase
+	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (m *memManager) SetAgentMode(id string, mode, prePlanMode AgentMode) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	switch mode {
+	case AgentModeExecute, AgentModePlan, AgentModePlanReady:
+	default:
+		return nil, fmt.Errorf("invalid agent mode %q", mode)
+	}
+	s.AgentMode = mode
+	s.PrePlanMode = prePlanMode
 	s.UpdatedAt = time.Now()
 	if err := m.persistLocked(); err != nil {
 		return nil, err

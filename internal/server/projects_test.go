@@ -128,17 +128,6 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 	if createdSession.ProjectID != createdProject.ID {
 		t.Fatalf("session project = %q, want %q", createdSession.ProjectID, createdProject.ID)
 	}
-	if code := requestJSON(
-		t,
-		handler,
-		http.MethodDelete,
-		"/projects/"+createdProject.ID,
-		nil,
-		nil,
-	); code != http.StatusConflict {
-		t.Fatalf("in-use project delete status = %d, want %d", code, http.StatusConflict)
-	}
-
 	var items []skill.Skill
 	if code := requestJSON(
 		t,
@@ -152,6 +141,22 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Ref != "project:"+createdProject.ID+":review" {
 		t.Fatalf("project skills = %#v", items)
+	}
+	if code := requestJSON(
+		t,
+		handler,
+		http.MethodDelete,
+		"/projects/"+createdProject.ID,
+		nil,
+		nil,
+	); code != http.StatusNoContent {
+		t.Fatalf("in-use project delete status = %d, want %d", code, http.StatusNoContent)
+	}
+	if _, ok := sessions.Get(createdSession.ID); ok {
+		t.Fatal("project-bound session remains after project deletion")
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("project deletion removed project files: %v", err)
 	}
 
 	if code := requestJSON(t, handler, http.MethodPost, "/sessions", map[string]string{

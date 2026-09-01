@@ -303,7 +303,7 @@ func runProjects(args []string) {
 		return
 	}
 	if len(args) == 2 && args[0] == "delete" {
-		if err := app.Backend().DeleteProject(args[1]); err != nil {
+		if err := app.Backend().DeleteProject(context.Background(), args[1]); err != nil {
 			fatal(err)
 		}
 		return

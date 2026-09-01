@@ -772,6 +772,91 @@ async fn update_hooks(request: serde_json::Value) -> Result<String, String> {
 
 #[cfg(unix)]
 #[tauri::command]
+async fn list_commands(scope: String, project_id: String) -> Result<String, String> {
+    let mut path = format!("/commands?scope={}", encode_query_component(&scope));
+    if !project_id.is_empty() {
+        path.push_str("&project_id=");
+        path.push_str(&encode_query_component(&project_id));
+    }
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn create_command(request: serde_json::Value) -> Result<String, String> {
+    kernel::request("POST", "/commands", Some(&request.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_command(command_ref: String, request: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "PATCH",
+        &format!("/commands/{}", encode_query_component(&command_ref)),
+        Some(&request.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_command(
+    command_ref: String,
+    scope: String,
+    project_id: String,
+) -> Result<(), String> {
+    let mut path = format!(
+        "/commands/{}?scope={}",
+        encode_query_component(&command_ref),
+        encode_query_component(&scope),
+    );
+    if !project_id.is_empty() {
+        path.push_str("&project_id=");
+        path.push_str(&encode_query_component(&project_id));
+    }
+    kernel::request("DELETE", &path, None).await.map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_session_commands(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/commands"), None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn execute_command(session_id: String, name: String, args: String) -> Result<String, String> {
+    let body = serde_json::json!({ "args": args }).to_string();
+    kernel::request(
+        "POST",
+        &format!(
+            "/sessions/{session_id}/commands/{}",
+            encode_query_component(&name)
+        ),
+        Some(&body),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_workflow(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/workflow"), None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn approve_workflow(session_id: String, workflow_id: String) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/workflow/{workflow_id}/approve"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn list_projects() -> Result<String, String> {
     kernel::request("GET", "/projects", None).await
 }
@@ -1052,6 +1137,35 @@ async fn resolve_approval(
         "POST",
         &format!("/sessions/{session_id}/approvals/{request_id}"),
         Some(&body),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn answer_questions(
+    session_id: String,
+    batch_id: String,
+    answers: serde_json::Value,
+) -> Result<(), String> {
+    let body = serde_json::json!({ "answers": answers }).to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/questions/{batch_id}/answer"),
+        Some(&body),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn cancel_questions(session_id: String, batch_id: String) -> Result<(), String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/questions/{batch_id}/cancel"),
+        None,
     )
     .await
     .map(|_| ())
@@ -1544,6 +1658,22 @@ async fn resolve_approval(
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn answer_questions(
+    _session_id: String,
+    _batch_id: String,
+    _answers: serde_json::Value,
+) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn cancel_questions(_session_id: String, _batch_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn cancel_turn(_session_id: String) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -1599,6 +1729,65 @@ async fn get_hooks(_scope: String, _project_id: String) -> Result<String, String
 #[cfg(not(unix))]
 #[tauri::command]
 async fn update_hooks(_request: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_commands(_scope: String, _project_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn create_command(_request: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_command(
+    _command_ref: String,
+    _request: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_command(
+    _command_ref: String,
+    _scope: String,
+    _project_id: String,
+) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_session_commands(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn execute_command(
+    _session_id: String,
+    _name: String,
+    _args: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_workflow(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn approve_workflow(_session_id: String, _workflow_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
 
@@ -1818,6 +2007,14 @@ pub fn run() {
             update_memory_settings,
             get_hooks,
             update_hooks,
+            list_commands,
+            create_command,
+            update_command,
+            delete_command,
+            list_session_commands,
+            execute_command,
+            get_workflow,
+            approve_workflow,
             list_projects,
             register_project,
             update_project,
@@ -1859,6 +2056,8 @@ pub fn run() {
             delete_project_entry,
             resolve_project_path,
             resolve_approval,
+            answer_questions,
+            cancel_questions,
             cancel_turn,
             delete_session
         ])

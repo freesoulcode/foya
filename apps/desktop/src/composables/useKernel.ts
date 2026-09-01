@@ -16,6 +16,9 @@ import {
   type AgentBudget,
   type ToolCallView,
   type AttachmentRef,
+  type WorkflowRecord,
+  type PendingQuestionBatch,
+  type QuestionAnswer,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -77,6 +80,7 @@ const queuedBySession = ref<Record<string, QueuedMessage[]>>({});
 const usageBySession = ref<Record<string, ContextUsage>>({});
 const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
 const agentBudgetBySession = ref<Record<string, AgentBudget>>({});
+const workflowsBySession = ref<Record<string, WorkflowRecord | null>>({});
 
 // 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
 export interface PendingApproval {
@@ -90,6 +94,7 @@ export interface PendingApproval {
   scope?: string;
 }
 const pendingApprovals = ref<Record<string, PendingApproval>>({});
+const pendingQuestions = ref<Record<string, PendingQuestionBatch>>({});
 
 export interface PendingHistoryEdit {
   sessionId: string;
@@ -423,6 +428,16 @@ function handleEvent(sessionId: string, data: string) {
       delete pendingApprovals.value[p.id];
       break;
     }
+    case "question_requested": {
+      const p = ev.payload as PendingQuestionBatch;
+      if (p?.id && p.questions?.length) pendingQuestions.value[p.id] = p;
+      break;
+    }
+    case "question_resolved": {
+      const p = ev.payload as { id?: string };
+      if (p?.id) delete pendingQuestions.value[p.id];
+      break;
+    }
     case "turn_started": {
       const p = ev.payload as { started_at?: string } | null;
       runningSessions.value[sessionId] = true;
@@ -497,6 +512,9 @@ function handleEvent(sessionId: string, data: string) {
       removeSession(id);
       break;
     }
+    case "workflow_updated":
+      workflowsBySession.value[sessionId] = ev.payload as WorkflowRecord;
+      break;
     case "error": {
       // 优先填入当前回合的空 assistant 气泡,避免多出一条错误消息。
       delete runningSessions.value[sessionId];
@@ -716,16 +734,18 @@ async function select(id: string) {
     messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
-  const [queued, usage, agentRuns, agentBudget] = await Promise.all([
+  const [queued, usage, agentRuns, agentBudget, workflow] = await Promise.all([
     api.listQueuedMessages(id),
     api.loadUsage(id),
     api.listAgentRuns(id),
     api.loadAgentBudget(id),
+    api.getWorkflow(id),
   ]);
   queuedBySession.value[id] = queued;
   if (usage) usageBySession.value[id] = usage;
   else delete usageBySession.value[id];
   agentBudgetBySession.value[id] = agentBudget;
+  workflowsBySession.value[id] = workflow;
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
@@ -765,6 +785,9 @@ function removeSession(id: string) {
   for (const [aid, a] of Object.entries(pendingApprovals.value)) {
     if (a.session === id) delete pendingApprovals.value[aid];
   }
+  for (const [batchID, batch] of Object.entries(pendingQuestions.value)) {
+    if (batch.session_id === id) delete pendingQuestions.value[batchID];
+  }
   if (activeId.value === id) {
     const next = sessions.value[0];
     if (next) {
@@ -792,6 +815,20 @@ async function resolveApproval(
 ) {
   await api.resolveApproval(sessionId, requestId, decision);
   delete pendingApprovals.value[requestId];
+}
+
+async function answerQuestions(
+  sessionId: string,
+  batchId: string,
+  answers: QuestionAnswer[]
+) {
+  await api.answerQuestions(sessionId, batchId, answers);
+  delete pendingQuestions.value[batchId];
+}
+
+async function cancelQuestions(sessionId: string, batchId: string) {
+  await api.cancelQuestions(sessionId, batchId);
+  delete pendingQuestions.value[batchId];
 }
 
 // 中断当前会话正在运行的回合(用户点停止)。后端会传播 ctx 取消,
@@ -978,6 +1015,13 @@ async function dispatchQueuedMessage(messageId: string) {
   }
 }
 
+async function approveWorkflow(id: string) {
+  const workflow = workflowsBySession.value[id];
+  if (!workflow || workflow.status !== "ready") return;
+  const result = await api.approveWorkflow(id, workflow.id);
+  workflowsBySession.value[id] = result.workflow;
+}
+
 export function useKernel() {
   return {
     ready,
@@ -1000,7 +1044,9 @@ export function useKernel() {
     contextUsage: activeUsage,
     agentRunsBySession,
     agentBudgetBySession,
+    workflowsBySession,
     pendingApprovals,
+    pendingQuestions,
     pendingHistoryEdit,
     connect,
     newSession,
@@ -1019,7 +1065,10 @@ export function useKernel() {
     reorderQueuedMessage,
     deleteQueuedMessage,
     dispatchQueuedMessage,
+    approveWorkflow,
     resolveApproval,
+    answerQuestions,
+    cancelQuestions,
     refreshConnections,
     refreshProjects,
     registerProject,

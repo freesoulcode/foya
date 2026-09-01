@@ -9,6 +9,7 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
+	"github.com/freesoulcode/foya/internal/question"
 	"github.com/freesoulcode/foya/internal/queue"
 )
 
@@ -147,6 +148,11 @@ type TerminalResizeRequest struct {
 type ApprovalDecisionRequest struct {
 	RequestID string `json:"request_id"`
 	Decision  string `json:"decision"`
+}
+
+// QuestionAnswerRequest resolves every question in one ask_user batch.
+type QuestionAnswerRequest struct {
+	Answers []question.Answer `json:"answers"`
 }
 
 type SkillEnableRequest struct {

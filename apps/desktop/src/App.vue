@@ -13,9 +13,11 @@ import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import SettingsPanel from "@/components/settings/SettingsPanel.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
+import AskUserPanel from "@/components/chat/AskUserPanel.vue";
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
+import { Button } from "@/components/ui/button";
 
 const { isMac } = usePlatform();
 const { open: workbarOpen, openFile: openWorkbarFile } = useWorkbar();
@@ -27,6 +29,7 @@ const {
   projects,
   runningSessions,
   compactingSessions,
+  workflowsBySession,
   activeId,
   activeSession,
   isDraft,
@@ -38,6 +41,7 @@ const {
   queuedMessages,
   contextUsage,
   pendingApprovals,
+  pendingQuestions,
   pendingHistoryEdit,
   connect,
   newSession,
@@ -54,6 +58,7 @@ const {
   reorderQueuedMessage,
   deleteQueuedMessage,
   dispatchQueuedMessage,
+  approveWorkflow,
   refreshConnections,
   refreshProjects,
   registerProject,
@@ -65,6 +70,7 @@ const projectCreateBusy = ref(false);
 const projectCreateError = ref("");
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
+const questionPanelExpanded = ref(false);
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -92,6 +98,11 @@ watch(
 
 function onTurnSelect(i: number) {
   messageListRef.value?.scrollToTurn(i);
+}
+
+async function executeComposerCommand(name: string, args: string) {
+  const sessionID = activeId.value || await ensureSession();
+  await api.executeCommand(sessionID, name, args);
 }
 
 // 退出设置工作区后刷新 Connection 目录，使新建连接立即出现在模型选择器。
@@ -142,6 +153,22 @@ const composerContextUsage = computed(() =>
 const activeCompacting = computed(
   () => Boolean(activeId.value && compactingSessions.value[activeId.value])
 );
+const activeWorkflow = computed(() =>
+  activeId.value ? workflowsBySession.value[activeId.value] ?? null : null
+);
+const activeQuestionBatch = computed(
+  () =>
+    Object.values(pendingQuestions.value).find(
+      (batch) => batch.session_id === activeId.value
+    ) ?? null
+);
+const sessionsWaitingForAnswer = computed<Record<string, boolean>>(() => {
+  const waiting: Record<string, boolean> = {};
+  for (const batch of Object.values(pendingQuestions.value)) {
+    waiting[batch.session_id] = true;
+  }
+  return waiting;
+});
 const workbarObscured = computed(
   () =>
     settingsActive.value ||
@@ -230,6 +257,7 @@ function onDelete(id: string) {
 async function onDeleteProject(id: string) {
   try {
     await api.deleteProject(id);
+    sessions.value = await api.listSessions();
     await refreshProjects();
   } catch (error) {
     console.error("删除项目失败:", error);
@@ -271,6 +299,7 @@ onMounted(connect);
       :sessions="sessions"
       :projects="activeProjects"
       :running="runningSessions"
+      :waiting-for-answer="sessionsWaitingForAnswer"
       :active-id="activeId"
       :is-draft="isDraft"
       @new="onNewSession"
@@ -312,7 +341,24 @@ onMounted(connect);
               @open-diff="onOpenDiff"
             />
           </div>
+          <div
+            v-if="activeWorkflow?.status === 'ready'"
+            class="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 border-x border-t border-border px-4 py-3"
+          >
+            <div class="min-w-0">
+              <p class="text-sm font-medium">{{ activeWorkflow.kind }} 已就绪</p>
+              <p class="truncate text-xs text-muted-foreground">{{ activeWorkflow.goal }}</p>
+            </div>
+            <Button size="sm" @click="approveWorkflow(activeId)">
+              批准并执行
+            </Button>
+          </div>
+          <AskUserPanel
+            :batch="activeQuestionBatch"
+            @expanded-change="questionPanelExpanded = $event"
+          />
           <Composer
+            v-if="!activeQuestionBatch || !questionPanelExpanded"
             :disabled="!ready"
             :streaming="streaming"
             :model="composerModel"
@@ -329,7 +375,9 @@ onMounted(connect);
             :context-usage="composerContextUsage"
             :context-window="composerContextWindow"
             :has-session="!isDraft"
+            :session-id="activeId"
             @send="send"
+            @command="executeComposerCommand"
             @stop="cancelTurn"
             @edit-queued="editQueuedMessage"
             @reorder-queued="reorderQueuedMessage"

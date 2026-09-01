@@ -23,6 +23,7 @@ import (
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
@@ -31,12 +32,14 @@ import (
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
+	"github.com/freesoulcode/foya/internal/question"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/websearch"
+	"github.com/freesoulcode/foya/internal/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,7 +47,6 @@ var (
 	ErrConnectionNotFound = fmt.Errorf("connection not found")
 	ErrConnectionInUse    = fmt.Errorf("connection is in use by a session")
 	ErrUnsupportedAuth    = fmt.Errorf("unsupported connection auth kind")
-	ErrProjectInUse       = fmt.Errorf("project is in use by a session")
 )
 
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
@@ -66,6 +68,9 @@ type Backend struct {
 	subagents *subagent.Manager
 	artifacts artifact.Store
 	context   *contextdata.Store
+	commands  *command.Manager
+	workflows *workflow.Manager
+	questions question.Gateway
 
 	buildProvider     ProviderBuilder
 	dataDir           string
@@ -118,6 +123,25 @@ func (b *Backend) SetContextStore(store *contextdata.Store) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.context = store
+}
+
+func (b *Backend) SetCommandManager(manager *command.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.commands = manager
+}
+
+func (b *Backend) SetWorkflowManager(manager *workflow.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.workflows = manager
+}
+
+// SetQuestionGateway attaches the human-input coordinator assembled by kernel.
+func (b *Backend) SetQuestionGateway(gateway question.Gateway) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.questions = gateway
 }
 
 // SetHooksHomeDir configures the user-level hook root. The Hook runtime itself
@@ -635,21 +659,60 @@ func (b *Backend) UpdateProject(
 	return manager.Update(id, name, pinned)
 }
 
-func (b *Backend) DeleteProject(id string) error {
+// DeleteProject removes a project container together with every session bound
+// to it. The project directory is never touched; only Foya-owned session data
+// (history, artifacts, pending work) is deleted.
+func (b *Backend) DeleteProject(ctx context.Context, id string) error {
 	b.projectMu.Lock()
 	defer b.projectMu.Unlock()
-	for _, item := range b.sessions.List() {
-		if item.ProjectID == id {
-			return ErrProjectInUse
-		}
-	}
 	b.mu.RLock()
 	manager := b.projects
 	b.mu.RUnlock()
 	if manager == nil {
 		return errors.New("projects are unavailable")
 	}
+	if _, ok := manager.Get(id); !ok {
+		return project.ErrNotFound
+	}
+	for _, sessionID := range projectSessionRoots(b.sessions.List(), id) {
+		if err := b.DeleteSession(ctx, sessionID); err != nil {
+			return err
+		}
+	}
 	return manager.Delete(id)
+}
+
+// projectSessionRoots returns project-bound sessions which are not descendants
+// of another project-bound session. DeleteSession already deletes descendants,
+// so this avoids duplicate deletion while preserving unrelated child trees.
+func projectSessionRoots(items []*session.Session, projectID string) []string {
+	byID := make(map[string]*session.Session, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	roots := make([]string, 0)
+	for _, item := range items {
+		if item.ProjectID != projectID {
+			continue
+		}
+		parentID := item.ParentID
+		hasProjectAncestor := false
+		for parentID != "" {
+			parent, ok := byID[parentID]
+			if !ok {
+				break
+			}
+			if parent.ProjectID == projectID {
+				hasProjectAncestor = true
+				break
+			}
+			parentID = parent.ParentID
+		}
+		if !hasProjectAncestor {
+			roots = append(roots, item.ID)
+		}
+	}
+	return roots
 }
 
 func (b *Backend) Skills(ctx context.Context) ([]skill.Skill, error) {
@@ -979,6 +1042,12 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		b.stopSessionAndWait(sessionID, deleteTurnGrace)
 		b.terminal.CloseSession(sessionID)
 		b.approval.ClearSession(sessionID)
+		b.mu.RLock()
+		questions := b.questions
+		b.mu.RUnlock()
+		if questions != nil {
+			questions.ClearSession(sessionID)
+		}
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
 		}
@@ -1054,6 +1123,36 @@ func (b *Backend) CancelTurn(sessionID string) {
 func (b *Backend) ResolveApproval(requestID string, decision string) error {
 	d := approval.Decision(decision)
 	return b.approval.Resolve(requestID, d)
+}
+
+// AnswerQuestions supplies the complete response set for one pending ask_user
+// request. The gateway's take semantics make this safe across clients.
+func (b *Backend) AnswerQuestions(sessionID, batchID string, answers []question.Answer) error {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return session.ErrNotFound
+	}
+	b.mu.RLock()
+	gateway := b.questions
+	b.mu.RUnlock()
+	if gateway == nil {
+		return errors.New("question gateway is unavailable")
+	}
+	return gateway.Answer(sessionID, batchID, answers)
+}
+
+// CancelQuestions abandons one pending ask_user request without cancelling the
+// whole conversation.
+func (b *Backend) CancelQuestions(sessionID, batchID string) error {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return session.ErrNotFound
+	}
+	b.mu.RLock()
+	gateway := b.questions
+	b.mu.RUnlock()
+	if gateway == nil {
+		return errors.New("question gateway is unavailable")
+	}
+	return gateway.Cancel(sessionID, batchID)
 }
 
 // StartTerminal starts an interactive shell in the session project.

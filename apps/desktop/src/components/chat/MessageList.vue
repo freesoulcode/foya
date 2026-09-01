@@ -162,8 +162,51 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="scrollEl" class="no-scrollbar relative min-h-0 flex-1 overflow-y-auto">
-    <!-- 回到底部:用户上翻看历史时出现;运行中带高亮与跳动,提示有新内容。 -->
+  <div class="relative min-h-0 flex-1 overflow-hidden">
+    <div ref="scrollEl" class="no-scrollbar size-full overflow-y-auto">
+      <div v-if="messages.length === 0" class="flex h-full flex-col items-center justify-center gap-4">
+        <div class="flex size-14 items-center justify-center rounded-2xl bg-muted">
+          <BotIcon class="size-6 text-muted-foreground/70" />
+        </div>
+        <div class="text-center">
+          <p class="text-base font-medium">有什么可以帮你的？</p>
+          <p class="mt-1 text-sm text-muted-foreground">输入消息开始对话</p>
+        </div>
+      </div>
+
+      <div v-else class="relative mx-auto max-w-3xl space-y-6 px-4 py-6">
+        <div
+          v-for="(m, i) in messages"
+          :key="m.event_seq ?? i"
+          :ref="(el) => setItemRef(el as HTMLElement | null, i)"
+        >
+          <MessageBubble
+            :session-id="sessionId"
+            :message="m"
+            :editable="editable && !streaming && !compacting"
+            :streaming="
+              streaming && !compacting && m.role === 'assistant' && i === messages.length - 1
+            "
+            @edit="
+              (messageSeq, text) => emit('edit-message', messageSeq, text)
+            "
+            @open-diff="(diff) => emit('open-diff', diff)"
+          />
+        </div>
+
+        <div
+          v-if="compacting"
+          class="flex h-7 items-center gap-2 text-xs text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
+          <RefreshCwIcon class="size-3.5 animate-spin" />
+          <span>正在压缩上下文</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 回到底部:覆盖在消息视窗上，不随滚动内容移动。 -->
     <Transition
       enter-active-class="transition duration-200 ease-out"
       enter-from-class="translate-y-2 opacity-0"
@@ -187,46 +230,5 @@ onBeforeUnmount(() => {
         <ArrowDownIcon class="size-4" :class="streaming ? 'animate-bounce' : ''" />
       </button>
     </Transition>
-
-    <div v-if="messages.length === 0" class="flex h-full flex-col items-center justify-center gap-4">
-      <div class="flex size-14 items-center justify-center rounded-2xl bg-muted">
-        <BotIcon class="size-6 text-muted-foreground/70" />
-      </div>
-      <div class="text-center">
-        <p class="text-base font-medium">有什么可以帮你的？</p>
-        <p class="mt-1 text-sm text-muted-foreground">输入消息开始对话</p>
-      </div>
-    </div>
-
-    <div v-else class="relative mx-auto max-w-3xl space-y-6 px-4 py-6">
-      <div
-        v-for="(m, i) in messages"
-        :key="m.event_seq ?? i"
-        :ref="(el) => setItemRef(el as HTMLElement | null, i)"
-      >
-        <MessageBubble
-          :session-id="sessionId"
-          :message="m"
-          :editable="editable && !streaming && !compacting"
-          :streaming="
-            streaming && !compacting && m.role === 'assistant' && i === messages.length - 1
-          "
-          @edit="
-            (messageSeq, text) => emit('edit-message', messageSeq, text)
-          "
-          @open-diff="(diff) => emit('open-diff', diff)"
-        />
-      </div>
-
-      <div
-        v-if="compacting"
-        class="flex h-7 items-center gap-2 text-xs text-muted-foreground"
-        role="status"
-        aria-live="polite"
-      >
-        <RefreshCwIcon class="size-3.5 animate-spin" />
-        <span>正在压缩上下文</span>
-      </div>
-    </div>
   </div>
 </template>

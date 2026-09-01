@@ -13,6 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
@@ -22,6 +23,7 @@ import (
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/provider/openai"
+	"github.com/freesoulcode/foya/internal/question"
 	"github.com/freesoulcode/foya/internal/sandbox"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
@@ -30,6 +32,7 @@ import (
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
+	"github.com/freesoulcode/foya/internal/workflow"
 )
 
 // App 是内核组合根。
@@ -62,15 +65,21 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	terminalManager := terminal.NewManager()
+	workflows, err := workflow.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 
 	// 审批网关与工具注册表。
 	gw := approval.NewGateway(bus, log)
+	questions := question.NewGateway(bus, log)
 	executionRunner := sandbox.NewRunner()
 	tools := tool.NewRegistry()
 	tools.Register(tool.NewBashTool(gw, executionRunner))
 	tools.Register(tool.NewReadTool(gw))
 	tools.Register(tool.NewWriteTool(gw, executionRunner))
 	tools.Register(tool.NewEditTool(gw, executionRunner))
+	tools.Register(tool.NewAskUserTool(questions))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
 	skills, err := skill.NewManager(cfg.DataDir, homeDir, nil)
@@ -106,6 +115,7 @@ func New(cfg config.Config) (*App, error) {
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
 	engine.SetHookRuntime(hooks.NewRuntime(homeDir))
+	engine.SetWorkflowPolicyResolver(workflows.Policy)
 	resolveProject := func(projectID string) (string, bool) {
 		item, ok := projects.Get(projectID)
 		return item.Path, ok
@@ -197,6 +207,10 @@ func New(cfg config.Config) (*App, error) {
 	be.SetProjectManager(projects)
 	be.SetContextStore(contextStore)
 	be.SetHooksHomeDir(homeDir)
+	be.SetCommandManager(command.NewManager(homeDir))
+	be.SetWorkflowManager(workflows)
+	be.SetQuestionGateway(questions)
+	engine.SetWorkflowCompletionHandler(be.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
 	memoryManager, err := memorymaint.New(
 		cfg.DataDir,

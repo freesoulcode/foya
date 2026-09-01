@@ -15,6 +15,7 @@ export interface Session {
   agent_name?: string;
   agent_digest?: string;
   phase: string;
+  agent_mode?: "execute" | "plan" | "plan_ready";
   connection_id: string;
   model: string;
   reasoning_effort?: ReasoningEffort;
@@ -159,6 +160,34 @@ export type ApprovalDecision =
   | "approved_for_session"
   | "denied";
 
+export interface QuestionOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface UserQuestion {
+  id: string;
+  question: string;
+  description?: string;
+  options?: QuestionOption[];
+  allow_custom?: boolean;
+}
+
+export interface PendingQuestionBatch {
+  id: string;
+  session_id: string;
+  run_id?: string;
+  tool_call_id?: string;
+  questions: UserQuestion[];
+  created_at: string;
+}
+
+export interface QuestionAnswer {
+  question_id: string;
+  value: string;
+}
+
 // 对话消息(与 Go message.Message 对齐)。
 // error 为前端乐观态:发送失败时标记气泡,不进后端。
 export interface ToolCallView {
@@ -187,6 +216,7 @@ export type MessageSegment =
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  command?: string;
   attachments?: AttachmentRef[];
   event_seq?: number;
   reasoning?: string;
@@ -297,6 +327,48 @@ export interface HookConfig {
   command: string;
   timeout?: number;
   enabled?: boolean;
+}
+
+export type CommandScope = "builtin" | "global" | "project";
+export type CommandKind = "prompt" | "workflow";
+
+export interface CommandInfo {
+  ref: string;
+  name: string;
+  description?: string;
+  scope: CommandScope;
+  project_id?: string;
+  kind: CommandKind;
+  path?: string;
+  body?: string;
+  builtin?: boolean;
+  updated_at?: string;
+}
+
+export interface CommandExecution {
+  command: CommandInfo;
+  status: string;
+  submission?: SubmitTurnResult;
+  workflow?: WorkflowRecord;
+  message?: string;
+}
+
+export interface WorkflowRecord {
+  id: string;
+  session_id: string;
+  kind: "plan" | "spec" | "goal";
+  status: "active" | "ready" | "approved" | "closed";
+  goal: string;
+  content?: string;
+  path?: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowApproval {
+  workflow: WorkflowRecord;
+  submission: SubmitTurnResult;
 }
 
 export interface StartAgentRequest {
@@ -737,6 +809,65 @@ export const api = {
       },
     }).then((r) => (JSON.parse(r) as HookConfig[]) ?? []),
 
+  listCommands: (scope: "global" | "project", projectId?: string) =>
+    invoke<string>("list_commands", { scope, projectId: projectId ?? "" }).then(
+      (r) => (JSON.parse(r) as CommandInfo[]) ?? []
+    ),
+
+  createCommand: (input: {
+    scope: "global" | "project";
+    project_id?: string;
+    name: string;
+  }) =>
+    invoke<string>("create_command", { request: input }).then(
+      (r) => JSON.parse(r) as CommandInfo
+    ),
+
+  updateCommand: (
+    commandRef: string,
+    input: {
+      scope: "global" | "project";
+      project_id?: string;
+      name: string;
+      description?: string;
+      body: string;
+    }
+  ) =>
+    invoke<string>("update_command", { commandRef, request: input }).then(
+      (r) => JSON.parse(r) as CommandInfo
+    ),
+
+  deleteCommand: (
+    commandRef: string,
+    scope: "global" | "project",
+    projectId?: string
+  ) =>
+    invoke("delete_command", {
+      commandRef,
+      scope,
+      projectId: projectId ?? "",
+    }),
+
+  listSessionCommands: (sessionId: string) =>
+    invoke<string>("list_session_commands", { sessionId }).then(
+      (r) => (JSON.parse(r) as CommandInfo[]) ?? []
+    ),
+
+  executeCommand: (sessionId: string, name: string, args = "") =>
+    invoke<string>("execute_command", { sessionId, name, args }).then(
+      (r) => JSON.parse(r) as CommandExecution
+    ),
+
+  getWorkflow: (sessionId: string) =>
+    invoke<string>("get_workflow", { sessionId }).then(
+      (r) => JSON.parse(r) as WorkflowRecord | null
+    ),
+
+  approveWorkflow: (sessionId: string, workflowId: string) =>
+    invoke<string>("approve_workflow", { sessionId, workflowId }).then(
+      (r) => JSON.parse(r) as WorkflowApproval
+    ),
+
   setSkillEnabled: (skillRef: string, enabled: boolean) =>
     invoke("set_skill_enabled", { skillRef, enabled }),
 
@@ -850,4 +981,13 @@ export const api = {
     decision: ApprovalDecision
   ) =>
     invoke("resolve_approval", { sessionId, requestId, decision }),
+
+  answerQuestions: (
+    sessionId: string,
+    batchId: string,
+    answers: QuestionAnswer[]
+  ) => invoke("answer_questions", { sessionId, batchId, answers }),
+
+  cancelQuestions: (sessionId: string, batchId: string) =>
+    invoke("cancel_questions", { sessionId, batchId }),
 };

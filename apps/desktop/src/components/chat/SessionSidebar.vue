@@ -55,10 +55,15 @@ const props = defineProps<{
   isDraft?: boolean;
   // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
   running?: Record<string, boolean>;
+  waitingForAnswer?: Record<string, boolean>;
 }>();
 
 function isRunning(id: string) {
   return !!props.running?.[id];
+}
+
+function isWaitingForAnswer(id: string) {
+  return !!props.waitingForAnswer?.[id];
 }
 
 const emit = defineEmits<{
@@ -240,6 +245,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               :session="session"
               :active="session.id === activeId"
               :running="isRunning(session.id)"
+              :waiting-for-answer="isWaitingForAnswer(session.id)"
               @select="emit('select', $event)"
               @rename="(id, value) => emit('rename', id, value)"
               @pin="(id, value) => emit('pin', id, value)"
@@ -326,15 +332,10 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
-                    :disabled="project.sessions.length > 0"
                     @select="pendingProjectDelete = project"
                   >
                     <Trash2Icon />
-                    {{
-                      project.sessions.length > 0
-                        ? "存在对话，无法删除"
-                        : "删除项目"
-                    }}
+                    删除项目
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -360,6 +361,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   :session="session"
                   :active="session.id === activeId"
                   :running="isRunning(session.id)"
+                  :waiting-for-answer="isWaitingForAnswer(session.id)"
                   @select="emit('select', $event)"
                   @rename="(id, value) => emit('rename', id, value)"
                   @pin="(id, value) => emit('pin', id, value)"
@@ -419,7 +421,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
           <DialogTitle>删除项目</DialogTitle>
         </div>
         <DialogDescription>
-          「{{ pendingProjectDelete?.project.name }}」将从 Foya 永久删除，磁盘文件不会被删除。
+          「{{ pendingProjectDelete?.project.name }}」及其关联对话、历史和附件将从 Foya 永久删除，磁盘文件不会被删除。
         </DialogDescription>
       </DialogHeader>
       <DialogFooter class="gap-2">

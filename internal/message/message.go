@@ -43,6 +43,7 @@ type AttachmentRef struct {
 // UserInput is the canonical input accepted by a turn or queued submission.
 type UserInput struct {
 	Text        string          `json:"text"`
+	Command     string          `json:"command,omitempty"`
 	Attachments []AttachmentRef `json:"attachments,omitempty"`
 }
 
@@ -53,6 +54,7 @@ type UserInput struct {
 type Message struct {
 	Role        Role            `json:"role"`
 	Content     string          `json:"content"`
+	Command     string          `json:"command,omitempty"`
 	Attachments []AttachmentRef `json:"attachments,omitempty"`
 	EventSeq    uint64          `json:"event_seq,omitempty"` // 历史投影中的稳定标识,不回灌模型
 	Reasoning   string          `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型

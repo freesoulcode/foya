@@ -19,6 +19,7 @@ import (
 	approvalpkg "github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
+	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
@@ -28,10 +29,12 @@ import (
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/provider"
+	"github.com/freesoulcode/foya/internal/question"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/websearch"
+	"github.com/freesoulcode/foya/internal/workflow"
 )
 
 // Server 承载 REST + SSE 路由。
@@ -82,6 +85,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /sessions/{id}/queue/{message_id}", s.handleDeleteQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/queue/{message_id}/dispatch", s.handleDispatchQueuedMessage)
 	s.mux.HandleFunc("POST /sessions/{id}/approvals/{request_id}", s.handleResolveApproval)
+	s.mux.HandleFunc("POST /sessions/{id}/questions/{batch_id}/answer", s.handleAnswerQuestions)
+	s.mux.HandleFunc("POST /sessions/{id}/questions/{batch_id}/cancel", s.handleCancelQuestions)
 	s.mux.HandleFunc("GET /skills", s.handleListSkills)
 	s.mux.HandleFunc("PATCH /skills/{ref}", s.handleSetSkillEnabled)
 	s.mux.HandleFunc("GET /agents", s.handleListAgents)
@@ -91,6 +96,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /settings/memory", s.handleUpdateMemorySettings)
 	s.mux.HandleFunc("GET /hooks", s.handleGetHooks)
 	s.mux.HandleFunc("PUT /hooks", s.handleReplaceHooks)
+	s.mux.HandleFunc("GET /commands", s.handleListCommands)
+	s.mux.HandleFunc("POST /commands", s.handleCreateCommand)
+	s.mux.HandleFunc("PATCH /commands/{ref}", s.handleUpdateCommand)
+	s.mux.HandleFunc("DELETE /commands/{ref}", s.handleDeleteCommand)
+	s.mux.HandleFunc("GET /sessions/{id}/commands", s.handleSessionCommands)
+	s.mux.HandleFunc("POST /sessions/{id}/commands/{name}", s.handleExecuteCommand)
+	s.mux.HandleFunc("GET /sessions/{id}/workflow", s.handleGetWorkflow)
+	s.mux.HandleFunc("POST /sessions/{id}/workflow/{workflow_id}/approve", s.handleApproveWorkflow)
 	s.mux.HandleFunc("GET /projects", s.handleListProjects)
 	s.mux.HandleFunc("POST /projects", s.handleCreateProject)
 	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
@@ -149,6 +162,148 @@ type hooksRequest struct {
 	Scope     string         `json:"scope"`
 	ProjectID string         `json:"project_id,omitempty"`
 	Hooks     []hooks.Config `json:"hooks"`
+}
+
+type commandCreateRequest struct {
+	Scope     command.Scope `json:"scope"`
+	ProjectID string        `json:"project_id,omitempty"`
+	Name      string        `json:"name"`
+}
+
+type commandUpdateRequest struct {
+	Scope       command.Scope `json:"scope"`
+	ProjectID   string        `json:"project_id,omitempty"`
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	Body        string        `json:"body"`
+}
+
+type commandExecuteRequest struct {
+	Args string `json:"args,omitempty"`
+}
+
+func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.Commands(r.Context(), r.URL.Query().Get("scope"), r.URL.Query().Get("project_id"))
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
+	var input commandCreateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.CreateCommand(r.Context(), command.CreateInput{
+		Scope: input.Scope, ProjectID: input.ProjectID, Name: input.Name,
+	})
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleUpdateCommand(w http.ResponseWriter, r *http.Request) {
+	var input commandUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.UpdateCommand(r.Context(), r.PathValue("ref"), command.UpdateInput{
+		Scope: input.Scope, ProjectID: input.ProjectID, Name: input.Name,
+		Description: input.Description, Body: input.Body,
+	})
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.DeleteCommand(
+		r.Context(),
+		r.PathValue("ref"),
+		command.Scope(r.URL.Query().Get("scope")),
+		r.URL.Query().Get("project_id"),
+	); err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSessionCommands(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.SessionCommands(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleExecuteCommand(w http.ResponseWriter, r *http.Request) {
+	var input commandExecuteRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	result, err := s.backend.ExecuteCommand(r.Context(), r.PathValue("id"), r.PathValue("name"), input.Args)
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	record, ok, err := s.backend.Workflow(r.PathValue("id"))
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleApproveWorkflow(w http.ResponseWriter, r *http.Request) {
+	result, err := s.backend.ApproveWorkflow(r.Context(), r.PathValue("id"), r.PathValue("workflow_id"))
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func writeCommandErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, command.ErrNotFound), errors.Is(err, workflow.ErrNotFound), errors.Is(err, session.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, command.ErrInvalidScope),
+		errors.Is(err, command.ErrInvalidName),
+		errors.Is(err, command.ErrInvalidContent),
+		errors.Is(err, command.ErrReservedName),
+		errors.Is(err, command.ErrDuplicateName),
+		errors.Is(err, workflow.ErrInvalidKind),
+		errors.Is(err, workflow.ErrInvalidGoal),
+		errors.Is(err, workflow.ErrInvalidStatus):
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal_error", err.Error())
+	}
 }
 
 func (s *Server) handleGetHooks(w http.ResponseWriter, r *http.Request) {
@@ -675,13 +830,11 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	err := s.backend.DeleteProject(r.PathValue("id"))
+	err := s.backend.DeleteProject(r.Context(), r.PathValue("id"))
 	if err != nil {
 		switch {
 		case errors.Is(err, project.ErrNotFound):
 			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
-		case errors.Is(err, backend.ErrProjectInUse):
-			writeErr(w, http.StatusConflict, "project_in_use", err.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, "project_delete_failed", err.Error())
 		}
@@ -1341,6 +1494,42 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAnswerQuestions(w http.ResponseWriter, r *http.Request) {
+	var req protocol.QuestionAnswerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	err := s.backend.AnswerQuestions(r.PathValue("id"), r.PathValue("batch_id"), req.Answers)
+	if err != nil {
+		writeQuestionErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCancelQuestions(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.CancelQuestions(r.PathValue("id"), r.PathValue("batch_id"))
+	if err != nil {
+		writeQuestionErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeQuestionErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+	case errors.Is(err, question.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "question_not_found", err.Error())
+	case errors.Is(err, question.ErrInvalidBatch):
+		writeErr(w, http.StatusBadRequest, "invalid_question_answers", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "question_unavailable", err.Error())
+	}
 }
 
 func (s *Server) handleStartTerminal(w http.ResponseWriter, r *http.Request) {

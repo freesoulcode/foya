@@ -8,6 +8,9 @@ import {
   XIcon,
   ChevronRightIcon,
   BrainIcon,
+  FileTextIcon,
+  RouteIcon,
+  TargetIcon,
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
@@ -69,6 +72,11 @@ const emit = defineEmits<{
 
 const isUser = computed(() => props.message.role === "user");
 const toolCalls = computed(() => props.message.tool_calls ?? []);
+const commandIcon = computed(() => {
+  if (props.message.command === "plan") return RouteIcon;
+  if (props.message.command === "spec") return FileTextIcon;
+  return TargetIcon;
+});
 
 // 有序段落:优先用 segments;缺失时(旧数据/兜底)由扁平字段合成一个近似序列。
 const segments = computed<MessageSegment[]>(() => {
@@ -326,38 +334,49 @@ function onEditKeydown(event: KeyboardEvent) {
             </p>
           </div>
         </div>
-        <template v-if="editing">
-          <Textarea
-            ref="editRef"
-            v-model="editText"
-            class="max-h-56 min-h-20 resize-none border-border bg-background px-3 py-2 text-sm leading-relaxed"
-            rows="3"
-            @keydown="onEditKeydown"
-          />
-          <div class="mt-2 flex justify-end gap-1">
-            <button
-              type="button"
-              class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="取消编辑"
-              @click="cancelEdit"
-            >
-              <XIcon class="size-3.5" />
-            </button>
-            <button
-              type="button"
-              class="flex size-7 items-center justify-center rounded-md bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
-              :disabled="
-                !editText.trim() || editText.trim() === message.content.trim()
-              "
-              title="保存并重新执行"
-              @click="saveEdit"
-            >
-              <CheckIcon class="size-3.5" />
-            </button>
+        <div :class="cn('flex items-start gap-2', message.command && 'min-w-0')">
+          <span
+            v-if="message.command"
+            class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
+          >
+            <component :is="commandIcon" class="size-3.5" />
+            {{ message.command[0].toUpperCase() + message.command.slice(1) }}
+          </span>
+          <div :class="cn('min-w-0', message.command && 'flex-1')">
+            <template v-if="editing">
+              <Textarea
+                ref="editRef"
+                v-model="editText"
+                class="max-h-56 min-h-20 resize-none border-border bg-background px-3 py-2 text-sm leading-relaxed"
+                rows="3"
+                @keydown="onEditKeydown"
+              />
+              <div class="mt-2 flex justify-end gap-1">
+                <button
+                  type="button"
+                  class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  title="取消编辑"
+                  @click="cancelEdit"
+                >
+                  <XIcon class="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  class="flex size-7 items-center justify-center rounded-md bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
+                  :disabled="
+                    !editText.trim() || editText.trim() === message.content.trim()
+                  "
+                  title="保存并重新执行"
+                  @click="saveEdit"
+                >
+                  <CheckIcon class="size-3.5" />
+                </button>
+              </div>
+            </template>
+            <div v-else class="whitespace-pre-wrap break-words">
+              {{ message.content }}
+            </div>
           </div>
-        </template>
-        <div v-else class="whitespace-pre-wrap break-words">
-          {{ message.content }}
         </div>
       </template>
 

@@ -13,8 +13,10 @@ import {
   XIcon,
   CheckIcon,
   RefreshCwIcon,
-  Minimize2Icon,
   PaperclipIcon,
+  FileTextIcon,
+  RouteIcon,
+  TargetIcon,
 } from "@lucide/vue";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -36,8 +38,10 @@ import {
   type ConnectionModelGroup,
   type ReasoningEffort,
   type ContextUsage as ContextUsageData,
+  type CommandInfo,
   type QueuedMessage,
   type ProjectInfo,
+  api,
 } from "@/lib/api";
 import ContextUsage from "./ContextUsage.vue";
 import QueuedMessages from "./QueuedMessages.vue";
@@ -59,6 +63,7 @@ const props = withDefaults(
     contextUsage?: ContextUsageData;
     contextWindow?: number;
     hasSession?: boolean;
+    sessionId?: string;
     projectLocked?: boolean;
   }>(),
   {
@@ -77,12 +82,14 @@ const props = withDefaults(
     contextUsage: undefined,
     contextWindow: 0,
     hasSession: false,
+    sessionId: "",
     projectLocked: false,
   }
 );
 
 const emit = defineEmits<{
   (e: "send", text: string, files: File[], restore: () => void): void;
+  (e: "command", name: string, args: string): void;
   (e: "stop"): void;
   (e: "edit-queued", id: string, text: string): void;
   (e: "reorder-queued", id: string, position: number): void;
@@ -160,21 +167,41 @@ interface SlashCommand {
   description: string;
 }
 
-const slashCommands: SlashCommand[] = [
-  {
-    value: "/compact",
-    label: "压缩上下文",
-    description: "将已完成的对话整理为精简检查点",
-  },
-];
+const sessionCommands = ref<CommandInfo[]>([]);
+const selectedSlashCommand = ref<CommandInfo | null>(null);
+const commandError = ref("");
 const selectedCommandIndex = ref(0);
 const commandMenuDismissed = ref(false);
 let completingCommand = false;
 const commandQuery = computed(() => input.value.trimStart());
+const commandToken = computed(() => commandQuery.value.split(/\s+/, 1)[0] ?? "");
+const draftCommands: CommandInfo[] = [
+  { ref: "builtin:plan", name: "plan", description: "启动 Plan 工作流", scope: "builtin", kind: "workflow", builtin: true },
+  { ref: "builtin:spec", name: "spec", description: "启动 Spec 工作流", scope: "builtin", kind: "workflow", builtin: true },
+  { ref: "builtin:goal", name: "goal", description: "启动 Goal 工作流", scope: "builtin", kind: "workflow", builtin: true },
+];
+const availableCommands = computed(() =>
+  props.hasSession ? sessionCommands.value : draftCommands
+);
+const slashCommands = computed<SlashCommand[]>(() =>
+  availableCommands.value.map((command) => ({
+    value: `/${command.name}`,
+    label: command.name[0].toUpperCase() + command.name.slice(1),
+    description: commandDescription(command),
+  }))
+);
+
+function commandDescription(command: CommandInfo): string {
+  if (command.name === "plan") return "只读探索并生成待批准的实施计划";
+  if (command.name === "spec") return "生成可审阅的技术规格";
+  if (command.name === "goal") return "定义持久化的完成目标";
+  return command.description || "自定义 Prompt 命令";
+}
 const matchingCommands = computed(() => {
-  const query = commandQuery.value.toLowerCase();
-  if (!props.hasSession || props.streaming || !/^\/\S*$/.test(query)) return [];
-  return slashCommands.filter(
+  const query = commandToken.value.toLowerCase();
+  if (query !== commandQuery.value.toLowerCase()) return [];
+  if (props.streaming || !/^\/\S*$/.test(query)) return [];
+  return slashCommands.value.filter(
     (command) =>
       command.value.startsWith(query) ||
       command.label.toLowerCase().includes(query.slice(1))
@@ -193,6 +220,7 @@ const activeCommand = computed(
 
 watch(input, () => {
   selectedCommandIndex.value = 0;
+  commandError.value = "";
   if (completingCommand) {
     completingCommand = false;
     return;
@@ -200,13 +228,51 @@ watch(input, () => {
   commandMenuDismissed.value = false;
 });
 
-function completeCommand(command: SlashCommand) {
-  if (input.value !== command.value) {
-    completingCommand = true;
-    input.value = command.value;
+async function loadCommands() {
+  if (!props.sessionId || !props.hasSession) {
+    sessionCommands.value = [];
+    return;
   }
+  try {
+    sessionCommands.value = await api.listSessionCommands(props.sessionId);
+  } catch (cause) {
+    sessionCommands.value = [];
+    commandError.value = `无法加载命令：${String(cause)}`;
+  }
+}
+
+watch(
+  () => [props.sessionId, props.hasSession] as const,
+  () => void loadCommands(),
+  { immediate: true }
+);
+
+function completeCommand(command: SlashCommand) {
+  selectedSlashCommand.value = availableCommands.value.find(
+    (item) => `/${item.name}` === command.value
+  ) ?? null;
+  completingCommand = true;
+  input.value = "";
   commandMenuDismissed.value = true;
   void nextTick(() => textareaRef.value?.$el?.focus());
+}
+
+function clearSelectedCommand() {
+  selectedSlashCommand.value = null;
+  commandError.value = "";
+  void nextTick(() => textareaRef.value?.$el?.focus());
+}
+
+function selectedCommandIcon() {
+  if (selectedSlashCommand.value?.name === "plan") return RouteIcon;
+  if (selectedSlashCommand.value?.name === "spec") return FileTextIcon;
+  return TargetIcon;
+}
+
+function commandIcon(command: SlashCommand) {
+  if (command.value === "/plan") return RouteIcon;
+  if (command.value === "/spec") return FileTextIcon;
+  return TargetIcon;
 }
 
 // ---- 审批档位 ----
@@ -340,9 +406,16 @@ function createProjectFromPicker(event: Event) {
 }
 
 // ---- 发送 ----
-function submit() {
+async function submit() {
   const text = input.value.trim();
   if ((!text && pendingImages.value.length === 0) || props.disabled) return;
+  if (selectedSlashCommand.value && pendingImages.value.length === 0) {
+    emit("command", selectedSlashCommand.value.name, text);
+    selectedSlashCommand.value = null;
+    input.value = "";
+    commandMenuDismissed.value = true;
+    return;
+  }
   const files = pendingImages.value.map((item) => item.file);
   input.value = "";
   for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
@@ -355,6 +428,15 @@ function submit() {
 
 function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return;
+  if (
+    e.key === "Backspace" &&
+    selectedSlashCommand.value &&
+    input.value.length === 0
+  ) {
+    e.preventDefault();
+    clearSelectedCommand();
+    return;
+  }
   if (commandMenuOpen.value) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
@@ -406,7 +488,7 @@ function onKeydown(e: KeyboardEvent) {
         <div
           v-if="commandMenuOpen"
           id="composer-command-menu"
-          class="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+          class="absolute bottom-full left-0 z-20 mb-2 w-[min(28rem,100%)] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
           role="listbox"
           aria-label="可用命令"
         >
@@ -417,7 +499,7 @@ function onKeydown(e: KeyboardEvent) {
             type="button"
             role="option"
             :aria-selected="index === selectedCommandIndex"
-            class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors"
+            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors"
             :class="
               index === selectedCommandIndex
                 ? 'bg-accent text-accent-foreground'
@@ -427,16 +509,16 @@ function onKeydown(e: KeyboardEvent) {
             @mousedown.prevent
             @click="completeCommand(command)"
           >
-            <Minimize2Icon class="size-4 shrink-0 text-muted-foreground" />
+            <component :is="commandIcon(command)" class="size-4 shrink-0 text-muted-foreground" />
             <span class="min-w-0 flex-1">
-              <span class="block text-sm font-medium">{{ command.label }}</span>
-              <span class="block truncate text-xs text-muted-foreground">
-                {{ command.description }}
-              </span>
+              <span class="block truncate text-sm font-medium">{{ command.label }}</span>
             </span>
             <code class="shrink-0 font-mono text-xs text-muted-foreground">
               {{ command.value }}
             </code>
+            <span class="shrink-0 truncate text-xs text-muted-foreground">
+              {{ command.description }}
+            </span>
           </button>
         </div>
 
@@ -457,6 +539,9 @@ function onKeydown(e: KeyboardEvent) {
             </button>
           </div>
         </div>
+        <p v-if="commandError" class="px-4 pt-2 text-xs text-destructive">
+          {{ commandError }}
+        </p>
         <p v-if="attachmentError" class="px-4 pt-2 text-xs text-destructive">
           {{ attachmentError }}
         </p>
@@ -468,28 +553,44 @@ function onKeydown(e: KeyboardEvent) {
           class="hidden"
           @change="onFilesSelected"
         />
-        <Textarea
-          ref="textareaRef"
-          v-model="input"
-          :aria-activedescendant="
-            commandMenuOpen ? `composer-command-${selectedCommandIndex}` : undefined
-          "
-          :aria-controls="commandMenuOpen ? 'composer-command-menu' : undefined"
-          :aria-expanded="commandMenuOpen"
-          aria-autocomplete="list"
-          :placeholder="
-            streaming
-              ? '继续输入，发送后加入待发送队列…'
-              : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
-          "
-          class="max-h-60 min-h-[56px] resize-none border-0 bg-transparent px-4 py-3 text-sm shadow-none focus-visible:ring-0"
-          rows="2"
-          :disabled="disabled"
-          @focus="inputFocused = true"
-          @blur="inputFocused = false"
-          @keydown="onKeydown"
-          @paste="onPaste"
-        />
+        <div class="flex items-start px-4">
+          <button
+            v-if="selectedSlashCommand"
+            type="button"
+            class="mt-3 flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            title="取消命令"
+            @click="clearSelectedCommand"
+          >
+            <component :is="selectedCommandIcon()" class="size-3.5" />
+            <span>{{ selectedSlashCommand.name[0].toUpperCase() + selectedSlashCommand.name.slice(1) }}</span>
+            <XIcon class="size-3" />
+          </button>
+          <Textarea
+            ref="textareaRef"
+            v-model="input"
+            :aria-activedescendant="
+              commandMenuOpen ? `composer-command-${selectedCommandIndex}` : undefined
+            "
+            :aria-controls="commandMenuOpen ? 'composer-command-menu' : undefined"
+            :aria-expanded="commandMenuOpen"
+            aria-autocomplete="list"
+            :placeholder="
+              streaming
+                ? '继续输入，发送后加入待发送队列…'
+                : selectedSlashCommand
+                  ? `输入 ${selectedSlashCommand.name} 的目标`
+                  : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
+            "
+            class="max-h-60 min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-3 text-sm shadow-none focus-visible:ring-0"
+            :class="selectedSlashCommand && 'pl-2'"
+            rows="2"
+            :disabled="disabled"
+            @focus="inputFocused = true"
+            @blur="inputFocused = false"
+            @keydown="onKeydown"
+            @paste="onPaste"
+          />
+        </div>
 
         <!-- 底部工具栏 -->
         <div class="flex min-w-0 items-center gap-2 px-2 pb-2">

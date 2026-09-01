@@ -593,6 +593,7 @@ func (b *Backend) runTurnLoop(
 func queueInput(item queue.Message) message.UserInput {
 	return message.UserInput{
 		Text:        item.Text,
+		Command:     item.Command,
 		Attachments: append([]message.AttachmentRef(nil), item.Attachments...),
 	}
 }

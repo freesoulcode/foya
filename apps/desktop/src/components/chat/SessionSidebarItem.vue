@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from "vue";
 import {
+  CircleHelpIcon,
   Loader2Icon,
   MessageSquareIcon,
   PinIcon,
@@ -17,6 +18,7 @@ const props = defineProps<{
   session: Session;
   active?: boolean;
   running?: boolean;
+  waitingForAnswer?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -92,8 +94,13 @@ function requestDelete(event: Event) {
         >
           {{ title() }}
         </span>
+        <CircleHelpIcon
+          v-if="waitingForAnswer && !editing"
+          class="ml-auto size-3.5 text-primary transition-opacity group-hover/menu-item:opacity-0"
+          aria-label="等待回答"
+        />
         <Loader2Icon
-          v-if="running && !editing"
+          v-else-if="running && !editing"
           class="ml-auto size-3.5 animate-spin text-primary transition-opacity group-hover/menu-item:opacity-0"
           aria-label="AI 正在运行"
         />

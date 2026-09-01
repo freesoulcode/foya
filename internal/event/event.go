@@ -22,10 +22,12 @@ const (
 	KindToolEnd             Kind = "tool_end"          // 工具调用结束
 	KindApprovalReq         Kind = "approval_request"  // 审批请求(必达)
 	KindApprovalResolved    Kind = "approval_resolved" // 审批已决策(必达)
-	KindSessionUpdated      Kind = "session_updated"   // 会话元数据变更(标题/模型等,必达)
-	KindSessionDeleted      Kind = "session_deleted"   // 会话被删除(必达,前端据此移除)
-	KindQueueUpdated        Kind = "queue_updated"     // 待发送队列完整快照(必达)
-	KindUsageUpdated        Kind = "usage_updated"     // 最近一次模型请求 token 使用情况
+	KindQuestionRequested   Kind = "question_requested"
+	KindQuestionResolved    Kind = "question_resolved"
+	KindSessionUpdated      Kind = "session_updated" // 会话元数据变更(标题/模型等,必达)
+	KindSessionDeleted      Kind = "session_deleted" // 会话被删除(必达,前端据此移除)
+	KindQueueUpdated        Kind = "queue_updated"   // 待发送队列完整快照(必达)
+	KindUsageUpdated        Kind = "usage_updated"   // 最近一次模型请求 token 使用情况
 	KindCompactionStarted   Kind = "compaction_started"
 	KindCompactionCompleted Kind = "compaction_completed"
 	KindCompactionFailed    Kind = "compaction_failed"
@@ -42,6 +44,7 @@ const (
 	KindAgentBudgetUpdated  Kind = "agent_budget_updated"
 	KindAgentBudgetExceeded Kind = "agent_budget_exceeded"
 	KindHookCompleted       Kind = "hook_completed"
+	KindWorkflowUpdated     Kind = "workflow_updated"
 	KindError               Kind = "error"
 )
 
