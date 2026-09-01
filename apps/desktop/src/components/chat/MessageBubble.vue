@@ -68,6 +68,9 @@ onBeforeUnmount(() => {
 const emit = defineEmits<{
   (e: "edit", messageSeq: number, text: string): void;
   (e: "open-diff", diff: string): void;
+  (e: "cancel-tool", toolCallId: string): void;
+  (e: "background-tool", toolCallId: string): void;
+  (e: "terminal-tool", toolCallId: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === "user");
@@ -442,6 +445,9 @@ function onEditKeydown(event: KeyboardEvent) {
                 :session-id="sessionId"
                 :tools="toolBatchAt(i)"
                 @open-diff="(diff) => emit('open-diff', diff)"
+                @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
+                @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
+                @terminal-tool="(toolCallId) => emit('terminal-tool', toolCallId)"
               />
             </div>
 

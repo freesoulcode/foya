@@ -38,6 +38,7 @@ import (
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
+	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
 	"github.com/freesoulcode/foya/internal/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -54,23 +55,24 @@ type ProviderBuilder func(config.Provider) (provider.Provider, string)
 
 // Backend 是内核业务的统一入口(传输无关)。
 type Backend struct {
-	sessions  session.Manager
-	log       *state.MemLog
-	bus       *broker.Broker[event.Event]
-	engine    *agent.Engine
-	approval  approval.Gateway
-	terminal  terminal.Manager
-	skills    *skill.Manager
-	web       *websearch.Manager
-	mcp       *mcpclient.Manager
-	projects  *project.Manager
-	agents    *agentdef.Manager
-	subagents *subagent.Manager
-	artifacts artifact.Store
-	context   *contextdata.Store
-	commands  *command.Manager
-	workflows *workflow.Manager
-	questions question.Gateway
+	sessions           session.Manager
+	log                *state.MemLog
+	bus                *broker.Broker[event.Event]
+	engine             *agent.Engine
+	approval           approval.Gateway
+	terminal           terminal.Manager
+	skills             *skill.Manager
+	web                *websearch.Manager
+	mcp                *mcpclient.Manager
+	projects           *project.Manager
+	agents             *agentdef.Manager
+	subagents          *subagent.Manager
+	artifacts          artifact.Store
+	context            *contextdata.Store
+	commands           *command.Manager
+	workflows          *workflow.Manager
+	questions          question.Gateway
+	backgroundCommands tool.BackgroundCommandManager
 
 	buildProvider     ProviderBuilder
 	dataDir           string
@@ -142,6 +144,12 @@ func (b *Backend) SetQuestionGateway(gateway question.Gateway) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.questions = gateway
+}
+
+func (b *Backend) SetBackgroundCommandManager(manager tool.BackgroundCommandManager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.backgroundCommands = manager
 }
 
 // SetHooksHomeDir configures the user-level hook root. The Hook runtime itself
@@ -1048,6 +1056,12 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		if questions != nil {
 			questions.ClearSession(sessionID)
 		}
+		b.mu.RLock()
+		backgroundCommands := b.backgroundCommands
+		b.mu.RUnlock()
+		if backgroundCommands != nil {
+			backgroundCommands.ClearSession(sessionID)
+		}
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
 		}
@@ -1117,6 +1131,91 @@ func (b *Backend) CancelTurn(sessionID string) {
 	if manager != nil {
 		manager.CancelTree(sessionID)
 	}
+}
+
+func (b *Backend) CancelTool(sessionID, toolCallID string) error {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return session.ErrNotFound
+	}
+	if !b.engine.CancelTool(sessionID, toolCallID) {
+		return ErrToolCallNotRunning
+	}
+	return nil
+}
+
+func (b *Backend) BackgroundTool(
+	sessionID, toolCallID string,
+) (tool.BackgroundCommandSnapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return tool.BackgroundCommandSnapshot{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.backgroundCommands
+	b.mu.RUnlock()
+	if manager == nil {
+		return tool.BackgroundCommandSnapshot{}, errors.New("background commands are unavailable")
+	}
+	return manager.Promote(sessionID, toolCallID)
+}
+
+func (b *Backend) RevealToolCommand(
+	sessionID, toolCallID string,
+) (tool.BackgroundCommandSnapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return tool.BackgroundCommandSnapshot{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.backgroundCommands
+	b.mu.RUnlock()
+	if manager == nil {
+		return tool.BackgroundCommandSnapshot{}, errors.New("managed commands are unavailable")
+	}
+	return manager.Reveal(sessionID, toolCallID)
+}
+
+func (b *Backend) ListBackgroundCommands(
+	sessionID string,
+) ([]tool.BackgroundCommandSnapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return nil, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.backgroundCommands
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("background commands are unavailable")
+	}
+	return manager.List(sessionID), nil
+}
+
+func (b *Backend) GetBackgroundCommand(
+	sessionID, commandID string,
+) (tool.BackgroundCommandSnapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return tool.BackgroundCommandSnapshot{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.backgroundCommands
+	b.mu.RUnlock()
+	if manager == nil {
+		return tool.BackgroundCommandSnapshot{}, errors.New("background commands are unavailable")
+	}
+	return manager.Get(sessionID, commandID)
+}
+
+func (b *Backend) StopBackgroundCommand(
+	sessionID, commandID string,
+) (tool.BackgroundCommandSnapshot, error) {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return tool.BackgroundCommandSnapshot{}, session.ErrNotFound
+	}
+	b.mu.RLock()
+	manager := b.backgroundCommands
+	b.mu.RUnlock()
+	if manager == nil {
+		return tool.BackgroundCommandSnapshot{}, errors.New("background commands are unavailable")
+	}
+	return manager.Stop(sessionID, commandID, "user")
 }
 
 // ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。

@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/popover";
 import ProjectFilesPanel from "./ProjectFilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
+import BackgroundCommandTerminalPanel from "./BackgroundCommandTerminalPanel.vue";
 import BrowserPanel from "./BrowserPanel.vue";
 
 const props = defineProps<{
@@ -75,6 +76,7 @@ const icons: Record<WorkbarTabKind, LucideIcon> = {
   file: FileIcon,
   terminal: TerminalIcon,
   browser: GlobeIcon,
+  "background-command": TerminalIcon,
 };
 const launcherItems = computed<
   Array<{
@@ -380,6 +382,18 @@ watch(
             :session-id="sessionId"
             :active="open && activeTabId === tab.id"
             :ensure-session="ensureSession"
+          />
+          <BackgroundCommandTerminalPanel
+            v-else-if="
+              tab.kind === 'background-command' &&
+              tab.sessionId &&
+              tab.commandId
+            "
+            v-show="activeTabId === tab.id"
+            class="absolute inset-0"
+            :session-id="tab.sessionId"
+            :command-id="tab.commandId"
+            :active="open && activeTabId === tab.id"
           />
           <BrowserPanel
             v-else-if="tab.kind === 'browser'"

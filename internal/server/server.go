@@ -33,6 +33,7 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
+	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
 	"github.com/freesoulcode/foya/internal/workflow"
 )
@@ -79,6 +80,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/edit", s.handleEditTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/tools/{tool_call_id}/cancel", s.handleCancelTool)
+	s.mux.HandleFunc("POST /sessions/{id}/tools/{tool_call_id}/background", s.handleBackgroundTool)
+	s.mux.HandleFunc("POST /sessions/{id}/tools/{tool_call_id}/reveal", s.handleRevealToolCommand)
+	s.mux.HandleFunc("GET /sessions/{id}/background-commands", s.handleListBackgroundCommands)
+	s.mux.HandleFunc("GET /sessions/{id}/background-commands/{command_id}", s.handleGetBackgroundCommand)
+	s.mux.HandleFunc("POST /sessions/{id}/background-commands/{command_id}/cancel", s.handleStopBackgroundCommand)
 	s.mux.HandleFunc("GET /sessions/{id}/queue", s.handleListQueue)
 	s.mux.HandleFunc("POST /sessions/{id}/queue", s.handleEnqueueMessage)
 	s.mux.HandleFunc("PATCH /sessions/{id}/queue/{message_id}", s.handleUpdateQueuedMessage)
@@ -1398,6 +1405,111 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.backend.CancelTurn(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCancelTool(w http.ResponseWriter, r *http.Request) {
+	err := s.backend.CancelTool(r.PathValue("id"), r.PathValue("tool_call_id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+		case errors.Is(err, backend.ErrToolCallNotRunning):
+			writeErr(w, http.StatusConflict, "tool_not_running", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "tool_cancel_failed", err.Error())
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleBackgroundTool(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.backend.BackgroundTool(
+		r.PathValue("id"),
+		r.PathValue("tool_call_id"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+		case errors.Is(err, tool.ErrBackgroundCommandNotFound):
+			writeErr(w, http.StatusConflict, "tool_not_running", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "tool_background_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleRevealToolCommand(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.backend.RevealToolCommand(
+		r.PathValue("id"),
+		r.PathValue("tool_call_id"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+		case errors.Is(err, tool.ErrBackgroundCommandNotFound):
+			writeErr(w, http.StatusConflict, "tool_not_running", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "tool_reveal_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleListBackgroundCommands(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.ListBackgroundCommands(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "background_commands_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleGetBackgroundCommand(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.backend.GetBackgroundCommand(
+		r.PathValue("id"),
+		r.PathValue("command_id"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+		case errors.Is(err, tool.ErrBackgroundCommandNotFound):
+			writeErr(w, http.StatusNotFound, "background_command_not_found", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "background_command_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (s *Server) handleStopBackgroundCommand(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.backend.StopBackgroundCommand(
+		r.PathValue("id"),
+		r.PathValue("command_id"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "session_not_found", err.Error())
+		case errors.Is(err, tool.ErrBackgroundCommandNotFound):
+			writeErr(w, http.StatusNotFound, "background_command_not_found", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "background_command_cancel_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 // handleListQueue returns the current ordered queue snapshot.

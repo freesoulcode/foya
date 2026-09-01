@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,10 @@ import (
 // 交互式任务不该被武断的步数打断,失控由 loopGuard 的两层检测精准终止。
 const maxToolStepsUnlimited = 0
 const maxProviderImageBytes int64 = 20 << 20
+
+var errToolCancelledByUser = errors.New("tool execution cancelled by the user")
+
+const toolCancelledByUserResult = `{"status":"cancelled","initiated_by":"user","message":"The user cancelled this tool execution. Do not treat it as an infrastructure failure."}`
 
 // SessionLookup 是引擎读取会话元数据所需的最小依赖。
 type SessionLookup interface {
@@ -104,6 +109,10 @@ type Engine struct {
 	// dones 持有每个会话当前回合的结束信号:RunTurn goroutine 退出时 close。
 	// 删除会话时用 CancelAndWait 等待回合彻底收尾,避免收尾事件写入已删会话。
 	dones sync.Map // sessionID -> chan struct{}
+
+	// toolCancels allows clients to stop one running tool without cancelling the
+	// surrounding agent turn. Keys combine session ID and tool call ID.
+	toolCancels sync.Map // string -> context.CancelCauseFunc
 
 	// requestBudgets 保存每个会话最近一次成功请求的真实 input token 与请求体大小,
 	// 用于估算下一次请求。值带模型名,切换模型后自动退回完整载荷估算。
@@ -1233,6 +1242,16 @@ func (e *Engine) Cancel(sessionID string) {
 	}
 }
 
+// CancelTool interrupts one active tool call while leaving the Agent Loop
+// alive so the model can observe the interrupted result and choose a fallback.
+func (e *Engine) CancelTool(sessionID, toolCallID string) bool {
+	if cancel, ok := e.toolCancels.Load(toolCancelKey(sessionID, toolCallID)); ok {
+		cancel.(context.CancelCauseFunc)(errToolCancelledByUser)
+		return true
+	}
+	return false
+}
+
 // CancelAndWait 中断会话当前回合,并阻塞等待其 goroutine 彻底退出(或超时)。
 // 删除会话时调用:确保回合的收尾事件(tool_end/turn_complete 等)已全部发出,
 // 之后再清理会话数据,避免迟到事件把已删除会话的日志/状态重新写回。
@@ -1262,11 +1281,25 @@ func (e *Engine) executeTool(ctx context.Context, sessionID string, tc message.T
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: "unknown tool: " + tc.Name}}}
 	}
 	call := tool.Call{ID: tc.ID, Name: tc.Name, Input: tc.Input}
-	result, err := t.Run(ctx, call)
+	toolCtx, cancel := context.WithCancelCause(ctx)
+	key := toolCancelKey(sessionID, tc.ID)
+	e.toolCancels.Store(key, cancel)
+	defer e.toolCancels.Delete(key)
+	defer cancel(nil)
+	result, err := t.Run(toolCtx, call)
+	if errors.Is(context.Cause(toolCtx), errToolCancelledByUser) {
+		return tool.Result{IsError: true, Content: []tool.ContentPart{{
+			Type: "text", Text: toolCancelledByUserResult,
+		}}}
+	}
 	if err != nil {
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: err.Error()}}}
 	}
 	return result
+}
+
+func toolCancelKey(sessionID, toolCallID string) string {
+	return sessionID + "\x00" + toolCallID
 }
 
 func (e *Engine) toolDefsForSession(sessionID string) []provider.ToolDef {

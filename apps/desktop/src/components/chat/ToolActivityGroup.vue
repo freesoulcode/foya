@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
+  ArrowDownToLineIcon,
   BotIcon,
   ChevronRightIcon,
   FilePenLineIcon,
@@ -10,6 +11,8 @@ import {
   LoaderCircleIcon,
   MessageSquareTextIcon,
   SearchIcon,
+  SquareIcon,
+  SquareTerminalIcon,
   TerminalIcon,
   WrenchIcon,
   type LucideIcon,
@@ -70,6 +73,9 @@ onBeforeUnmount(() => {
 
 const emit = defineEmits<{
   (e: "open-diff", diff: string): void;
+  (e: "cancel-tool", toolCallId: string): void;
+  (e: "background-tool", toolCallId: string): void;
+  (e: "terminal-tool", toolCallId: string): void;
 }>();
 
 interface ToolMeta {
@@ -187,6 +193,9 @@ function toolLabel(tool: ToolCallView): string {
   if (tool.status === "queued") return meta.queued + agentSuffix;
   if (tool.status === "running") return meta.running + agentSuffix;
   if (tool.status === "error") return `${meta.done}${agentSuffix}（失败）`;
+  if (tool.name === "bash" && tool.output?.includes('"running_in_background"')) {
+    return "命令已转到后台";
+  }
   if (tool.diff) return "已编辑 1 个文件";
   return meta.done + agentSuffix;
 }
@@ -239,9 +248,10 @@ function formatInput(input: string): string {
       :class="cn(isBatch && 'mt-1 border-l-2 border-border pl-3')"
     >
       <div v-for="tool in tools" :key="tool.id" class="min-w-0">
+        <div class="flex min-w-0 items-center">
           <button
             type="button"
-            class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+            class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
             @click="toggleTool(tool)"
           >
             <ChevronRightIcon
@@ -263,6 +273,37 @@ function formatInput(input: string): string {
               aria-label="等待执行"
             />
           </button>
+          <button
+            v-if="tool.name === 'bash' && tool.status === 'running'"
+            type="button"
+            class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title="在终端中运行并查看"
+            @click="emit('terminal-tool', tool.id)"
+          >
+            <SquareTerminalIcon class="size-3.5" />
+            <span>终端</span>
+          </button>
+          <button
+            v-if="tool.name === 'bash' && tool.status === 'running'"
+            type="button"
+            class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title="转到后台运行"
+            @click="emit('background-tool', tool.id)"
+          >
+            <ArrowDownToLineIcon class="size-3.5" />
+            <span>后台</span>
+          </button>
+          <button
+            v-if="tool.name === 'bash' && tool.status === 'running'"
+            type="button"
+            class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+            title="仅中断此命令"
+            @click="emit('cancel-tool', tool.id)"
+          >
+            <SquareIcon class="size-3 fill-current" />
+            <span>停止</span>
+          </button>
+        </div>
 
           <div
             v-if="isToolExpanded(tool)"

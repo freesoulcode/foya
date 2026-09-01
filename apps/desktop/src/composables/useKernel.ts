@@ -19,6 +19,7 @@ import {
   type WorkflowRecord,
   type PendingQuestionBatch,
   type QuestionAnswer,
+  type BackgroundCommand,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -81,6 +82,7 @@ const usageBySession = ref<Record<string, ContextUsage>>({});
 const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
 const agentBudgetBySession = ref<Record<string, AgentBudget>>({});
 const workflowsBySession = ref<Record<string, WorkflowRecord | null>>({});
+const backgroundCommandsBySession = ref<Record<string, BackgroundCommand[]>>({});
 
 // 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
 export interface PendingApproval {
@@ -113,6 +115,9 @@ const activeQueuedMessages = computed<QueuedMessage[]>(
 );
 const activeUsage = computed<ContextUsage | undefined>(
   () => usageBySession.value[activeId.value]
+);
+const activeBackgroundCommands = computed<BackgroundCommand[]>(
+  () => backgroundCommandsBySession.value[activeId.value] ?? []
 );
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value));
 const isDraft = computed(() => activeId.value === "");
@@ -734,18 +739,20 @@ async function select(id: string) {
     messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
-  const [queued, usage, agentRuns, agentBudget, workflow] = await Promise.all([
+  const [queued, usage, agentRuns, agentBudget, workflow, backgroundCommands] = await Promise.all([
     api.listQueuedMessages(id),
     api.loadUsage(id),
     api.listAgentRuns(id),
     api.loadAgentBudget(id),
     api.getWorkflow(id),
+    api.listBackgroundCommands(id),
   ]);
   queuedBySession.value[id] = queued;
   if (usage) usageBySession.value[id] = usage;
   else delete usageBySession.value[id];
   agentBudgetBySession.value[id] = agentBudget;
   workflowsBySession.value[id] = workflow;
+  backgroundCommandsBySession.value[id] = backgroundCommands;
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
@@ -781,6 +788,7 @@ function removeSession(id: string) {
   delete streamingIdx[id];
   delete runningSessions.value[id];
   delete compactingSessions.value[id];
+  delete backgroundCommandsBySession.value[id];
   // 清理该会话的待处理审批。
   for (const [aid, a] of Object.entries(pendingApprovals.value)) {
     if (a.session === id) delete pendingApprovals.value[aid];
@@ -840,6 +848,137 @@ async function cancelTurn() {
     await api.cancelTurn(id);
   } catch (e) {
     console.error("中断回合失败:", e);
+  }
+}
+
+async function cancelTool(toolCallId: string) {
+  const id = activeId.value;
+  if (!id) return;
+  try {
+    await api.cancelTool(id, toolCallId);
+  } catch (e) {
+    console.error("中断命令失败:", e);
+  }
+}
+
+async function backgroundTool(
+  toolCallId: string
+): Promise<BackgroundCommand | undefined> {
+  const id = activeId.value;
+  if (!id) return undefined;
+  const pendingId = `promoting:${toolCallId}`;
+  const toolCall = matchingAgentTools(id, toolCallId)[0];
+  let command = toolCall?.input ?? "";
+  try {
+    command = String(JSON.parse(command)?.command ?? command);
+  } catch {
+    // Keep the raw tool input when it is not valid JSON.
+  }
+  const items = backgroundCommandsBySession.value[id] ?? [];
+  backgroundCommandsBySession.value[id] = [
+    {
+      command_id: pendingId,
+      session_id: id,
+      command,
+      running: true,
+      started_at: new Date().toISOString(),
+      backgrounded_by: "user",
+    },
+    ...items.filter((item) => item.command_id !== pendingId),
+  ];
+  try {
+    let backgroundCommand: BackgroundCommand | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        backgroundCommand = await api.backgroundTool(id, toolCallId);
+        break;
+      } catch (error) {
+        lastError = error;
+        const message = String(error);
+        if (!message.includes("409") && !message.includes("tool_not_running")) {
+          throw error;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+    }
+    if (!backgroundCommand) throw lastError;
+    const current = backgroundCommandsBySession.value[id] ?? [];
+    backgroundCommandsBySession.value[id] = [
+      backgroundCommand,
+      ...current.filter(
+        (item) =>
+          item.command_id !== pendingId &&
+          item.command_id !== backgroundCommand.command_id
+      ),
+    ];
+    return backgroundCommand;
+  } catch (e) {
+    backgroundCommandsBySession.value[id] = (
+      backgroundCommandsBySession.value[id] ?? []
+    ).filter((item) => item.command_id !== pendingId);
+    console.error("切换后台运行失败:", e);
+    return undefined;
+  }
+}
+
+async function revealToolCommand(
+  toolCallId: string
+): Promise<BackgroundCommand | undefined> {
+  const id = activeId.value;
+  if (!id) return undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      return await api.revealToolCommand(id, toolCallId);
+    } catch (error) {
+      lastError = error;
+      const message = String(error);
+      if (!message.includes("409") && !message.includes("tool_not_running")) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+  }
+  console.error("打开命令终端失败:", lastError);
+  return undefined;
+}
+
+async function refreshBackgroundCommands(sessionId = activeId.value) {
+  if (!sessionId) return;
+  try {
+    const pending = (backgroundCommandsBySession.value[sessionId] ?? []).filter(
+      (item) => item.command_id.startsWith("promoting:")
+    );
+    const running = await api.listBackgroundCommands(sessionId);
+    backgroundCommandsBySession.value[sessionId] = [
+      ...pending,
+      ...running.filter(
+        (item) =>
+          !pending.some(
+            (candidate) =>
+              candidate.command_id === item.command_id ||
+              candidate.command === item.command
+          )
+      ),
+    ];
+  } catch (e) {
+    console.error("刷新后台命令失败:", e);
+  }
+}
+
+async function stopBackgroundCommand(commandId: string) {
+  const id = activeId.value;
+  if (!id) return;
+  try {
+    await api.stopBackgroundCommand(id, commandId);
+    backgroundCommandsBySession.value[id] = (
+      backgroundCommandsBySession.value[id] ?? []
+    ).filter(
+      (item) => item.command_id !== commandId
+    );
+  } catch (e) {
+    console.error("终止后台命令失败:", e);
   }
 }
 
@@ -1041,6 +1180,7 @@ export function useKernel() {
     modelsError,
     messages: activeMessages,
     queuedMessages: activeQueuedMessages,
+    backgroundCommands: activeBackgroundCommands,
     contextUsage: activeUsage,
     agentRunsBySession,
     agentBudgetBySession,
@@ -1056,6 +1196,11 @@ export function useKernel() {
     confirmHistoryEdit,
     cancelHistoryEdit,
     cancelTurn,
+    cancelTool,
+    backgroundTool,
+    revealToolCommand,
+    refreshBackgroundCommands,
+    stopBackgroundCommand,
     ensureSession,
     updateSession,
     renameSession,

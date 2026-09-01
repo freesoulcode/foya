@@ -1,7 +1,7 @@
 import { computed, ref } from "vue";
 
 export type WorkbarLaunchKind = "terminal" | "browser";
-export type WorkbarTabKind = "file" | WorkbarLaunchKind;
+export type WorkbarTabKind = "file" | "background-command" | WorkbarLaunchKind;
 
 export interface WorkbarItem {
   kind: WorkbarLaunchKind;
@@ -16,6 +16,8 @@ export interface WorkbarTab {
   projectPath?: string;
   view?: "file" | "diff";
   diff?: string;
+  sessionId?: string;
+  commandId?: string;
 }
 
 const MIN_WIDTH = 320;
@@ -109,6 +111,30 @@ function openFile(
   } else {
     tabs.value.push({ id, kind: "file", title, path, projectPath, view, diff });
   }
+  activeTabId.value = id;
+  setOpen(true);
+}
+
+function openBackgroundCommand(
+  sessionId: string,
+  commandId: string,
+  command: string
+) {
+  const id = `background-command:${commandId}`;
+  const existing = tabs.value.find((tab) => tab.id === id);
+  if (existing) {
+    activeTabId.value = existing.id;
+    setOpen(true);
+    return;
+  }
+  const normalized = command.replace(/\s+/g, " ").trim();
+  tabs.value.push({
+    id,
+    kind: "background-command",
+    title: normalized || "后台命令",
+    sessionId,
+    commandId,
+  });
   activeTabId.value = id;
   setOpen(true);
 }
@@ -214,6 +240,7 @@ export function useWorkbar() {
     addTab,
     openFiles,
     openFile,
+    openBackgroundCommand,
     selectTab,
     setTabTitle,
     closeTab,

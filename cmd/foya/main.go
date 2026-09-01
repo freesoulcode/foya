@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -80,11 +81,42 @@ func runDaemon() {
 		fmt.Fprintln(os.Stderr, "kernel listen failed:", err)
 		os.Exit(1)
 	}
+	defer ln.Close()
+	if cfg.Transport == config.TransportUnixSocket {
+		defer os.Remove(cfg.SocketPath)
+	}
 	fmt.Printf("foya kernel listening on %s\n", desc)
 
-	if err := http.Serve(ln, srv.Handler()); err != nil {
-		fmt.Fprintln(os.Stderr, "kernel exited:", err)
-		os.Exit(1)
+	httpServer := &http.Server{Handler: srv.Handler()}
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- httpServer.Serve(ln)
+	}()
+
+	parentDone := watchParentProcess()
+	if parentDone == nil {
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "kernel exited:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "kernel exited:", err)
+			os.Exit(1)
+		}
+	case <-parentDone:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintln(os.Stderr, "kernel shutdown failed:", err)
+		}
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "kernel exited:", err)
+		}
 	}
 }
 

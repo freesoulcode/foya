@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onBeforeUnmount, onMounted } from "vue";
 import { useKernel } from "@/composables/useKernel";
 import { usePlatform } from "@/composables/usePlatform";
 import { useWorkbar } from "@/composables/useWorkbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import { api, type ApprovalMode, type ReasoningEffort, type UpdateSessionPatch } from "@/lib/api";
+import {
+  api,
+  type ApprovalMode,
+  type BackgroundCommand,
+  type ReasoningEffort,
+  type UpdateSessionPatch,
+} from "@/lib/api";
 import { diffFilePath } from "@/lib/diff";
 import AppTitleBar from "@/components/AppTitleBar.vue";
 import SessionSidebar from "@/components/chat/SessionSidebar.vue";
@@ -14,13 +20,18 @@ import Composer from "@/components/chat/Composer.vue";
 import SettingsPanel from "@/components/settings/SettingsPanel.vue";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 import AskUserPanel from "@/components/chat/AskUserPanel.vue";
+import BackgroundCommandsPanel from "@/components/chat/BackgroundCommandsPanel.vue";
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
 import { Button } from "@/components/ui/button";
 
 const { isMac } = usePlatform();
-const { open: workbarOpen, openFile: openWorkbarFile } = useWorkbar();
+const {
+  open: workbarOpen,
+  openFile: openWorkbarFile,
+  openBackgroundCommand: openWorkbarBackgroundCommand,
+} = useWorkbar();
 
 const {
   ready,
@@ -39,6 +50,7 @@ const {
   modelsError,
   messages,
   queuedMessages,
+  backgroundCommands,
   contextUsage,
   pendingApprovals,
   pendingQuestions,
@@ -50,6 +62,11 @@ const {
   ensureSession,
   editSentMessage,
   cancelTurn,
+  cancelTool,
+  backgroundTool,
+  revealToolCommand,
+  refreshBackgroundCommands,
+  stopBackgroundCommand,
   updateSession,
   renameSession,
   pinSession,
@@ -182,6 +199,19 @@ function onOpenDiff(diff: string) {
   if (path) openWorkbarFile(projectPath.value, path, "diff", diff);
 }
 
+function onOpenBackgroundCommand(command: BackgroundCommand) {
+  openWorkbarBackgroundCommand(
+    command.session_id,
+    command.command_id,
+    command.command
+  );
+}
+
+async function onViewToolInWorkbar(toolCallId: string) {
+  const command = await revealToolCommand(toolCallId);
+  if (command) onOpenBackgroundCommand(command);
+}
+
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelConfigChange(value: {
   connectionID: string;
@@ -282,7 +312,18 @@ async function onPinProject(id: string, pinned: boolean) {
   }
 }
 
-onMounted(connect);
+let backgroundCommandPoll: number | undefined;
+onMounted(() => {
+  void connect();
+  backgroundCommandPoll = window.setInterval(() => {
+    if (activeId.value) void refreshBackgroundCommands(activeId.value);
+  }, 1000);
+});
+onBeforeUnmount(() => {
+  if (backgroundCommandPoll !== undefined) {
+    window.clearInterval(backgroundCommandPoll);
+  }
+});
 </script>
 
 <template>
@@ -339,8 +380,16 @@ onMounted(connect);
               :editable="queuedMessages.length === 0"
               @edit-message="editSentMessage"
               @open-diff="onOpenDiff"
+              @cancel-tool="cancelTool"
+              @background-tool="backgroundTool"
+              @terminal-tool="onViewToolInWorkbar"
             />
           </div>
+          <BackgroundCommandsPanel
+            :commands="backgroundCommands"
+            @stop="stopBackgroundCommand"
+            @open="onOpenBackgroundCommand"
+          />
           <div
             v-if="activeWorkflow?.status === 'ready'"
             class="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 border-x border-t border-border px-4 py-3"

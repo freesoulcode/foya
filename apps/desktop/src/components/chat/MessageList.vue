@@ -17,6 +17,9 @@ const emit = defineEmits<{
   "update:activeTurn": [value: number];
   "edit-message": [messageSeq: number, text: string];
   "open-diff": [diff: string];
+  "cancel-tool": [toolCallId: string];
+  "background-tool": [toolCallId: string];
+  "terminal-tool": [toolCallId: string];
 }>();
 
 const scrollEl = ref<HTMLElement | null>(null);
@@ -191,6 +194,9 @@ onBeforeUnmount(() => {
               (messageSeq, text) => emit('edit-message', messageSeq, text)
             "
             @open-diff="(diff) => emit('open-diff', diff)"
+            @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
+            @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
+            @terminal-tool="(toolCallId) => emit('terminal-tool', toolCallId)"
           />
         </div>
 

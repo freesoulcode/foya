@@ -36,6 +36,9 @@ var (
 	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
 	// ErrAttachmentEditUnsupported avoids silently dropping attachments from an edited turn.
 	ErrAttachmentEditUnsupported = errors.New("messages with attachments cannot be edited")
+	// ErrToolCallNotRunning means the requested tool has already completed or
+	// does not belong to the session.
+	ErrToolCallNotRunning = errors.New("tool call is not running")
 )
 
 const (

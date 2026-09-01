@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 )
 
 // Kind 标识沙箱后端。
@@ -59,6 +60,23 @@ type ExecResult struct {
 	Stderr []byte
 }
 
+type ProcessSnapshot struct {
+	PID      int
+	Running  bool
+	ExitCode int
+	Stdout   []byte
+	Stderr   []byte
+}
+
+// Process is a running sandboxed command. It can outlive the context which
+// initiated a tool call when explicitly started as a background command.
+type Process interface {
+	Snapshot() ProcessSnapshot
+	Done() <-chan struct{}
+	Wait() (ExecResult, error)
+	Stop() error
+}
+
 // Sandbox 把原始命令改写成沙箱包装后的命令。
 type Sandbox interface {
 	Wrap(req ExecRequest, profile Profile) (ExecRequest, error)
@@ -71,8 +89,56 @@ type Runner interface {
 	Kind() Kind
 }
 
+// ManagedRunner additionally supports commands whose lifecycle is owned by
+// the kernel rather than one synchronous tool invocation.
+type ManagedRunner interface {
+	Runner
+	Start(ctx context.Context, req ExecRequest, profile Profile) (Process, error)
+}
+
 type runner struct {
 	backend Sandbox
+}
+
+type runningProcess struct {
+	mu       sync.RWMutex
+	cmd      *exec.Cmd
+	stdout   *lockedBuffer
+	stderr   *lockedBuffer
+	running  bool
+	exitCode int
+	err      error
+	done     chan struct{}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	const maxProcessOutputBytes = 1 << 20
+	size := len(data)
+	if size >= maxProcessOutputBytes {
+		b.Buffer.Reset()
+		_, _ = b.Buffer.Write(data[size-maxProcessOutputBytes:])
+		return size, nil
+	}
+	_, _ = b.Buffer.Write(data)
+	if b.Buffer.Len() > maxProcessOutputBytes {
+		current := append([]byte(nil), b.Buffer.Bytes()...)
+		b.Buffer.Reset()
+		_, _ = b.Buffer.Write(current[len(current)-maxProcessOutputBytes:])
+	}
+	return size, nil
+}
+
+func (b *lockedBuffer) BytesCopy() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.Buffer.Bytes()...)
 }
 
 func NewRunner() Runner {
@@ -92,26 +158,113 @@ func (r *runner) Run(
 	req ExecRequest,
 	profile Profile,
 ) (ExecResult, error) {
-	if len(req.Argv) == 0 {
-		return ExecResult{}, errors.New("sandbox command is empty")
-	}
-	wrapped, err := r.backend.Wrap(req, profile)
+	process, err := r.Start(ctx, req, profile)
 	if err != nil {
 		return ExecResult{}, err
 	}
+	return process.Wait()
+}
+
+func (r *runner) Start(
+	ctx context.Context,
+	req ExecRequest,
+	profile Profile,
+) (Process, error) {
+	if len(req.Argv) == 0 {
+		return nil, errors.New("sandbox command is empty")
+	}
+	wrapped, err := r.backend.Wrap(req, profile)
+	if err != nil {
+		return nil, err
+	}
 	if len(wrapped.Argv) == 0 {
-		return ExecResult{}, errors.New("sandbox returned an empty command")
+		return nil, errors.New("sandbox returned an empty command")
 	}
 	cmd := exec.CommandContext(ctx, wrapped.Argv[0], wrapped.Argv[1:]...)
 	cmd.Dir = wrapped.Dir
 	cmd.Env = wrapped.Env
 	cmd.Stdin = bytes.NewReader(wrapped.Stdin)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	return ExecResult{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, err
+	stdout := &lockedBuffer{}
+	stderr := &lockedBuffer{}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	configureProcessTree(cmd)
+	process := &runningProcess{
+		cmd:      cmd,
+		stdout:   stdout,
+		stderr:   stderr,
+		running:  true,
+		exitCode: -1,
+		done:     make(chan struct{}),
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go process.reap()
+	return process, nil
+}
+
+func (p *runningProcess) reap() {
+	err := p.cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	p.mu.Lock()
+	p.running = false
+	p.exitCode = exitCode
+	p.err = err
+	p.mu.Unlock()
+	close(p.done)
+}
+
+func (p *runningProcess) Snapshot() ProcessSnapshot {
+	p.mu.RLock()
+	running := p.running
+	exitCode := p.exitCode
+	pid := 0
+	if p.cmd.Process != nil {
+		pid = p.cmd.Process.Pid
+	}
+	p.mu.RUnlock()
+	return ProcessSnapshot{
+		PID:      pid,
+		Running:  running,
+		ExitCode: exitCode,
+		Stdout:   p.stdout.BytesCopy(),
+		Stderr:   p.stderr.BytesCopy(),
+	}
+}
+
+func (p *runningProcess) Done() <-chan struct{} {
+	return p.done
+}
+
+func (p *runningProcess) Wait() (ExecResult, error) {
+	<-p.done
+	p.mu.RLock()
+	err := p.err
+	p.mu.RUnlock()
+	return ExecResult{
+		Stdout: p.stdout.BytesCopy(),
+		Stderr: p.stderr.BytesCopy(),
+	}, err
+}
+
+func (p *runningProcess) Stop() error {
+	p.mu.RLock()
+	running := p.running
+	process := p.cmd.Process
+	p.mu.RUnlock()
+	if !running || process == nil {
+		return nil
+	}
+	return stopProcessTree(process)
 }
 
 // WorkspaceWriteProfile permits writes only inside the project and temporary

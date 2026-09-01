@@ -140,6 +140,20 @@ export interface TerminalDataEvent {
   exit_code?: number;
 }
 
+export interface BackgroundCommand {
+  command_id: string;
+  session_id: string;
+  command: string;
+  pid?: number;
+  running: boolean;
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+  started_at: string;
+  backgrounded_by?: "agent" | "user";
+  stopped_by?: "agent" | "user";
+}
+
 export interface BrowserViewport {
   x: number;
   y: number;
@@ -649,6 +663,34 @@ export const api = {
   // 中断当前回合(用户点停止)。
   cancelTurn: (sessionId: string) =>
     invoke("cancel_turn", { sessionId }),
+
+  cancelTool: (sessionId: string, toolCallId: string) =>
+    invoke("cancel_tool", { sessionId, toolCallId }),
+
+  backgroundTool: (sessionId: string, toolCallId: string) =>
+    invoke<string>("background_tool", { sessionId, toolCallId }).then(
+      (result) => JSON.parse(result) as BackgroundCommand
+    ),
+
+  revealToolCommand: (sessionId: string, toolCallId: string) =>
+    invoke<string>("reveal_tool_command", { sessionId, toolCallId }).then(
+      (result) => JSON.parse(result) as BackgroundCommand
+    ),
+
+  listBackgroundCommands: (sessionId: string) =>
+    invoke<string>("list_background_commands", { sessionId }).then(
+      (result) => (JSON.parse(result) as BackgroundCommand[]) ?? []
+    ),
+
+  getBackgroundCommand: (sessionId: string, commandId: string) =>
+    invoke<string>("get_background_command", { sessionId, commandId }).then(
+      (result) => JSON.parse(result) as BackgroundCommand
+    ),
+
+  stopBackgroundCommand: (sessionId: string, commandId: string) =>
+    invoke<string>("stop_background_command", { sessionId, commandId }).then(
+      (result) => JSON.parse(result) as BackgroundCommand
+    ),
 
   listConnections: () =>
     invoke<string>("list_connections").then(

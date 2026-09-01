@@ -1180,6 +1180,79 @@ async fn cancel_turn(session_id: String) -> Result<(), String> {
         .map(|_| ())
 }
 
+#[cfg(unix)]
+#[tauri::command]
+async fn cancel_tool(session_id: String, tool_call_id: String) -> Result<(), String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/tools/{tool_call_id}/cancel"),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn background_tool(session_id: String, tool_call_id: String) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/tools/{tool_call_id}/background"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn reveal_tool_command(session_id: String, tool_call_id: String) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/tools/{tool_call_id}/reveal"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_background_commands(session_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/sessions/{session_id}/background-commands"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_background_command(
+    session_id: String,
+    command_id: String,
+) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/sessions/{session_id}/background-commands/{command_id}"),
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn stop_background_command(
+    session_id: String,
+    command_id: String,
+) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/background-commands/{command_id}/cancel"),
+        None,
+    )
+    .await
+}
+
 /// 删除会话(中断回合、清除元数据与历史、广播移除)。
 #[cfg(unix)]
 #[tauri::command]
@@ -1680,6 +1753,51 @@ async fn cancel_turn(_session_id: String) -> Result<(), String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn cancel_tool(_session_id: String, _tool_call_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn background_tool(_session_id: String, _tool_call_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn reveal_tool_command(
+    _session_id: String,
+    _tool_call_id: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_background_commands(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_background_command(
+    _session_id: String,
+    _command_id: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn stop_background_command(
+    _session_id: String,
+    _command_id: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn delete_session(_session_id: String) -> Result<(), String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -1933,7 +2051,10 @@ pub fn run() {
 
             // 启动时把打包进来的 Go 内核 sidecar 拉起(connect-or-spawn 的 spawn 部分)。
             // Tauri 会自动解析当前平台对应的二进制(如 foya-aarch64-apple-darwin)。
-            let mut sidecar = app.shell().sidecar("foya")?;
+            let mut sidecar = app
+                .shell()
+                .sidecar("foya")?
+                .env("FOYA_PARENT_PID", std::process::id().to_string());
             // BYOK:把 provider 配置从当前进程环境透传给内核 sidecar。
             // 脚手架阶段靠环境变量注入(启动 app 前 export FOYA_PROVIDER_*);
             // 后续改为从设置界面写入、key 存 OS keychain。
@@ -2059,6 +2180,12 @@ pub fn run() {
             answer_questions,
             cancel_questions,
             cancel_turn,
+            cancel_tool,
+            background_tool,
+            reveal_tool_command,
+            list_background_commands,
+            get_background_command,
+            stop_background_command,
             delete_session
         ])
         .build(tauri::generate_context!())
