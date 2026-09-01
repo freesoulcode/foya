@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useKernel } from "@/composables/useKernel";
+import { useLinkPreference } from "@/composables/useLinkPreference";
 import { usePlatform } from "@/composables/usePlatform";
 import { useWorkbar } from "@/composables/useWorkbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
@@ -30,8 +32,10 @@ const { isMac } = usePlatform();
 const {
   open: workbarOpen,
   openFile: openWorkbarFile,
+  openBrowser: openWorkbarBrowser,
   openBackgroundCommand: openWorkbarBackgroundCommand,
 } = useWorkbar();
+const { linkOpenMode } = useLinkPreference();
 
 const {
   ready,
@@ -212,6 +216,18 @@ async function onViewToolInWorkbar(toolCallId: string) {
   if (command) onOpenBackgroundCommand(command);
 }
 
+async function onOpenLink(url: string) {
+  if (linkOpenMode.value === "system") {
+    try {
+      await openUrl(url);
+    } catch (error) {
+      console.error("使用系统浏览器打开链接失败:", error);
+    }
+    return;
+  }
+  openWorkbarBrowser(url);
+}
+
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
 function onModelConfigChange(value: {
   connectionID: string;
@@ -374,6 +390,7 @@ onBeforeUnmount(() => {
               ref="messageListRef"
               v-model:active-turn="activeTurn"
               :session-id="activeId"
+              :project-path="projectPath"
               :messages="messages"
               :streaming="streaming"
               :compacting="activeCompacting"
@@ -383,6 +400,7 @@ onBeforeUnmount(() => {
               @cancel-tool="cancelTool"
               @background-tool="backgroundTool"
               @terminal-tool="onViewToolInWorkbar"
+              @open-link="onOpenLink"
             />
           </div>
           <BackgroundCommandsPanel

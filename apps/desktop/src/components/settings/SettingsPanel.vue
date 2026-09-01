@@ -9,6 +9,7 @@ import {
   BrainIcon,
   CommandIcon,
   DownloadIcon,
+  ExternalLinkIcon,
   FileJsonIcon,
   GlobeIcon,
   GripVerticalIcon,
@@ -39,6 +40,10 @@ import {
   type WebSearchSettings,
 } from "@/lib/api";
 import { useTheme, type Theme } from "@/composables/useTheme";
+import {
+  useLinkPreference,
+  type LinkOpenMode,
+} from "@/composables/useLinkPreference";
 import { usePlatform } from "@/composables/usePlatform";
 import {
   Sidebar,
@@ -80,6 +85,7 @@ import {
 const props = defineProps<{ active: boolean; currentProjectId?: string }>();
 const emit = defineEmits<{ close: [] }>();
 const { theme, setTheme } = useTheme();
+const { linkOpenMode, setLinkOpenMode } = useLinkPreference();
 const { isMac } = usePlatform();
 
 type SettingsSection =
@@ -201,6 +207,14 @@ const themeOptions: Array<{ value: Theme; label: string; icon: typeof SunIcon }>
   { value: "system", label: "跟随系统", icon: MonitorIcon },
   { value: "light", label: "浅色", icon: SunIcon },
   { value: "dark", label: "深色", icon: MoonIcon },
+];
+const linkOpenOptions: Array<{
+  value: LinkOpenMode;
+  label: string;
+  icon: typeof GlobeIcon;
+}> = [
+  { value: "workbar", label: "内置浏览器", icon: GlobeIcon },
+  { value: "system", label: "系统浏览器", icon: ExternalLinkIcon },
 ];
 const selectedConnection = computed(
   () => connections.value.find((connection) => connection.id === selectedID.value) ?? null
@@ -1507,6 +1521,28 @@ async function remove() {
                 ]"
                 :aria-pressed="theme === option.value"
                 @click="setTheme(option.value)"
+              >
+                <component :is="option.icon" />
+                {{ option.label }}
+              </Button>
+            </ButtonGroup>
+          </div>
+          <div class="flex items-center justify-between gap-6 border-b border-border py-3">
+            <span class="text-sm font-medium">链接打开方式</span>
+            <ButtonGroup aria-label="链接打开方式">
+              <Button
+                v-for="option in linkOpenOptions"
+                :key="option.value"
+                variant="outline"
+                size="sm"
+                :class="[
+                  'min-w-24 shadow-none',
+                  linkOpenMode === option.value
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground',
+                ]"
+                :aria-pressed="linkOpenMode === option.value"
+                @click="setLinkOpenMode(option.value)"
               >
                 <component :is="option.icon" />
                 {{ option.label }}

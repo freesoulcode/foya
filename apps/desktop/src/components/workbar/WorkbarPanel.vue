@@ -400,6 +400,7 @@ watch(
             v-show="activeTabId === tab.id"
             class="absolute inset-0"
             :browser-id="tab.id"
+            :initial-url="tab.url"
             :active="open && activeTabId === tab.id"
             :obscured="obscured || addMenuOpen"
             @title-change="setTabTitle(tab.id, $event)"

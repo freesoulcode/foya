@@ -18,9 +18,11 @@ import { api } from "@/lib/api";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import { Textarea } from "@/components/ui/textarea";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
+import TaskArtifacts from "./TaskArtifacts.vue";
 
 const props = defineProps<{
   sessionId: string;
+  projectPath?: string;
   message: ChatMessage;
   streaming?: boolean;
   editable?: boolean;
@@ -71,6 +73,7 @@ const emit = defineEmits<{
   (e: "cancel-tool", toolCallId: string): void;
   (e: "background-tool", toolCallId: string): void;
   (e: "terminal-tool", toolCallId: string): void;
+  (e: "open-link", url: string): void;
 }>();
 
 const isUser = computed(() => props.message.role === "user");
@@ -223,6 +226,13 @@ async function copyText(text: string) {
 
 async function onBodyClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
+  const anchor = target.closest("a[href]") as HTMLAnchorElement | null;
+  const href = anchor?.getAttribute("href") ?? "";
+  if (/^https?:\/\//i.test(href)) {
+    e.preventDefault();
+    emit("open-link", href);
+    return;
+  }
   const btn = target.closest(".code-block-copy") as HTMLButtonElement | null;
   if (!btn) return;
   const block = btn.closest(".code-block");
@@ -472,6 +482,13 @@ function onEditKeydown(event: KeyboardEvent) {
         <span
           v-if="streaming && segments.length > 0 && segments[segments.length - 1].kind === 'text'"
           class="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-current align-baseline"
+        />
+
+        <TaskArtifacts
+          v-if="isCompletedTask"
+          :tools="toolCalls"
+          :project-path="projectPath"
+          @open-diff="(diff) => emit('open-diff', diff)"
         />
       </template>
 

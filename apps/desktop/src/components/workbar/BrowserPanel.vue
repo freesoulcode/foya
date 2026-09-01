@@ -16,6 +16,7 @@ const props = defineProps<{
   browserId: string;
   active: boolean;
   obscured?: boolean;
+  initialUrl?: string;
 }>();
 
 const emit = defineEmits<{
@@ -23,7 +24,7 @@ const emit = defineEmits<{
 }>();
 
 const viewport = ref<HTMLElement | null>(null);
-const address = ref("https://example.com");
+const address = ref(props.initialUrl || "https://example.com");
 const currentUrl = ref("");
 const loading = ref(false);
 const error = ref("");
@@ -195,6 +196,11 @@ onMounted(async () => {
         if (title) emit("title-change", title);
       }
     );
+    if (props.initialUrl) {
+      address.value = props.initialUrl;
+      await nextTick();
+      await navigate();
+    }
   } catch (cause) {
     error.value = `无法监听页面状态：${String(cause)}`;
   }

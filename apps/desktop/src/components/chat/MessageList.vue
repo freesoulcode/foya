@@ -6,6 +6,7 @@ import type { ChatMessage } from "@/lib/api";
 
 const props = defineProps<{
   sessionId: string;
+  projectPath?: string;
   messages: ChatMessage[];
   streaming: boolean;
   compacting?: boolean;
@@ -20,6 +21,7 @@ const emit = defineEmits<{
   "cancel-tool": [toolCallId: string];
   "background-tool": [toolCallId: string];
   "terminal-tool": [toolCallId: string];
+  "open-link": [url: string];
 }>();
 
 const scrollEl = ref<HTMLElement | null>(null);
@@ -185,6 +187,7 @@ onBeforeUnmount(() => {
         >
           <MessageBubble
             :session-id="sessionId"
+            :project-path="projectPath"
             :message="m"
             :editable="editable && !streaming && !compacting"
             :streaming="
@@ -197,6 +200,7 @@ onBeforeUnmount(() => {
             @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
             @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
             @terminal-tool="(toolCallId) => emit('terminal-tool', toolCallId)"
+            @open-link="(url) => emit('open-link', url)"
           />
         </div>
 

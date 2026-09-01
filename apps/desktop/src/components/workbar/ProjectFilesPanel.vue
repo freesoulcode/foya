@@ -821,11 +821,6 @@ onBeforeUnmount(() => {
                   <FileIcon class="size-3.5 shrink-0 text-muted-foreground" />
                 </template>
                 <span class="min-w-0 flex-1 truncate">{{ entry.name }}</span>
-                <span
-                  v-if="!entry.is_dir && diffs.has(entry.path)"
-                  class="size-1.5 shrink-0 rounded-full bg-amber-500"
-                  title="当前会话有变更"
-                />
               </button>
             </ContextMenuTrigger>
             <div

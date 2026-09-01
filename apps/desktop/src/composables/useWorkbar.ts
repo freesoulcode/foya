@@ -18,6 +18,7 @@ export interface WorkbarTab {
   diff?: string;
   sessionId?: string;
   commandId?: string;
+  url?: string;
 }
 
 const MIN_WIDTH = 320;
@@ -74,6 +75,24 @@ function addTab(kind: WorkbarLaunchKind) {
   };
   tabs.value.push(tab);
   activeTabId.value = tab.id;
+  setOpen(true);
+}
+
+function openBrowser(url: string) {
+  const instance = ++nextInstance.browser;
+  let title = "浏览器";
+  try {
+    title = new URL(url).hostname.replace(/^www\./, "") || title;
+  } catch {
+    // BrowserPanel reports invalid URLs without breaking the Workbar.
+  }
+  tabs.value.push({
+    id: `browser-${instance}`,
+    kind: "browser",
+    title,
+    url,
+  });
+  activeTabId.value = `browser-${instance}`;
   setOpen(true);
 }
 
@@ -238,6 +257,7 @@ export function useWorkbar() {
     setOpen,
     toggle,
     addTab,
+    openBrowser,
     openFiles,
     openFile,
     openBackgroundCommand,

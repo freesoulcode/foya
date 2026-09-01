@@ -253,9 +253,30 @@
     color: var(--muted-foreground);
   }
   .prose-chat a {
-    color: var(--primary);
+    color: oklch(0.55 0.2 255);
+    cursor: pointer;
+    font-weight: 500;
     text-decoration: underline;
+    text-decoration-color: oklch(0.55 0.2 255 / 0.55);
     text-underline-offset: 2px;
+    transition: color 0.15s, text-decoration-color 0.15s;
+  }
+  .prose-chat a:hover {
+    color: oklch(0.47 0.22 255);
+    text-decoration-color: currentColor;
+  }
+  .prose-chat a:focus-visible {
+    border-radius: 0.125rem;
+    outline: 2px solid oklch(0.55 0.2 255 / 0.45);
+    outline-offset: 2px;
+  }
+  .dark .prose-chat a {
+    color: oklch(0.72 0.15 250);
+    text-decoration-color: oklch(0.72 0.15 250 / 0.6);
+  }
+  .dark .prose-chat a:hover {
+    color: oklch(0.8 0.12 245);
+    text-decoration-color: currentColor;
   }
   .prose-chat .table-wrapper {
     margin: 0.75rem 0;
