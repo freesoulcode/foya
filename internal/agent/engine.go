@@ -16,6 +16,7 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/prompt"
 	"github.com/freesoulcode/foya/internal/provider"
@@ -70,6 +71,7 @@ type Engine struct {
 	tools     tool.Registry
 	approval  approval.Gateway
 	artifacts artifact.Store
+	hooks     *hooks.Runtime
 
 	mu       sync.RWMutex
 	provider provider.Provider
@@ -78,9 +80,14 @@ type Engine struct {
 	// optional so focused engine tests can continue using the default provider.
 	providerResolver func(sessionID string) (provider.Provider, string)
 	projectResolver  func(projectID string) (string, bool)
-	usageObserver    func(sessionID string, usage provider.Usage)
-	modelWindows     map[string]int64
-	catalogLoaded    bool
+	contextResolver  func(projectID, activity string) (
+		rules []string,
+		ruleIndex []string,
+		memories []string,
+	)
+	usageObserver func(sessionID string, usage provider.Usage)
+	modelWindows  map[string]int64
+	catalogLoaded bool
 
 	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
@@ -105,6 +112,21 @@ func (e *Engine) SetProjectResolver(resolve func(projectID string) (string, bool
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.projectResolver = resolve
+}
+
+// SetPersistentContextResolver provides Foya-managed rules and memories for a
+// session's current project. The resolver is called for every model step so
+// changes become effective without restarting the session.
+func (e *Engine) SetPersistentContextResolver(
+	resolve func(projectID, activity string) (
+		rules []string,
+		ruleIndex []string,
+		memories []string,
+	),
+) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.contextResolver = resolve
 }
 
 // SetUsageObserver reports completed model-request usage to an external
@@ -176,6 +198,14 @@ func (e *Engine) SetArtifactStore(store artifact.Store) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.artifacts = store
+}
+
+// SetHookRuntime installs the optional lifecycle-hook runtime. Passing nil
+// disables configured hooks without changing the agent execution path.
+func (e *Engine) SetHookRuntime(runtime *hooks.Runtime) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hooks = runtime
 }
 
 // SwitchProvider 运行时热替换 provider 与默认模型。
@@ -566,6 +596,7 @@ type executedToolCall struct {
 	isErr       bool
 	diff        string
 	sig         string
+	terminate   bool
 }
 
 // RunTurn executes a regular user turn.
@@ -620,6 +651,15 @@ func (e *Engine) runTurn(
 			StartedAt:   turnStartedAt,
 			CompletedAt: time.Now(),
 		}, true)
+		e.notifyHook(ctx, sessionID, hookRequest(
+			hooks.EventNotification,
+			runID,
+			"",
+			message.ToolCall{},
+			"",
+			"",
+			"turn_complete",
+		))
 	}
 	e.setSessionPhase(ctx, sessionID, session.PhaseTurn)
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
@@ -639,6 +679,20 @@ func (e *Engine) runTurn(
 		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
 		ctx = approval.WithSession(ctx, e.approvalEventSession(sessionID))
 		ctx = approval.WithExecutionSession(ctx, sessionID)
+		ctx = approval.WithNotificationHandler(ctx, func(notifyCtx context.Context, request approval.Request) {
+			e.notifyHook(notifyCtx, sessionID, hookRequest(
+				hooks.EventNotification,
+				runID,
+				userText,
+				message.ToolCall{
+					ID:   request.ID,
+					Name: request.ToolName,
+				},
+				"",
+				"",
+				"approval_requested",
+			))
+		})
 		if completer, ok := prov.(provider.Completer); ok {
 			ctx = approval.WithReviewer(ctx, guardianReviewer{
 				completer:       completer,
@@ -649,6 +703,23 @@ func (e *Engine) runTurn(
 			})
 		}
 	}
+
+	promptHook := e.runHook(ctx, sessionID, hookRequest(
+		hooks.EventUserPromptSubmit,
+		runID,
+		userText,
+		message.ToolCall{},
+		"",
+		"",
+		"",
+	))
+	if promptHook.Decision == hooks.DecisionDeny {
+		err := fmt.Errorf("用户请求被 hook 拦截: %s", hookFeedback(promptHook, "请求不被允许"))
+		e.emit(ctx, sessionID, event.KindError, err.Error(), true)
+		completeTurn()
+		return err
+	}
+	promptHookContext := append([]string(nil), promptHook.Context...)
 
 	// 标题生成(首条用户消息时后台触发)。
 	if e.sessions != nil {
@@ -694,6 +765,8 @@ func (e *Engine) runTurn(
 	}
 
 	overflowRecoveryUsed := false
+	ruleActivity := userText
+	stopHookBlocked := false
 
 	// 多步循环:模型 → 工具 → 模型 ...
 	for step := 0; maxSteps == maxToolStepsUnlimited || step < maxSteps; step++ {
@@ -701,9 +774,13 @@ func (e *Engine) runTurn(
 
 		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
 		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
+		rules, ruleIndex, memories := e.persistentContext(sessionID, ruleActivity)
 		sysPrompt := prompt.Assemble(prompt.Input{
 			ProjectPath:  e.resolveProjectPath(sessionID),
 			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
+			Rules:        rules,
+			RuleIndex:    ruleIndex,
+			Memories:     memories,
 		})
 		if instructions := e.agentInstructions(sessionID); instructions != "" {
 			sysPrompt += `
@@ -721,6 +798,11 @@ An earlier user message was edited and the superseded conversation suffix is not
 The project working tree was not rolled back and may still contain changes from that old branch or from the user.
 Inspect the current project tree before modifying files; do not assume it matches the visible conversation history.
 </edited_history_notice>`
+		}
+		if len(promptHookContext) > 0 {
+			sysPrompt += "\n\n<hook_context source=\"user_prompt_submit\">\n" +
+				strings.Join(promptHookContext, "\n") +
+				"\n</hook_context>"
 		}
 		messages, payloadUnits, err := e.prepareModelRequest(
 			ctx,
@@ -876,6 +958,29 @@ Inspect the current project tree before modifying files; do not assume it matche
 
 		// 没有工具调用,回合结束。
 		if finishReason != "tool_calls" || len(toolCalls) == 0 {
+			if !stopHookBlocked {
+				stopHook := e.runHook(ctx, sessionID, hookRequest(
+					hooks.EventStop,
+					runID,
+					userText,
+					message.ToolCall{},
+					"",
+					accText,
+					"",
+				))
+				if stopHook.Halt {
+					completeTurn()
+					return nil
+				}
+				if stopHook.Decision == hooks.DecisionDeny {
+					stopHookBlocked = true
+					e.appendHookContext(ctx, sessionID,
+						[]string{hookFeedback(stopHook, "请继续处理当前任务，不要结束。")},
+						"stop",
+					)
+					continue
+				}
+			}
 			break
 		}
 
@@ -884,6 +989,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		// 此处执行前用 tool_update 回填完整参数,再执行、发 tool_end。
 		// 同时收集本步骤的工具交互,供第二层重复检测在步骤结束后判定。
 		for _, tc := range toolCalls {
+			ruleActivity += "\n" + tc.Name + " " + string(tc.Input)
 			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Input: string(tc.Input), Status: "queued",
 			}, true)
@@ -909,6 +1015,12 @@ Inspect the current project tree before modifying files; do not assume it matche
 				Diff:        item.diff,
 			}
 			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
+		}
+		for _, item := range executed {
+			if item.terminate {
+				completeTurn()
+				return nil
+			}
 		}
 		if ctx.Err() != nil {
 			completeTurn()
@@ -968,10 +1080,54 @@ func (e *Engine) executeToolCalls(
 			}, true)
 			return
 		}
+		preHook := e.runHook(ctx, sessionID, hookRequest(
+			hooks.EventPreToolUse,
+			tool.RunIDFromContext(ctx),
+			"",
+			item.call,
+			"",
+			"",
+			"",
+		))
+		if preHook.Halt {
+			item.terminate = true
+		}
+		if preHook.Decision == hooks.DecisionDeny {
+			item.output = "工具调用被 hook 拦截: " + hookFeedback(preHook, "操作不被允许")
+			item.isErr = true
+			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+				ID: item.call.ID, Name: item.call.Name, Output: item.output,
+				IsError: true, Status: "error",
+			}, true)
+			return
+		}
+		if len(preHook.UpdatedInput) > 0 {
+			item.call.Input = preHook.UpdatedInput
+		}
 		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
-			ID: item.call.ID, Name: item.call.Name, Status: "running",
+			ID: item.call.ID, Name: item.call.Name, Input: string(item.call.Input), Status: "running",
 		}, true)
 		result := e.executeTool(ctx, sessionID, item.call)
+		appendHookText(&result, preHook.Context)
+		postHook := e.runHook(ctx, sessionID, hookRequest(
+			hooks.EventPostToolUse,
+			tool.RunIDFromContext(ctx),
+			"",
+			item.call,
+			resultText(result),
+			"",
+			"",
+		))
+		appendHookText(&result, postHook.Context)
+		if postHook.Decision == hooks.DecisionDeny {
+			result.IsError = true
+			appendHookText(&result, []string{
+				"工具结果未通过 hook 校验: " + hookFeedback(postHook, "结果不符合要求"),
+			})
+		}
+		if postHook.Halt {
+			item.terminate = true
+		}
 		item.output = resultText(result)
 		item.attachments = e.persistToolImages(ctx, sessionID, item.call.Name, result)
 		item.isErr = result.IsError
@@ -1134,6 +1290,18 @@ func (e *Engine) agentInstructions(sessionID string) string {
 		return s.AgentInstructions
 	}
 	return ""
+}
+
+func (e *Engine) persistentContext(
+	sessionID, activity string,
+) ([]string, []string, []string) {
+	e.mu.RLock()
+	resolve := e.contextResolver
+	e.mu.RUnlock()
+	if resolve == nil {
+		return nil, nil, nil
+	}
+	return resolve(e.resolveProjectID(sessionID), activity)
 }
 
 // resultText 把工具结果拼成文本,用于回灌模型和事件负载。

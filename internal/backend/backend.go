@@ -24,7 +24,9 @@ import (
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/project"
@@ -63,15 +65,18 @@ type Backend struct {
 	agents    *agentdef.Manager
 	subagents *subagent.Manager
 	artifacts artifact.Store
+	context   *contextdata.Store
 
 	buildProvider     ProviderBuilder
 	dataDir           string
+	homeDir           string
 	mu                sync.RWMutex
 	projectMu         sync.Mutex
 	connections       map[string]config.Connection
 	providers         map[string]provider.Provider
 	firstConnectionID string
 	turns             *turnScheduler
+	memoryWake        func()
 }
 
 // SetCapabilityManagers attaches optional capability services assembled by the
@@ -107,6 +112,277 @@ func (b *Backend) SetArtifactStore(store artifact.Store) {
 	defer b.mu.Unlock()
 	b.artifacts = store
 	b.engine.SetArtifactStore(store)
+}
+
+func (b *Backend) SetContextStore(store *contextdata.Store) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.context = store
+}
+
+// SetHooksHomeDir configures the user-level hook root. The Hook runtime itself
+// reloads hook files for each lifecycle event, so settings updates take effect
+// without restarting the kernel.
+func (b *Backend) SetHooksHomeDir(homeDir string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.homeDir = homeDir
+}
+
+// Hooks returns effective hooks for a global or project scope.
+func (b *Backend) Hooks(scope, projectID string) ([]hooks.Config, error) {
+	b.mu.RLock()
+	homeDir := b.homeDir
+	b.mu.RUnlock()
+	switch scope {
+	case "global":
+		items, _, err := hooks.LoadGlobal(homeDir)
+		return items, err
+	case "project":
+		if projectID == "" {
+			return nil, contextdata.ErrInvalidScope
+		}
+		item, err := b.Project(projectID)
+		if err != nil {
+			return nil, err
+		}
+		items, _, err := hooks.LoadProject(item.Path)
+		return items, err
+	default:
+		return nil, contextdata.ErrInvalidScope
+	}
+}
+
+// ReplaceHooks atomically replaces the hook file for one scope.
+func (b *Backend) ReplaceHooks(scope, projectID string, items []hooks.Config) error {
+	b.mu.RLock()
+	homeDir := b.homeDir
+	b.mu.RUnlock()
+	switch scope {
+	case "global":
+		return hooks.SaveGlobal(homeDir, items)
+	case "project":
+		if projectID == "" {
+			return contextdata.ErrInvalidScope
+		}
+		item, err := b.Project(projectID)
+		if err != nil {
+			return err
+		}
+		return hooks.SaveProject(item.Path, items)
+	default:
+		return contextdata.ErrInvalidScope
+	}
+}
+
+// SetMemoryMaintenanceWake installs the low-cost wake signal for automatic
+// memory maintenance. The callback must never block session creation.
+func (b *Backend) SetMemoryMaintenanceWake(wake func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.memoryWake = wake
+}
+
+func (b *Backend) MemorySettings() (contextdata.MemorySettings, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.MemorySettings{}, err
+	}
+	return store.MemorySettings(), nil
+}
+
+func (b *Backend) UpdateMemorySettings(
+	settings contextdata.MemorySettings,
+) (contextdata.MemorySettings, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.MemorySettings{}, err
+	}
+	if err := store.UpdateMemorySettings(settings); err != nil {
+		return contextdata.MemorySettings{}, err
+	}
+	if settings.Enabled {
+		b.mu.RLock()
+		wake := b.memoryWake
+		b.mu.RUnlock()
+		if wake != nil {
+			wake()
+		}
+	}
+	return store.MemorySettings(), nil
+}
+
+func (b *Backend) Rules(scope contextdata.Scope, projectID string) ([]contextdata.Rule, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return nil, err
+	}
+	return store.ListRules(scope, projectID), nil
+}
+
+func (b *Backend) CreateRule(
+	scope contextdata.Scope,
+	projectID, content string,
+	options ...contextdata.RuleOptions,
+) (contextdata.Rule, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Rule{}, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return contextdata.Rule{}, err
+	}
+	return store.CreateRule(scope, projectID, content, options...)
+}
+
+func (b *Backend) UpdateRule(
+	id, content string,
+	options ...contextdata.RuleOptions,
+) (contextdata.Rule, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Rule{}, err
+	}
+	return store.UpdateRule(id, content, options...)
+}
+
+func (b *Backend) DeleteRule(id string) error {
+	store, err := b.contextStore()
+	if err != nil {
+		return err
+	}
+	return store.DeleteRule(id)
+}
+
+func (b *Backend) Memories(scope contextdata.Scope, projectID string) ([]contextdata.Memory, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return nil, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return nil, err
+	}
+	return store.ListMemories(scope, projectID), nil
+}
+
+func (b *Backend) CreateMemory(
+	scope contextdata.Scope,
+	projectID, content string,
+) (contextdata.Memory, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Memory{}, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return contextdata.Memory{}, err
+	}
+	return store.AppendMemory(scope, projectID, content)
+}
+
+// SetMemory replaces the one Markdown memory document for a scope.
+func (b *Backend) SetMemory(
+	scope contextdata.Scope,
+	projectID, content string,
+) (contextdata.Memory, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Memory{}, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return contextdata.Memory{}, err
+	}
+	return store.SetMemory(scope, projectID, content)
+}
+
+// Memory returns the one document for the requested scope.
+func (b *Backend) Memory(scope contextdata.Scope, projectID string) (contextdata.Memory, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Memory{}, err
+	}
+	if err := b.validateContextScope(scope, projectID); err != nil {
+		return contextdata.Memory{}, err
+	}
+	items := store.ListMemories(scope, projectID)
+	if len(items) == 0 {
+		return contextdata.Memory{}, contextdata.ErrNotFound
+	}
+	return items[0], nil
+}
+
+// ClearMemory removes the complete document for a scope.
+func (b *Backend) ClearMemory(scope contextdata.Scope, projectID string) error {
+	item, err := b.Memory(scope, projectID)
+	if errors.Is(err, contextdata.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	store, err := b.contextStore()
+	if err != nil {
+		return err
+	}
+	return store.DeleteMemory(item.ID)
+}
+
+func (b *Backend) UpdateMemory(id, content string) (contextdata.Memory, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return contextdata.Memory{}, err
+	}
+	return store.UpdateMemory(id, content)
+}
+
+func (b *Backend) DeleteMemory(id string) error {
+	store, err := b.contextStore()
+	if err != nil {
+		return err
+	}
+	return store.DeleteMemory(id)
+}
+
+func (b *Backend) ReplayContext(after uint64) ([]contextdata.Event, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.Replay(after), nil
+}
+
+func (b *Backend) SubscribeContext(ctx context.Context) (<-chan contextdata.Event, error) {
+	store, err := b.contextStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.Subscribe(ctx), nil
+}
+
+func (b *Backend) contextStore() (*contextdata.Store, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.context == nil {
+		return nil, errors.New("rules and memory are unavailable")
+	}
+	return b.context, nil
+}
+
+func (b *Backend) validateContextScope(scope contextdata.Scope, projectID string) error {
+	if scope != contextdata.ScopeGlobal && scope != contextdata.ScopeProject {
+		return contextdata.ErrInvalidScope
+	}
+	if scope == contextdata.ScopeProject {
+		if projectID == "" {
+			return contextdata.ErrInvalidScope
+		}
+		if _, err := b.Project(projectID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *Backend) PutImage(
@@ -586,7 +862,23 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 	if err := b.resolveSessionProject(&opts); err != nil {
 		return nil, err
 	}
-	return b.sessions.Create(opts)
+	created, err := b.sessions.Create(opts)
+	if err != nil {
+		return nil, err
+	}
+	// SessionStart runs after the session has a durable identity and before a
+	// client can submit its first turn. Hook failures fail open and are
+	// persisted as hook audit events by the engine.
+	b.engine.RunSessionStart(context.Background(), created.ID)
+	if created.ParentID == "" {
+		b.mu.RLock()
+		wake := b.memoryWake
+		b.mu.RUnlock()
+		if wake != nil {
+			wake()
+		}
+	}
+	return created, nil
 }
 
 // UpdateSession 局部更新会话可变字段。
@@ -1069,6 +1361,28 @@ func (b *Backend) resolveSessionProvider(sessionID string) (provider.Provider, s
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.providers[session.ConnectionID], b.connections[session.ConnectionID].DefaultModel
+}
+
+// MemoryCompleter returns the source session's configured model for the
+// background memory worker. It never falls back across connections.
+func (b *Backend) MemoryCompleter(sessionID string) (provider.Completer, string, string, bool) {
+	item, ok := b.sessions.Get(sessionID)
+	if !ok {
+		return nil, "", "", false
+	}
+	prov, fallbackModel := b.resolveSessionProvider(sessionID)
+	completer, ok := prov.(provider.Completer)
+	if !ok {
+		return nil, "", "", false
+	}
+	model := item.Model
+	if model == "" {
+		model = fallbackModel
+	}
+	if model == "" {
+		return nil, "", "", false
+	}
+	return completer, model, string(item.ReasoningEffort), true
 }
 
 func newConnectionID() string {

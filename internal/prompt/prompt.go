@@ -15,16 +15,20 @@ import (
 type Input struct {
 	ProjectPath  string    // 当前项目目录
 	ApprovalMode string    // 审批档位:manual / auto / full_access
+	Rules        []string  // Foya 托管的全局与项目规则
+	RuleIndex    []string  // 可由模型按需加载的规则名称与描述
+	Memories     []string  // Foya 托管的全局与项目记忆
 	Platform     string    // 留空则自动推断
 	Shell        string    // 留空则自动推断
 	Now          time.Time // 留空则取 time.Now()
 	HomeDir      string    // 留空则取 os.UserHomeDir()
 }
 
-// Assemble 组装最终系统提示词:静态前缀 → 工作区指令 → 权限上下文 → 环境尾部。
+// Assemble 组装最终系统提示词:静态前缀 → 外部上下文文件 → Foya Rules →
+// 权限上下文 → Foya Memory → 环境尾部。
 //
-// 静态前缀字节稳定以命中前缀缓存;工作区指令为用户可控不可信内容(已降权包裹);
-// 权限/环境为每回合实时数据,置于末尾。组装结果不写入事件日志,仅用于本次模型请求。
+// 静态前缀字节稳定以命中前缀缓存;其余持久上下文均为用户可控内容并明确
+// 标注权威边界。组装结果不写入事件日志,仅用于本次模型请求。
 func Assemble(in Input) string {
 	home := in.HomeDir
 	if home == "" {
@@ -39,7 +43,10 @@ func Assemble(in Input) string {
 	fragments := []string{
 		staticPrefix,
 		loadProjectInstructions(home, in.ProjectPath),
+		managedRulesFragment(in.Rules),
+		managedRuleIndexFragment(in.RuleIndex),
 		permissionFragment(in.ApprovalMode),
+		managedMemoriesFragment(in.Memories),
 		envFragment(EnvInput{
 			Cwd:      in.ProjectPath,
 			Platform: platform,

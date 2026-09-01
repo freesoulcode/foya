@@ -5,6 +5,7 @@ package kernel
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/agentdef"
@@ -13,8 +14,11 @@ import (
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/mcpclient"
+	"github.com/freesoulcode/foya/internal/memorymaint"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/provider/openai"
@@ -34,6 +38,7 @@ type App struct {
 	backend *backend.Backend
 	cancel  context.CancelFunc
 	mcp     *mcpclient.Manager
+	memory  *memorymaint.Manager
 }
 
 // New 按配置装配内核。
@@ -88,17 +93,60 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	contextStore, err := contextdata.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	tools.Register(tool.NewMemoryRememberTool(contextStore))
+	tools.Register(tool.NewRuleLoadTool(contextStore))
 	for _, mcpTool := range mcpclient.ControlTools(mcpManager) {
 		tools.Register(mcpTool)
 	}
 
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
+	engine.SetHookRuntime(hooks.NewRuntime(homeDir))
 	resolveProject := func(projectID string) (string, bool) {
 		item, ok := projects.Get(projectID)
 		return item.Path, ok
 	}
+	if err := contextStore.ConfigureFiles(
+		filepath.Join(homeDir, ".foya", "memory"),
+		filepath.Join(homeDir, ".foya", "rules"),
+		resolveProject,
+		func() map[string]string {
+			items := projects.List()
+			paths := make(map[string]string, len(items))
+			for _, item := range items {
+				paths[item.ID] = item.Path
+			}
+			return paths
+		},
+	); err != nil {
+		return nil, err
+	}
 	engine.SetProjectResolver(resolveProject)
+	engine.SetPersistentContextResolver(func(projectID, activity string) ([]string, []string, []string) {
+		ruleItems := contextStore.ActiveRules(projectID, activity)
+		availableRuleItems := contextStore.AvailableRules(projectID)
+		var memoryItems []contextdata.Memory
+		if contextStore.MemoryEnabled() {
+			memoryItems = contextStore.EffectiveMemories(projectID)
+		}
+		rules := make([]string, 0, len(ruleItems))
+		for _, item := range ruleItems {
+			rules = append(rules, item.Content)
+		}
+		ruleIndex := make([]string, 0, len(availableRuleItems))
+		for _, item := range availableRuleItems {
+			ruleIndex = append(ruleIndex, item.Name+": "+item.Description)
+		}
+		memories := make([]string, 0, len(memoryItems))
+		for _, item := range memoryItems {
+			memories = append(memories, item.Content)
+		}
+		return rules, ruleIndex, memories
+	})
 	subagents := subagent.NewManager(
 		agents,
 		sessions,
@@ -147,9 +195,26 @@ func New(cfg config.Config) (*App, error) {
 	be.SetAgentManager(agents)
 	be.SetSubAgentManager(subagents)
 	be.SetProjectManager(projects)
+	be.SetContextStore(contextStore)
+	be.SetHooksHomeDir(homeDir)
 	appCtx, cancel := context.WithCancel(context.Background())
+	memoryManager, err := memorymaint.New(
+		cfg.DataDir,
+		sessions,
+		log,
+		contextStore,
+		be.MemoryCompleter,
+	)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	be.SetMemoryMaintenanceWake(memoryManager.Wake)
+	memoryManager.Start(appCtx)
 	go mcpManager.Start(appCtx)
-	return &App{cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager}, nil
+	return &App{
+		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager, memory: memoryManager,
+	}, nil
 }
 
 func loadConnections(cfg config.Config) []config.Connection {

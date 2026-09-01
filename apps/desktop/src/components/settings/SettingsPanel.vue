@@ -6,6 +6,7 @@ import {
   BlocksIcon,
   BotIcon,
   BookOpenIcon,
+  BrainIcon,
   DownloadIcon,
   FileJsonIcon,
   GlobeIcon,
@@ -18,6 +19,7 @@ import {
   PlugZapIcon,
   RefreshCwIcon,
   SearchIcon,
+  ScrollTextIcon,
   SunIcon,
   Trash2Icon,
 } from "@lucide/vue";
@@ -62,6 +64,8 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
+import ContextItemsSettings from "@/components/settings/ContextItemsSettings.vue";
+import HooksSettings from "@/components/settings/HooksSettings.vue";
 import {
   Dialog,
   DialogContent,
@@ -78,7 +82,10 @@ const { isMac } = usePlatform();
 
 type SettingsSection =
   | "connections"
+  | "rules"
+  | "memory"
   | "skills"
+  | "hooks"
   | "mcp"
   | "web-search"
   | "agents"
@@ -100,6 +107,7 @@ const contextWindowUnit = ref<"K" | "M">("K");
 const apiKey = ref("");
 const hasKey = ref(false);
 const connectionErrors = ref<Record<string, string>>({});
+const connectionEditorOpen = ref(false);
 const loading = ref(false);
 const saving = ref(false);
 const deleting = ref(false);
@@ -110,6 +118,8 @@ const pointerDrag = ref(false);
 const pointerMoved = ref(false);
 const dragPreview = ref<DragPreview | null>(null);
 const error = ref("");
+const contextRevision = ref(0);
+const contextSubscribed = ref(false);
 const skills = ref<SkillInfo[]>([]);
 const projects = ref<ProjectInfo[]>([]);
 const projectCreateOpen = ref(false);
@@ -174,7 +184,10 @@ const skillGroups = computed(() => {
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZapIcon }> = [
   { id: "connections", label: "连接", icon: PlugZapIcon },
+  { id: "rules", label: "规则", icon: ScrollTextIcon },
+  { id: "memory", label: "记忆", icon: BrainIcon },
   { id: "skills", label: "技能", icon: BookOpenIcon },
+  { id: "hooks", label: "Hooks", icon: FileJsonIcon },
   { id: "mcp", label: "MCP", icon: BlocksIcon },
   { id: "web-search", label: "联网搜索", icon: GlobeIcon },
   { id: "agents", label: "Agent", icon: BotIcon },
@@ -251,8 +264,10 @@ async function loadConnections() {
     connections.value = await api.listConnections();
     connectionErrors.value = {};
     await Promise.all(connections.value.map(checkConnection));
-    const current = connections.value.find((connection) => connection.id === selectedID.value);
-    resetForm(current ?? connections.value[0]);
+    if (connectionEditorOpen.value) {
+      const current = connections.value.find((connection) => connection.id === selectedID.value);
+      if (current || selectedID.value) resetForm(current);
+    }
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -263,7 +278,19 @@ async function loadConnections() {
 watch(
   () => props.active,
   (active) => {
-    if (active) void loadConnections();
+    if (active) {
+      void loadConnections();
+      if (!contextSubscribed.value) {
+        contextSubscribed.value = true;
+        void api
+          .subscribeContextEvents(() => {
+            contextRevision.value += 1;
+          })
+          .catch(() => {
+            contextSubscribed.value = false;
+          });
+      }
+    }
   },
   { immediate: true }
 );
@@ -673,9 +700,16 @@ async function testWebSearch() {
 
 function selectConnection(connection: ConnectionConfig) {
   resetForm(connection);
+  connectionEditorOpen.value = true;
 }
 
 function startNewConnection() {
+  resetForm();
+  connectionEditorOpen.value = true;
+}
+
+function backToConnectionList() {
+  connectionEditorOpen.value = false;
   resetForm();
 }
 
@@ -705,6 +739,7 @@ async function save() {
     if (index >= 0) connections.value[index] = saved;
     else connections.value.push(saved);
     resetForm(saved);
+    connectionEditorOpen.value = true;
     await checkConnection(saved);
   } catch (cause) {
     error.value = String(cause);
@@ -813,7 +848,8 @@ async function remove() {
     const remainingErrors = { ...connectionErrors.value };
     delete remainingErrors[removedID];
     connectionErrors.value = remainingErrors;
-    resetForm(connections.value[0]);
+    connectionEditorOpen.value = false;
+    resetForm();
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -861,152 +897,219 @@ async function remove() {
       </SidebarContent>
     </Sidebar>
 
-    <SidebarInset class="min-w-0 overflow-hidden">
+    <SidebarInset class="relative min-w-0 overflow-hidden">
       <section class="min-w-0 flex-1 overflow-y-auto">
-        <div v-if="section === 'connections'" class="mx-auto flex min-h-full max-w-5xl flex-col p-6">
-          <h2 class="mb-6 text-base font-medium">模型连接</h2>
-
-          <div class="grid min-h-[420px] flex-1 grid-cols-[minmax(190px,0.75fr)_minmax(0,1.5fr)] border border-border">
-            <section class="flex min-w-0 flex-col border-r border-border">
-              <div class="flex h-11 items-center justify-between border-b border-border px-3">
-                <span class="text-sm font-medium">连接</span>
-                <button
-                  type="button"
-                  class="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  title="添加 API 连接"
-                  @click="startNewConnection"
-                >
-                  <PlusIcon class="size-4" />
-                </button>
-              </div>
-              <div
-                class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2"
+        <div v-if="section === 'connections'" class="mx-auto flex min-h-full max-w-5xl flex-col px-6 pb-6">
+          <div
+            data-tauri-drag-region
+            class="mb-6 flex min-h-11 flex-wrap items-center justify-between gap-3 pt-4"
+          >
+            <div>
+              <h2 class="text-base font-medium">模型连接</h2>
+              <p class="mt-1 text-xs text-muted-foreground">
+                配置 Agent 使用的模型服务与 API Key。
+              </p>
+            </div>
+            <div class="no-drag flex items-center gap-2">
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                :disabled="loading || saving || deleting"
+                title="刷新模型连接"
+                aria-label="刷新模型连接"
+                @click="loadConnections"
               >
-                <template v-for="(connection, index) in connections" :key="connection.id">
-                  <div
-                    v-if="dropPosition === index"
-                    class="pointer-events-none flex h-2 items-center px-3"
-                  >
-                    <span class="h-px w-full bg-primary/50" />
-                  </div>
-                  <div
-                    :class="[
-                      'flex items-center gap-1 rounded-md transition-opacity duration-150',
-                      connection.id === selectedID
-                        ? 'bg-accent text-accent-foreground'
-                        : 'hover:bg-muted',
-                      connection.id === draggingID ? 'opacity-55' : 'opacity-100',
-                    ]"
-                    data-connection-row
-                    :data-connection-id="connection.id"
-                    :data-connection-index="index"
-                    class="cursor-grab touch-none select-none active:cursor-grabbing"
-                    @pointerdown="beginPointerDrag($event, connection)"
-                    @pointermove="updatePointerDropPosition"
-                    @pointerup="finishPointerDrag"
-                    @pointercancel="endDrag"
-                  >
-                    <GripVerticalIcon
-                      class="ml-2 size-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <button
-                      type="button"
-                      class="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
-                    >
-                      <span class="min-w-0 flex-1">
-                        <span class="block truncate text-sm font-medium">{{ connection.name }}</span>
-                        <span class="block truncate text-xs text-muted-foreground">
-                          {{ connectionErrors[connection.id ?? ""] ? "连接检查失败" : connection.base_url }}
-                        </span>
-                      </span>
-                      <AlertCircleIcon
-                        v-if="connectionErrors[connection.id ?? '']"
-                        class="size-4 shrink-0 text-destructive"
-                      />
-                    </button>
-                  </div>
-                </template>
+                <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
+              </Button>
+              <Button
+                v-if="!connectionEditorOpen"
+                size="sm"
+                :disabled="loading || saving"
+                @click="startNewConnection"
+              >
+                <PlusIcon class="size-4" />
+                添加连接
+              </Button>
+            </div>
+          </div>
+
+          <section
+            v-if="!connectionEditorOpen"
+            class="flex min-h-[420px] flex-1 flex-col border-y border-border bg-background"
+          >
+            <div class="grid h-11 shrink-0 grid-cols-[36px_minmax(160px,0.8fr)_minmax(220px,1.4fr)_minmax(100px,0.45fr)_132px] items-center gap-3 border-b border-border px-4 text-xs font-medium text-muted-foreground">
+              <span />
+              <span>名称</span>
+              <span>Base URL</span>
+              <span>状态</span>
+              <span class="text-right">上下文窗口</span>
+            </div>
+            <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+              <template v-for="(connection, index) in connections" :key="connection.id">
                 <div
-                  v-if="dropPosition === connections.length"
-                  class="pointer-events-none flex h-2 items-center px-3"
+                  v-if="dropPosition === index"
+                  class="pointer-events-none flex h-2 items-center px-4"
                 >
                   <span class="h-px w-full bg-primary/50" />
                 </div>
-                <p v-if="!loading && connections.length === 0" class="px-2.5 py-4 text-xs text-muted-foreground">
-                  添加一个 API 连接后即可选择模型。
-                </p>
+                <button
+                  type="button"
+                  :class="[
+                    'grid w-full cursor-grab touch-none select-none grid-cols-[36px_minmax(160px,0.8fr)_minmax(220px,1.4fr)_minmax(100px,0.45fr)_132px] items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 active:cursor-grabbing',
+                    connection.id === draggingID ? 'opacity-55' : 'opacity-100',
+                  ]"
+                  data-connection-row
+                  :data-connection-id="connection.id"
+                  :data-connection-index="index"
+                  @pointerdown="beginPointerDrag($event, connection)"
+                  @pointermove="updatePointerDropPosition"
+                  @pointerup="finishPointerDrag"
+                  @pointercancel="endDrag"
+                >
+                  <GripVerticalIcon class="size-4 text-muted-foreground" aria-hidden="true" />
+                  <span class="truncate text-sm font-medium">{{ connection.name }}</span>
+                  <span class="truncate font-mono text-xs text-muted-foreground">
+                    {{ connection.base_url }}
+                  </span>
+                  <span
+                    class="inline-flex w-fit items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs"
+                    :class="connectionErrors[connection.id ?? ''] ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'"
+                  >
+                    <span
+                      class="size-1.5 rounded-full"
+                      :class="connectionErrors[connection.id ?? ''] ? 'bg-destructive' : 'bg-emerald-500'"
+                    />
+                    {{ connectionErrors[connection.id ?? ""] ? "失败" : "可用" }}
+                  </span>
+                  <span class="truncate text-right text-xs text-muted-foreground">
+                    {{ connection.context_window ? connection.context_window.toLocaleString() : "默认" }}
+                  </span>
+                </button>
+              </template>
+              <div
+                v-if="dropPosition === connections.length"
+                class="pointer-events-none flex h-2 items-center px-4"
+              >
+                <span class="h-px w-full bg-primary/50" />
               </div>
-            </section>
-
-            <section class="flex min-w-0 flex-col">
-              <div class="flex h-11 items-center justify-between border-b border-border px-4">
+              <div
+                v-if="!loading && connections.length === 0"
+                class="flex min-h-72 flex-col items-center justify-center gap-3 px-4 text-center"
+              >
+                <PlugZapIcon class="size-8 text-muted-foreground/50" />
                 <div>
-                  <h3 class="text-sm font-medium">{{ isNewConnection ? "添加 API 连接" : "编辑 API 连接" }}</h3>
+                  <p class="text-sm font-medium">暂无模型连接</p>
+                  <p class="mt-1 text-xs text-muted-foreground">
+                    添加连接后即可在会话中选择模型
+                  </p>
                 </div>
+              </div>
+            </div>
+            <div class="flex min-h-11 shrink-0 items-center justify-between gap-3 border-t border-border px-4">
+              <p class="truncate text-sm text-destructive">{{ error }}</p>
+              <p v-if="!error" class="text-xs text-muted-foreground">
+                {{ connections.length }} 个连接
+              </p>
+            </div>
+          </section>
+
+          <section
+            v-else
+            class="flex min-h-[420px] flex-1 flex-col border-y border-border bg-background"
+          >
+            <div class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+              <div class="flex min-w-0 items-center gap-3">
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  title="返回连接列表"
+                  aria-label="返回连接列表"
+                  @click="backToConnectionList"
+                >
+                  <ArrowLeftIcon class="size-4" />
+                </Button>
+                <div class="min-w-0">
+                  <h3 class="truncate text-sm font-medium">
+                    {{ isNewConnection ? "添加 API 连接" : "编辑 API 连接" }}
+                  </h3>
+                  <p v-if="!isNewConnection" class="truncate text-xs text-muted-foreground">
+                    {{ selectedConnection?.base_url }}
+                  </p>
+                </div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
                 <Button
                   v-if="!isNewConnection"
                   variant="ghost"
-                  size="sm"
+                  size="icon-sm"
                   :disabled="deleting || saving"
-                  class="text-destructive hover:text-destructive"
+                  class="text-muted-foreground hover:text-destructive"
+                  title="删除连接"
+                  aria-label="删除连接"
                   @click="remove"
                 >
                   <Trash2Icon class="size-4" />
-                  删除
+                </Button>
+                <Button :disabled="saving || deleting || loading" @click="save">
+                  <KeyRoundIcon class="size-4" />
+                  {{ saving ? "保存中…" : isNewConnection ? "添加连接" : "保存连接" }}
                 </Button>
               </div>
-              <div class="space-y-4 p-4">
-                <div class="space-y-1.5">
-                  <Label for="connection-name">名称</Label>
-                  <Input id="connection-name" v-model="name" placeholder="例如：OpenAI 个人" :disabled="loading" />
-                </div>
-                <div class="space-y-1.5">
-                  <Label for="connection-url">Base URL</Label>
+            </div>
+            <div class="grid gap-4 p-4 lg:grid-cols-2">
+              <div class="space-y-1.5">
+                <Label for="connection-name">名称</Label>
+                <Input id="connection-name" v-model="name" placeholder="例如：OpenAI 个人" :disabled="loading" />
+              </div>
+              <div class="space-y-1.5">
+                <Label for="connection-url">Base URL</Label>
+                <Input
+                  id="connection-url"
+                  v-model="baseURL"
+                  placeholder="https://api.openai.com/v1"
+                  :disabled="loading"
+                />
+              </div>
+              <div class="space-y-1.5">
+                <Label for="connection-context-window">上下文窗口（可选）</Label>
+                <div class="flex gap-2">
                   <Input
-                    id="connection-url"
-                    v-model="baseURL"
-                    placeholder="https://api.openai.com/v1"
+                    id="connection-context-window"
+                    v-model="contextWindowValue"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder="默认 200"
                     :disabled="loading"
                   />
+                  <Select
+                    :model-value="contextWindowUnit"
+                    @update:model-value="selectContextWindowUnit"
+                  >
+                    <SelectTrigger class="w-24 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="K">K</SelectItem>
+                      <SelectItem value="M">M</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div class="space-y-1.5">
-                  <Label for="connection-context-window">上下文窗口（可选）</Label>
-                  <div class="flex gap-2">
-                    <Input
-                      id="connection-context-window"
-                      v-model="contextWindowValue"
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      placeholder="默认 200"
-                      :disabled="loading"
-                    />
-                    <Select
-                      :model-value="contextWindowUnit"
-                      @update:model-value="selectContextWindowUnit"
-                    >
-                      <SelectTrigger class="w-24 shrink-0">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="K">K</SelectItem>
-                        <SelectItem value="M">M</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div class="space-y-1.5">
-                  <Label for="connection-key">API Key</Label>
-                  <Input
-                    id="connection-key"
-                    v-model="apiKey"
-                    type="password"
-                    :placeholder="hasKey ? '已配置，留空则保持不变' : 'sk-...'"
-                    :disabled="loading"
-                  />
-                </div>
-                <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+              </div>
+              <div class="space-y-1.5">
+                <Label for="connection-key">API Key</Label>
+                <Input
+                  id="connection-key"
+                  v-model="apiKey"
+                  type="password"
+                  :placeholder="hasKey ? '已配置，留空则保持不变' : 'sk-...'"
+                  :disabled="loading"
+                />
+              </div>
+            </div>
+            <div class="mt-auto flex min-h-12 shrink-0 items-center justify-between gap-3 border-t border-border px-4">
+              <div class="min-w-0">
+                <p class="truncate text-sm text-destructive">{{ error }}</p>
                 <div
                   v-if="selectedConnectionError"
                   class="flex items-start gap-2 text-sm text-destructive"
@@ -1014,16 +1117,29 @@ async function remove() {
                   <AlertCircleIcon class="mt-0.5 size-4 shrink-0" />
                   <span class="break-all">{{ selectedConnectionError }}</span>
                 </div>
-                <div class="flex justify-end pt-2">
-                  <Button :disabled="saving || deleting || loading" @click="save">
-                    <KeyRoundIcon class="size-4" />
-                    {{ saving ? "保存中…" : isNewConnection ? "添加连接" : "保存连接" }}
-                  </Button>
-                </div>
               </div>
-            </section>
-          </div>
+            </div>
+          </section>
         </div>
+
+        <ContextItemsSettings
+          v-else-if="section === 'rules'"
+          kind="rule"
+          :current-project-id="props.currentProjectId"
+          :revision="contextRevision"
+        />
+
+        <ContextItemsSettings
+          v-else-if="section === 'memory'"
+          kind="memory"
+          :current-project-id="props.currentProjectId"
+          :revision="contextRevision"
+        />
+
+        <HooksSettings
+          v-else-if="section === 'hooks'"
+          :current-project-id="props.currentProjectId"
+        />
 
         <div v-else-if="section === 'skills'" class="mx-auto w-full max-w-3xl p-6">
           <h2 class="mb-6 text-base font-medium">技能</h2>

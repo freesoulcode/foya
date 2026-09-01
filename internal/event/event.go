@@ -41,6 +41,7 @@ const (
 	KindSubAgentInterrupted Kind = "subagent_interrupted"
 	KindAgentBudgetUpdated  Kind = "agent_budget_updated"
 	KindAgentBudgetExceeded Kind = "agent_budget_exceeded"
+	KindHookCompleted       Kind = "hook_completed"
 	KindError               Kind = "error"
 )
 

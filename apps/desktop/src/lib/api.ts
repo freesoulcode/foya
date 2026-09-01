@@ -281,6 +281,24 @@ export interface AgentLimits {
   max_tree_tokens: number;
 }
 
+export type HookEvent =
+  | "SessionStart"
+  | "UserPromptSubmit"
+  | "PreToolUse"
+  | "PostToolUse"
+  | "Stop"
+  | "Notification";
+
+export interface HookConfig {
+  id?: string;
+  name?: string;
+  event: HookEvent;
+  matcher?: string;
+  command: string;
+  timeout?: number;
+  enabled?: boolean;
+}
+
 export interface StartAgentRequest {
   task: string;
   root_run_id?: string;
@@ -301,6 +319,28 @@ export interface ProjectInfo {
   pinned_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export type ContextItemKind = "rule" | "memory";
+export type ContextItemScope = "global" | "project";
+export type RuleTrigger = "always" | "glob" | "model_decision" | "manual";
+
+export interface ContextItem {
+  id: string;
+  name?: string;
+  description?: string;
+  trigger?: RuleTrigger;
+  globs?: string[];
+  path?: string;
+  scope: ContextItemScope;
+  project_id?: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemorySettings {
+  enabled: boolean;
 }
 
 export interface SearchProviderConfig {
@@ -608,6 +648,67 @@ export const api = {
       (r) => (JSON.parse(r) as AgentInfo[]) ?? []
     ),
 
+  listContextItems: (
+    kind: ContextItemKind,
+    scope: ContextItemScope,
+    projectId?: string
+  ) =>
+    invoke<string>("list_context_items", { kind, scope, projectId }).then(
+      (r) => (JSON.parse(r) as ContextItem[]) ?? []
+    ),
+
+  createContextItem: (
+    kind: ContextItemKind,
+    item: {
+      scope: ContextItemScope;
+      project_id?: string;
+      content: string;
+      name?: string;
+      description?: string;
+      trigger?: RuleTrigger;
+      globs?: string[];
+      path?: string;
+    }
+  ) =>
+    invoke<string>("create_context_item", { kind, item }).then(
+      (r) => JSON.parse(r) as ContextItem
+    ),
+
+  updateContextItem: (
+    kind: ContextItemKind,
+    itemId: string,
+    item: {
+      content: string;
+      name?: string;
+      description?: string;
+      trigger?: RuleTrigger;
+      globs?: string[];
+      path?: string;
+    }
+  ) =>
+    invoke<string>("update_context_item", { kind, itemId, item }).then(
+      (r) => JSON.parse(r) as ContextItem
+    ),
+
+  deleteContextItem: (kind: ContextItemKind, itemId: string) =>
+    invoke("delete_context_item", { kind, itemId }),
+
+  subscribeContextEvents: (onEvent: (data: string) => void) => {
+    const channel = new Channel<string>();
+    channel.onmessage = onEvent;
+    return invoke("subscribe_context_events", { channel });
+  },
+
+  getMemorySettings: () =>
+    invoke<string>("get_memory_settings").then(
+      (r) => JSON.parse(r) as MemorySettings
+    ),
+
+  updateMemorySettings: (settings: MemorySettings) =>
+    invoke<string>("update_memory_settings", { settings }).then(
+      (r) => JSON.parse(r) as MemorySettings
+    ),
+
   getAgentLimits: () =>
     invoke<string>("get_agent_limits").then(
       (r) => JSON.parse(r) as AgentLimits
@@ -617,6 +718,24 @@ export const api = {
     invoke<string>("update_agent_limits", { limits }).then(
       (r) => JSON.parse(r) as AgentLimits
     ),
+
+  getHooks: (scope: "global" | "project", projectId?: string) =>
+    invoke<string>("get_hooks", { scope, projectId: projectId ?? "" }).then(
+      (r) => (JSON.parse(r) as HookConfig[]) ?? []
+    ),
+
+  updateHooks: (
+    scope: "global" | "project",
+    hooks: HookConfig[],
+    projectId?: string
+  ) =>
+    invoke<string>("update_hooks", {
+      request: {
+        scope,
+        project_id: projectId ?? "",
+        hooks,
+      },
+    }).then((r) => (JSON.parse(r) as HookConfig[]) ?? []),
 
   setSkillEnabled: (skillRef: string, enabled: boolean) =>
     invoke("set_skill_enabled", { skillRef, enabled }),

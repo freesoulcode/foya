@@ -743,6 +743,35 @@ async fn update_agent_limits(limits: serde_json::Value) -> Result<String, String
 
 #[cfg(unix)]
 #[tauri::command]
+async fn get_memory_settings() -> Result<String, String> {
+    kernel::request("GET", "/settings/memory", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_memory_settings(settings: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/settings/memory", Some(&settings.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_hooks(scope: String, project_id: String) -> Result<String, String> {
+    let mut path = format!("/hooks?scope={}", encode_query_component(&scope));
+    if !project_id.is_empty() {
+        path.push_str("&project_id=");
+        path.push_str(&encode_query_component(&project_id));
+    }
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_hooks(request: serde_json::Value) -> Result<String, String> {
+    kernel::request("PUT", "/hooks", Some(&request.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn list_projects() -> Result<String, String> {
     kernel::request("GET", "/projects", None).await
 }
@@ -785,6 +814,75 @@ async fn list_project_skills(project_id: String) -> Result<String, String> {
 async fn list_project_agents(project_id: String) -> Result<String, String> {
     let path = format!("/projects/{}/agents", encode_query_component(&project_id));
     kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+fn context_resource(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "rule" => Ok("rules"),
+        "memory" => Ok("memories"),
+        _ => Err("未知上下文类型".into()),
+    }
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_context_items(
+    kind: String,
+    scope: String,
+    project_id: Option<String>,
+) -> Result<String, String> {
+    let resource = context_resource(&kind)?;
+    let mut path = format!("/{resource}?scope={}", encode_query_component(&scope));
+    if let Some(project_id) = project_id.filter(|value| !value.is_empty()) {
+        path.push_str("&project_id=");
+        path.push_str(&encode_query_component(&project_id));
+    }
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn create_context_item(kind: String, item: serde_json::Value) -> Result<String, String> {
+    let resource = context_resource(&kind)?;
+    kernel::request("POST", &format!("/{resource}"), Some(&item.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_context_item(
+    kind: String,
+    item_id: String,
+    item: serde_json::Value,
+) -> Result<String, String> {
+    let resource = context_resource(&kind)?;
+    kernel::request(
+        "PATCH",
+        &format!("/{resource}/{item_id}"),
+        Some(&item.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_context_item(kind: String, item_id: String) -> Result<(), String> {
+    let resource = context_resource(&kind)?;
+    kernel::request("DELETE", &format!("/{resource}/{item_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn subscribe_context_events(channel: Channel<String>) -> Result<(), String> {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let _ = kernel::subscribe_path("/context/events", channel, ready_tx).await;
+    });
+    ready_rx
+        .await
+        .map_err(|_| "规则与记忆事件订阅在连接前意外结束".to_string())?
 }
 
 #[cfg(unix)]
@@ -1482,6 +1580,30 @@ async fn update_agent_limits(_limits: serde_json::Value) -> Result<String, Strin
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn get_memory_settings() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_memory_settings(_settings: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn get_hooks(_scope: String, _project_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_hooks(_request: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn list_projects() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -1513,6 +1635,44 @@ async fn list_project_skills(_project_id: String) -> Result<String, String> {
 #[cfg(not(unix))]
 #[tauri::command]
 async fn list_project_agents(_project_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_context_items(
+    _kind: String,
+    _scope: String,
+    _project_id: Option<String>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn create_context_item(_kind: String, _item: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_context_item(
+    _kind: String,
+    _item_id: String,
+    _item: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_context_item(_kind: String, _item_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn subscribe_context_events(_channel: Channel<String>) -> Result<(), String> {
     Err("Windows 传输尚未实现".into())
 }
 
@@ -1654,12 +1814,21 @@ pub fn run() {
             list_agents,
             get_agent_limits,
             update_agent_limits,
+            get_memory_settings,
+            update_memory_settings,
+            get_hooks,
+            update_hooks,
             list_projects,
             register_project,
             update_project,
             delete_project,
             list_project_skills,
             list_project_agents,
+            list_context_items,
+            create_context_item,
+            update_context_item,
+            delete_context_item,
+            subscribe_context_events,
             set_skill_enabled,
             get_web_search_settings,
             update_web_search_settings,

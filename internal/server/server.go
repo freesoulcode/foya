@@ -20,7 +20,9 @@ import (
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/project"
@@ -85,12 +87,25 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /settings/agent-limits", s.handleGetAgentLimits)
 	s.mux.HandleFunc("PUT /settings/agent-limits", s.handleUpdateAgentLimits)
+	s.mux.HandleFunc("GET /settings/memory", s.handleGetMemorySettings)
+	s.mux.HandleFunc("PUT /settings/memory", s.handleUpdateMemorySettings)
+	s.mux.HandleFunc("GET /hooks", s.handleGetHooks)
+	s.mux.HandleFunc("PUT /hooks", s.handleReplaceHooks)
 	s.mux.HandleFunc("GET /projects", s.handleListProjects)
 	s.mux.HandleFunc("POST /projects", s.handleCreateProject)
 	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /projects/{id}/skills", s.handleProjectSkills)
 	s.mux.HandleFunc("GET /projects/{id}/agents", s.handleProjectAgents)
+	s.mux.HandleFunc("GET /rules", s.handleListRules)
+	s.mux.HandleFunc("POST /rules", s.handleCreateRule)
+	s.mux.HandleFunc("PATCH /rules/{id}", s.handleUpdateRule)
+	s.mux.HandleFunc("DELETE /rules/{id}", s.handleDeleteRule)
+	s.mux.HandleFunc("GET /memories", s.handleListMemories)
+	s.mux.HandleFunc("POST /memories", s.handleCreateMemory)
+	s.mux.HandleFunc("PATCH /memories/{id}", s.handleUpdateMemory)
+	s.mux.HandleFunc("DELETE /memories/{id}", s.handleDeleteMemory)
+	s.mux.HandleFunc("GET /context/events", s.handleContextEvents)
 	s.mux.HandleFunc("GET /web-search", s.handleGetWebSearch)
 	s.mux.HandleFunc("PUT /web-search", s.handleUpdateWebSearch)
 	s.mux.HandleFunc("POST /web-search/test", s.handleTestWebSearch)
@@ -108,6 +123,276 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
 	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
+}
+
+type contextCreateRequest struct {
+	Scope       contextdata.Scope       `json:"scope"`
+	ProjectID   string                  `json:"project_id,omitempty"`
+	Content     string                  `json:"content"`
+	Name        string                  `json:"name,omitempty"`
+	Description string                  `json:"description,omitempty"`
+	Trigger     contextdata.RuleTrigger `json:"trigger,omitempty"`
+	Globs       []string                `json:"globs,omitempty"`
+	Path        string                  `json:"path,omitempty"`
+}
+
+type contextUpdateRequest struct {
+	Content     string                   `json:"content"`
+	Name        *string                  `json:"name,omitempty"`
+	Description *string                  `json:"description,omitempty"`
+	Trigger     *contextdata.RuleTrigger `json:"trigger,omitempty"`
+	Globs       *[]string                `json:"globs,omitempty"`
+	Path        *string                  `json:"path,omitempty"`
+}
+
+type hooksRequest struct {
+	Scope     string         `json:"scope"`
+	ProjectID string         `json:"project_id,omitempty"`
+	Hooks     []hooks.Config `json:"hooks"`
+}
+
+func (s *Server) handleGetHooks(w http.ResponseWriter, r *http.Request) {
+	hooks, err := s.backend.Hooks(r.URL.Query().Get("scope"), r.URL.Query().Get("project_id"))
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, hooks)
+}
+
+func (s *Server) handleReplaceHooks(w http.ResponseWriter, r *http.Request) {
+	var input hooksRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.ReplaceHooks(input.Scope, input.ProjectID, input.Hooks); err != nil {
+		if errors.Is(err, hooks.ErrInvalidHook) ||
+			errors.Is(err, hooks.ErrInvalidHooksConfig) ||
+			errors.Is(err, hooks.ErrInvalidEvent) {
+			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, input.Hooks)
+}
+
+func contextFilter(r *http.Request) (contextdata.Scope, string) {
+	return contextdata.Scope(r.URL.Query().Get("scope")), r.URL.Query().Get("project_id")
+}
+
+func (s *Server) handleGetMemorySettings(w http.ResponseWriter, _ *http.Request) {
+	settings, err := s.backend.MemorySettings()
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdateMemorySettings(w http.ResponseWriter, r *http.Request) {
+	var settings contextdata.MemorySettings
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&settings); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	updated, err := s.backend.UpdateMemorySettings(settings)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
+	scope, projectID := contextFilter(r)
+	items, err := s.backend.Rules(scope, projectID)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
+	var input contextCreateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.CreateRule(input.Scope, input.ProjectID, input.Content, contextdata.RuleOptions{
+		Name: input.Name, Description: input.Description, Trigger: input.Trigger,
+		Globs: input.Globs, Path: input.Path,
+	})
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
+	var input contextUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	options := []contextdata.RuleOptions(nil)
+	if input.Name != nil || input.Description != nil || input.Trigger != nil ||
+		input.Globs != nil || input.Path != nil {
+		option := contextdata.RuleOptions{}
+		if input.Name != nil {
+			option.Name = *input.Name
+		}
+		if input.Description != nil {
+			option.Description = *input.Description
+		}
+		if input.Trigger != nil {
+			option.Trigger = *input.Trigger
+		}
+		if input.Globs != nil {
+			option.Globs = *input.Globs
+		}
+		if input.Path != nil {
+			option.Path = *input.Path
+		}
+		options = append(options, option)
+	}
+	item, err := s.backend.UpdateRule(r.PathValue("id"), input.Content, options...)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.DeleteRule(r.PathValue("id")); err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListMemories(w http.ResponseWriter, r *http.Request) {
+	scope, projectID := contextFilter(r)
+	items, err := s.backend.Memories(scope, projectID)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleCreateMemory(w http.ResponseWriter, r *http.Request) {
+	var input contextCreateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.CreateMemory(input.Scope, input.ProjectID, input.Content)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleUpdateMemory(w http.ResponseWriter, r *http.Request) {
+	var input contextUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.UpdateMemory(r.PathValue("id"), input.Content)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.DeleteMemory(r.PathValue("id")); err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleContextEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "no_flush", "streaming unsupported")
+		return
+	}
+	after, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64)
+	ch, err := s.backend.SubscribeContext(r.Context())
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	replay, err := s.backend.ReplayContext(after)
+	if err != nil {
+		writeContextErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+	last := after
+	writeEvent := func(ev contextdata.Event) {
+		if ev.Seq <= last {
+			return
+		}
+		data, _ := json.Marshal(ev)
+		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.Seq, ev.Kind, data)
+		flusher.Flush()
+		last = ev.Seq
+	}
+	for _, ev := range replay {
+		writeEvent(ev)
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			writeEvent(ev)
+		}
+	}
+}
+
+func writeContextErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, contextdata.ErrNotFound), errors.Is(err, project.ErrNotFound):
+		writeErr(w, http.StatusNotFound, "not_found", err.Error())
+	case errors.Is(err, contextdata.ErrInvalidScope),
+		errors.Is(err, contextdata.ErrEmptyContent),
+		errors.Is(err, contextdata.ErrTooLarge),
+		errors.Is(err, contextdata.ErrInvalidRule):
+		writeErr(w, http.StatusBadRequest, "invalid_context_item", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "context_item_failed", err.Error())
+	}
 }
 
 func (s *Server) handleGetAgentLimits(w http.ResponseWriter, _ *http.Request) {

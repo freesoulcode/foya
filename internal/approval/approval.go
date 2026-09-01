@@ -92,6 +92,7 @@ const (
 	ctxKeySession
 	ctxKeyExecutionSession
 	ctxKeyReviewer
+	ctxKeyNotification
 )
 
 // WithMode 把审批档位注入上下文。
@@ -112,6 +113,17 @@ func WithExecutionSession(ctx context.Context, sessionID string) context.Context
 
 func WithReviewer(ctx context.Context, reviewer Reviewer) context.Context {
 	return context.WithValue(ctx, ctxKeyReviewer, reviewer)
+}
+
+// NotificationHandler is called after a manual approval request becomes
+// visible to clients. It must return quickly; notification delivery itself is
+// asynchronous and must never delay the approval flow.
+type NotificationHandler func(context.Context, Request)
+
+// WithNotificationHandler installs an optional notification callback for the
+// current tool execution.
+func WithNotificationHandler(ctx context.Context, handler NotificationHandler) context.Context {
+	return context.WithValue(ctx, ctxKeyNotification, handler)
 }
 
 type pendingRequest struct {
@@ -197,6 +209,9 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 	seq, _ := g.log.Append(ctx, ev)
 	ev.Seq = seq
 	_ = g.bus.PublishMustDeliver(ctx, "session:"+req.Session, ev)
+	if notify, ok := ctx.Value(ctxKeyNotification).(NotificationHandler); ok && notify != nil {
+		notify(context.WithoutCancel(ctx), req)
+	}
 
 	select {
 	case d := <-ch:

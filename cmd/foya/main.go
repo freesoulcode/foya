@@ -22,6 +22,7 @@ import (
 
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/config"
+	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/kernel"
 	"github.com/freesoulcode/foya/internal/mcpclient"
@@ -45,6 +46,12 @@ func main() {
 			return
 		case "projects":
 			runProjects(os.Args[2:])
+			return
+		case "rules":
+			runContextItems("rules", os.Args[2:])
+			return
+		case "memory":
+			runContextItems("memory", os.Args[2:])
 			return
 		case "mcp":
 			runMCP(os.Args[2:])
@@ -302,6 +309,155 @@ func runProjects(args []string) {
 		return
 	}
 	fatal(fmt.Errorf("usage: foya projects list|add <path>|delete <id>"))
+}
+
+func runContextItems(kind string, args []string) {
+	app := newApp()
+	defer app.Close()
+	action := "list"
+	if kind == "memory" {
+		action = "show"
+	}
+	if len(args) > 0 {
+		action = args[0]
+		args = args[1:]
+	}
+	flags := flag.NewFlagSet("foya "+kind+" "+action, flag.ExitOnError)
+	projectID := flags.String("project", "", "project id")
+	_ = flags.Parse(args)
+	scope := contextdata.ScopeGlobal
+	if *projectID != "" {
+		scope = contextdata.ScopeProject
+	}
+
+	if kind == "memory" {
+		switch action {
+		case "status":
+			if flags.NArg() != 0 {
+				break
+			}
+			settings, err := app.Backend().MemorySettings()
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(settings)
+			return
+		case "enable", "disable":
+			if flags.NArg() != 0 {
+				break
+			}
+			settings, err := app.Backend().UpdateMemorySettings(contextdata.MemorySettings{
+				Enabled: action == "enable",
+			})
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(settings)
+			return
+		case "show":
+			if flags.NArg() != 0 {
+				break
+			}
+			item, err := app.Backend().Memory(scope, *projectID)
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(item)
+			return
+		case "set":
+			content := contextCommandContent(flags.Args())
+			if content == "" {
+				break
+			}
+			item, err := app.Backend().SetMemory(scope, *projectID, content)
+			if err != nil {
+				fatal(err)
+			}
+			printJSON(item)
+			return
+		case "clear":
+			if flags.NArg() != 0 {
+				break
+			}
+			if err := app.Backend().ClearMemory(scope, *projectID); err != nil {
+				fatal(err)
+			}
+			return
+		}
+		fatal(fmt.Errorf(
+			"usage: foya memory status|enable|disable|show [--project <id>]|set [--project <id>] <text>|clear [--project <id>]",
+		))
+	}
+
+	switch action {
+	case "list":
+		if flags.NArg() != 0 {
+			break
+		}
+		var (
+			items any
+			err   error
+		)
+		items, err = app.Backend().Rules(scope, *projectID)
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(items)
+		return
+	case "add":
+		content := contextCommandContent(flags.Args())
+		if content == "" {
+			break
+		}
+		var (
+			item any
+			err  error
+		)
+		item, err = app.Backend().CreateRule(scope, *projectID, content)
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(item)
+		return
+	case "edit":
+		if flags.NArg() < 2 {
+			break
+		}
+		id := flags.Arg(0)
+		content := strings.TrimSpace(strings.Join(flags.Args()[1:], " "))
+		var (
+			item any
+			err  error
+		)
+		item, err = app.Backend().UpdateRule(id, content)
+		if err != nil {
+			fatal(err)
+		}
+		printJSON(item)
+		return
+	case "delete":
+		if flags.NArg() != 1 {
+			break
+		}
+		var err error
+		err = app.Backend().DeleteRule(flags.Arg(0))
+		if err != nil {
+			fatal(err)
+		}
+		return
+	}
+	fatal(fmt.Errorf(
+		"usage: foya rules list [--project <id>]|add [--project <id>] <text>|edit <id> <text>|delete <id>",
+	))
+}
+
+func contextCommandContent(args []string) string {
+	content := strings.TrimSpace(strings.Join(args, " "))
+	if content != "" {
+		return content
+	}
+	data, _ := io.ReadAll(os.Stdin)
+	return strings.TrimSpace(string(data))
 }
 
 func runMCP(args []string) {
