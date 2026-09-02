@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,9 @@ const (
 	SubmissionQueued         = "queued"
 	EditStarted              = "started"
 	EditConfirmationRequired = "confirmation_required"
+	maxBrowserElements       = 8
+	maxBrowserElementBytes   = 40 * 1024
+	maxBrowserContextBytes   = 96 * 1024
 )
 
 // Submission describes whether a submitted message started or was queued.
@@ -101,9 +105,14 @@ func (b *Backend) SubmitInput(
 		return Submission{}, session.ErrNotFound
 	}
 	input.Text = strings.TrimSpace(input.Text)
-	if input.Text == "" && len(input.Attachments) == 0 {
+	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
 		return Submission{}, ErrEmptyMessage
 	}
+	browserElements, err := normalizeBrowserElements(input.BrowserElements)
+	if err != nil {
+		return Submission{}, err
+	}
+	input.BrowserElements = browserElements
 	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
 	if err != nil {
 		return Submission{}, err
@@ -140,6 +149,48 @@ func (b *Backend) SubmitInput(
 	b.turns.mu.Unlock()
 	go b.runTurnLoop(sessionID, input, runner, turnCtx, false)
 	return Submission{Status: SubmissionStarted}, nil
+}
+
+func normalizeBrowserElements(
+	elements []message.BrowserElement,
+) ([]message.BrowserElement, error) {
+	if len(elements) > maxBrowserElements {
+		return nil, fmt.Errorf("at most %d browser elements are allowed", maxBrowserElements)
+	}
+	out := make([]message.BrowserElement, 0, len(elements))
+	total := 0
+	for _, element := range elements {
+		element.PageURL = strings.TrimSpace(element.PageURL)
+		element.PageTitle = strings.TrimSpace(element.PageTitle)
+		element.Tag = strings.ToLower(strings.TrimSpace(element.Tag))
+		element.Selector = strings.TrimSpace(element.Selector)
+		element.Text = strings.TrimSpace(element.Text)
+		element.HTML = strings.TrimSpace(element.HTML)
+		parsed, err := url.ParseRequestURI(element.PageURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, errors.New("browser element URL must use HTTP or HTTPS")
+		}
+		if element.Tag == "" || element.Selector == "" {
+			return nil, errors.New("browser element tag and selector are required")
+		}
+		size := len(element.PageURL) + len(element.PageTitle) + len(element.Tag) +
+			len(element.Selector) + len(element.Text) + len(element.HTML)
+		if size > maxBrowserElementBytes {
+			return nil, fmt.Errorf(
+				"browser element exceeds %d bytes",
+				maxBrowserElementBytes,
+			)
+		}
+		total += size
+		if total > maxBrowserContextBytes {
+			return nil, fmt.Errorf(
+				"browser elements exceed %d bytes",
+				maxBrowserContextBytes,
+			)
+		}
+		out = append(out, element)
+	}
+	return out, nil
 }
 
 func (b *Backend) resolveAttachments(
@@ -201,9 +252,14 @@ func (b *Backend) EnqueueInput(
 		return queue.Message{}, session.ErrNotFound
 	}
 	input.Text = strings.TrimSpace(input.Text)
-	if input.Text == "" && len(input.Attachments) == 0 {
+	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
 		return queue.Message{}, ErrEmptyMessage
 	}
+	browserElements, err := normalizeBrowserElements(input.BrowserElements)
+	if err != nil {
+		return queue.Message{}, err
+	}
+	input.BrowserElements = browserElements
 	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
 	if err != nil {
 		return queue.Message{}, err
@@ -448,7 +504,8 @@ func (b *Backend) EditTurn(
 		return EditSubmission{}, err
 	}
 	for _, item := range history {
-		if item.EventSeq == uint64(targetUserSeq) && len(item.Attachments) > 0 {
+		if item.EventSeq == uint64(targetUserSeq) &&
+			(len(item.Attachments) > 0 || len(item.BrowserElements) > 0) {
 			return EditSubmission{}, ErrAttachmentEditUnsupported
 		}
 	}
@@ -595,9 +652,10 @@ func (b *Backend) runTurnLoop(
 
 func queueInput(item queue.Message) message.UserInput {
 	return message.UserInput{
-		Text:        item.Text,
-		Command:     item.Command,
-		Attachments: append([]message.AttachmentRef(nil), item.Attachments...),
+		Text:            item.Text,
+		Command:         item.Command,
+		Attachments:     append([]message.AttachmentRef(nil), item.Attachments...),
+		BrowserElements: append([]message.BrowserElement(nil), item.BrowserElements...),
 	}
 }
 

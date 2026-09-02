@@ -40,11 +40,24 @@ type AttachmentRef struct {
 	SHA256    string `json:"sha256,omitempty"`
 }
 
+// BrowserElement is a user-selected DOM element captured from the Workbar browser.
+// It remains structured in history so the UI can render it without exposing the
+// full HTML snapshot in the visible user message.
+type BrowserElement struct {
+	PageURL   string `json:"page_url"`
+	PageTitle string `json:"page_title,omitempty"`
+	Tag       string `json:"tag"`
+	Selector  string `json:"selector"`
+	Text      string `json:"text,omitempty"`
+	HTML      string `json:"html,omitempty"`
+}
+
 // UserInput is the canonical input accepted by a turn or queued submission.
 type UserInput struct {
-	Text        string          `json:"text"`
-	Command     string          `json:"command,omitempty"`
-	Attachments []AttachmentRef `json:"attachments,omitempty"`
+	Text            string           `json:"text"`
+	Command         string           `json:"command,omitempty"`
+	Attachments     []AttachmentRef  `json:"attachments,omitempty"`
+	BrowserElements []BrowserElement `json:"browser_elements,omitempty"`
 }
 
 // Message 是一条对话消息。
@@ -52,15 +65,16 @@ type UserInput struct {
 // 助手调工具:Role=assistant, Content 可为空, ToolCalls 非空。
 // 工具结果:Role=tool, ToolCallID 指向对应的调用, Content 为结果文本。
 type Message struct {
-	Role        Role            `json:"role"`
-	Content     string          `json:"content"`
-	Command     string          `json:"command,omitempty"`
-	Attachments []AttachmentRef `json:"attachments,omitempty"`
-	EventSeq    uint64          `json:"event_seq,omitempty"` // 历史投影中的稳定标识,不回灌模型
-	Reasoning   string          `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
-	ToolCalls   []ToolCall      `json:"tool_calls,omitempty"`
-	ToolCallID  string          `json:"tool_call_id,omitempty"`
-	Diff        string          `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供展示,不回灌模型
+	Role            Role             `json:"role"`
+	Content         string           `json:"content"`
+	Command         string           `json:"command,omitempty"`
+	Attachments     []AttachmentRef  `json:"attachments,omitempty"`
+	BrowserElements []BrowserElement `json:"browser_elements,omitempty"`
+	EventSeq        uint64           `json:"event_seq,omitempty"` // 历史投影中的稳定标识,不回灌模型
+	Reasoning       string           `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
+	ToolCalls       []ToolCall       `json:"tool_calls,omitempty"`
+	ToolCallID      string           `json:"tool_call_id,omitempty"`
+	Diff            string           `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供 UI 展示,不回灌模型
 	// 回合生命周期时间仅写入最终 assistant 消息，不回灌模型。
 	TurnStartedAt   *time.Time `json:"turn_started_at,omitempty"`
 	TurnCompletedAt *time.Time `json:"turn_completed_at,omitempty"`

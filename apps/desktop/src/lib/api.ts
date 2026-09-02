@@ -58,6 +58,7 @@ export interface QueuedMessage {
   session_id: string;
   text: string;
   attachments?: AttachmentRef[];
+  browser_elements?: BrowserElementSelection[];
   position: number;
   created_at: string;
   updated_at: string;
@@ -161,6 +162,15 @@ export interface BrowserViewport {
   height: number;
 }
 
+export interface BrowserElementSelection {
+  page_url: string;
+  page_title: string;
+  tag: string;
+  selector: string;
+  text: string;
+  html: string;
+}
+
 export interface ProjectEntry {
   path: string;
   name: string;
@@ -232,6 +242,7 @@ export interface ChatMessage {
   content: string;
   command?: string;
   attachments?: AttachmentRef[];
+  browser_elements?: BrowserElementSelection[];
   event_seq?: number;
   reasoning?: string;
   tool_calls?: ToolCallView[];
@@ -589,8 +600,18 @@ export const api = {
       (r) => JSON.parse(r) as ContextUsage | null
     ),
 
-  submitTurn: (sessionId: string, message: string, attachments: AttachmentRef[] = []) =>
-    invoke<string>("submit_turn", { sessionId, message, attachments }).then(
+  submitTurn: (
+    sessionId: string,
+    message: string,
+    attachments: AttachmentRef[] = [],
+    browserElements: BrowserElementSelection[] = []
+  ) =>
+    invoke<string>("submit_turn", {
+      sessionId,
+      message,
+      attachments,
+      browserElements,
+    }).then(
       (r) => JSON.parse(r) as SubmitTurnResult
     ),
 
@@ -637,9 +658,15 @@ export const api = {
   enqueueMessage: (
     sessionId: string,
     message: string,
-    attachments: AttachmentRef[] = []
+    attachments: AttachmentRef[] = [],
+    browserElements: BrowserElementSelection[] = []
   ) =>
-    invoke<string>("enqueue_message", { sessionId, message, attachments }).then(
+    invoke<string>("enqueue_message", {
+      sessionId,
+      message,
+      attachments,
+      browserElements,
+    }).then(
       (r) => JSON.parse(r) as QueuedMessage
     ),
 
@@ -1009,6 +1036,9 @@ export const api = {
 
   browserReload: (browserId: string) =>
     invoke("browser_reload", { browserId }),
+
+  setBrowserElementPicker: (browserId: string, enabled: boolean) =>
+    invoke("set_browser_element_picker", { browserId, enabled }),
 
   hideBrowser: (browserId: string) =>
     invoke("hide_browser", { browserId }),

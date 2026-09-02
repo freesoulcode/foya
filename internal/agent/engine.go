@@ -763,6 +763,13 @@ func (e *Engine) runTurn(
 					}
 					titleSource = "图片: " + strings.Join(names, ", ")
 				}
+				if strings.TrimSpace(titleSource) == "" && len(input.BrowserElements) > 0 {
+					element := input.BrowserElements[0]
+					titleSource = strings.TrimSpace(element.PageTitle)
+					if titleSource == "" {
+						titleSource = element.PageURL
+					}
+				}
 				detached := context.WithoutCancel(ctx)
 				go e.generateTitle(detached, sessionID, titleSource)
 			}
@@ -771,10 +778,11 @@ func (e *Engine) runTurn(
 
 	// 用户消息入日志。
 	userMsg := message.Message{
-		Role:        message.RoleUser,
-		Content:     userText,
-		Command:     input.Command,
-		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
+		Role:            message.RoleUser,
+		Content:         userText,
+		Command:         input.Command,
+		Attachments:     append([]message.AttachmentRef(nil), input.Attachments...),
+		BrowserElements: append([]message.BrowserElement(nil), input.BrowserElements...),
 	}
 	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
 	e.emit(ctx, sessionID, event.KindTurnStarted, turnStartedPayload{

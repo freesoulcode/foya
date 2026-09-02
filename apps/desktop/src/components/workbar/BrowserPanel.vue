@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  ExternalLinkIcon,
   GlobeIcon,
+  MousePointer2Icon,
   RefreshCwIcon,
   ShieldCheckIcon,
 } from "@lucide/vue";
-import { api, type BrowserViewport } from "@/lib/api";
+import {
+  api,
+  type BrowserElementSelection,
+  type BrowserViewport,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -21,6 +28,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "title-change", title: string): void;
+  (event: "element-selected", element: BrowserElementSelection): void;
 }>();
 
 const viewport = ref<HTMLElement | null>(null);
@@ -28,11 +36,14 @@ const address = ref(props.initialUrl || "https://example.com");
 const currentUrl = ref("");
 const loading = ref(false);
 const error = ref("");
+const selectingElement = ref(false);
 let frame = 0;
 let lastRect = "";
 let loadTimer: ReturnType<typeof setTimeout> | undefined;
 let unlistenLoad: UnlistenFn | undefined;
 let unlistenTitle: UnlistenFn | undefined;
+let unlistenElement: UnlistenFn | undefined;
+let unlistenPickerState: UnlistenFn | undefined;
 
 interface BrowserPageLoad {
   browser_id: string;
@@ -43,6 +54,16 @@ interface BrowserPageLoad {
 interface BrowserTitleChanged {
   browser_id: string;
   title: string;
+}
+
+interface BrowserElementSelected {
+  browser_id: string;
+  element: BrowserElementSelection;
+}
+
+interface BrowserElementPickerState {
+  browser_id: string;
+  active: boolean;
 }
 
 function normalizeAddress(value: string): string | null {
@@ -132,6 +153,29 @@ async function reload() {
   }
 }
 
+async function toggleElementPicker() {
+  if (!currentUrl.value) return;
+  const enabled = !selectingElement.value;
+  error.value = "";
+  try {
+    await api.setBrowserElementPicker(props.browserId, enabled);
+    selectingElement.value = enabled;
+  } catch (cause) {
+    selectingElement.value = false;
+    error.value = `无法选择页面元素：${String(cause)}`;
+  }
+}
+
+async function openInDefaultBrowser() {
+  if (!currentUrl.value) return;
+  error.value = "";
+  try {
+    await openUrl(currentUrl.value);
+  } catch (cause) {
+    error.value = `无法使用默认浏览器打开：${String(cause)}`;
+  }
+}
+
 function syncViewport() {
   cancelAnimationFrame(frame);
   if (!props.active || props.obscured || !currentUrl.value || !viewport.value) {
@@ -178,6 +222,7 @@ onMounted(async () => {
         currentUrl.value = payload.url;
         address.value = payload.url;
         if (payload.status === "started") {
+          selectingElement.value = false;
           emit("title-change", titleForUrl(payload.url));
           loading.value = true;
           armLoadTimer();
@@ -196,6 +241,21 @@ onMounted(async () => {
         if (title) emit("title-change", title);
       }
     );
+    unlistenElement = await listen<BrowserElementSelected>(
+      "browser-element-selected",
+      ({ payload }) => {
+        if (payload.browser_id !== props.browserId) return;
+        selectingElement.value = false;
+        emit("element-selected", payload.element);
+      }
+    );
+    unlistenPickerState = await listen<BrowserElementPickerState>(
+      "browser-element-picker-state",
+      ({ payload }) => {
+        if (payload.browser_id !== props.browserId) return;
+        selectingElement.value = payload.active;
+      }
+    );
     if (props.initialUrl) {
       address.value = props.initialUrl;
       await nextTick();
@@ -211,6 +271,8 @@ onBeforeUnmount(() => {
   clearLoadTimer();
   unlistenLoad?.();
   unlistenTitle?.();
+  unlistenElement?.();
+  unlistenPickerState?.();
   void api.closeBrowser(props.browserId).catch(() => {});
 });
 </script>
@@ -257,6 +319,28 @@ onBeforeUnmount(() => {
           placeholder="输入网址"
         />
       </form>
+      <Button
+        size="icon"
+        variant="ghost"
+        class="size-7"
+        title="在默认浏览器中打开"
+        :disabled="!currentUrl"
+        @click="openInDefaultBrowser"
+      >
+        <ExternalLinkIcon class="size-3.5" />
+      </Button>
+      <Button
+        size="icon"
+        :variant="selectingElement ? 'secondary' : 'ghost'"
+        class="size-7"
+        :class="selectingElement && 'text-blue-600 dark:text-blue-400'"
+        :title="selectingElement ? '取消选择元素' : '选择页面元素'"
+        :aria-pressed="selectingElement"
+        :disabled="!currentUrl || loading"
+        @click="toggleElementPicker"
+      >
+        <MousePointer2Icon class="size-3.5" />
+      </Button>
     </div>
 
     <div

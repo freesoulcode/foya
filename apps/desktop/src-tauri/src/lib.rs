@@ -1,7 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
@@ -9,6 +10,8 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 const BROWSER_VIEW_PREFIX: &str = "foya-workbar-browser";
+static ACTIVE_BROWSER_PICKERS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 const MAX_PROJECT_ENTRIES: usize = 10_000;
 const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
 const IGNORED_PROJECT_DIRS: &[&str] = &[
@@ -57,6 +60,28 @@ struct BrowserTitleChanged {
     title: String,
 }
 
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+struct BrowserElementSelection {
+    page_url: String,
+    page_title: String,
+    tag: String,
+    selector: String,
+    text: String,
+    html: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BrowserElementSelected {
+    browser_id: String,
+    element: BrowserElementSelection,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct BrowserElementPickerState {
+    browser_id: String,
+    active: bool,
+}
+
 #[derive(serde::Serialize)]
 struct ProjectEntry {
     path: String,
@@ -75,6 +100,274 @@ fn browser_view_label(browser_id: &str) -> Result<String, String> {
     }
     Ok(format!("{BROWSER_VIEW_PREFIX}-{browser_id}"))
 }
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
+
+fn sanitize_browser_element(
+    mut element: BrowserElementSelection,
+) -> Result<BrowserElementSelection, String> {
+    let parsed = element
+        .page_url
+        .parse::<tauri::Url>()
+        .map_err(|_| "元素来源网址无效")?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("元素来源只允许 HTTP 或 HTTPS 地址".into());
+    }
+    element.page_url = truncate_chars(parsed.as_str(), 2_048);
+    element.page_title = truncate_chars(element.page_title.trim(), 300);
+    element.tag = truncate_chars(element.tag.trim().to_ascii_lowercase().as_str(), 64);
+    element.selector = truncate_chars(element.selector.trim(), 1_024);
+    element.text = truncate_chars(element.text.trim(), 2_000);
+    element.html = truncate_chars(element.html.trim(), 8_000);
+    if element.tag.is_empty() || element.selector.is_empty() {
+        return Err("选中的页面元素信息不完整".into());
+    }
+    Ok(element)
+}
+
+const BROWSER_ELEMENT_PICKER_SCRIPT: &str = r##"
+(() => {
+  const key = "__foyaElementPicker";
+  const existing = window[key];
+  if (existing) {
+    existing.enable();
+    return;
+  }
+
+  let active = false;
+  let selectedTarget = null;
+  let selectedElement = null;
+  const overlay = document.createElement("div");
+  overlay.setAttribute("data-foya-element-picker", "");
+  Object.assign(overlay.style, {
+    position: "fixed",
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    display: "none",
+    border: "2px solid #3b82f6",
+    background: "rgba(59, 130, 246, 0.14)",
+    boxSizing: "border-box",
+  });
+  const toolbar = document.createElement("div");
+  toolbar.setAttribute("data-foya-element-picker", "");
+  Object.assign(toolbar.style, {
+    position: "fixed",
+    zIndex: "2147483647",
+    display: "none",
+    alignItems: "center",
+    gap: "4px",
+    padding: "4px",
+    border: "1px solid rgba(0, 0, 0, 0.12)",
+    borderRadius: "8px",
+    background: "rgba(255, 255, 255, 0.96)",
+    boxShadow: "0 6px 18px rgba(0, 0, 0, 0.18)",
+    color: "#171717",
+    font: "600 13px -apple-system, BlinkMacSystemFont, sans-serif",
+  });
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.textContent = "添加到对话";
+  Object.assign(addButton.style, {
+    height: "30px",
+    padding: "0 10px",
+    border: "0",
+    borderRadius: "6px",
+    background: "#f1f3f5",
+    color: "#171717",
+    cursor: "pointer",
+    font: "inherit",
+  });
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.textContent = "×";
+  cancelButton.title = "取消选择";
+  Object.assign(cancelButton.style, {
+    width: "30px",
+    height: "30px",
+    padding: "0",
+    border: "0",
+    borderRadius: "6px",
+    background: "transparent",
+    color: "#666",
+    cursor: "pointer",
+    font: "20px/30px -apple-system, BlinkMacSystemFont, sans-serif",
+  });
+  toolbar.append(addButton, cancelButton);
+
+  const cleanText = (value, max) =>
+    String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+
+  const escapeSelector = (value) => {
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(value);
+    }
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  };
+
+  const selectorFor = (element) => {
+    if (element.id) return `#${escapeSelector(element.id)}`;
+    const parts = [];
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
+      let part = current.tagName.toLowerCase();
+      const classes = Array.from(current.classList || [])
+        .filter((name) => !name.startsWith("foya-"))
+        .slice(0, 2);
+      if (classes.length) {
+        part += classes.map((name) => `.${escapeSelector(name)}`).join("");
+      }
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(
+          (item) => item.tagName === current.tagName
+        );
+        if (siblings.length > 1) {
+          part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+        }
+      }
+      parts.unshift(part);
+      if (current === document.body) break;
+      current = parent;
+    }
+    return parts.join(" > ");
+  };
+
+  const positionSelection = (element, selected = false) => {
+    const rect = element.getBoundingClientRect();
+    Object.assign(overlay.style, {
+      display: rect.width > 0 && rect.height > 0 ? "block" : "none",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+      borderColor: selected ? "#16a36a" : "#3b82f6",
+      background: selected
+        ? "rgba(22, 163, 106, 0.12)"
+        : "rgba(59, 130, 246, 0.14)",
+    });
+    if (!selected) return;
+    toolbar.style.display = "flex";
+    const toolbarWidth = 142;
+    const left = Math.max(
+      8,
+      Math.min(rect.left, window.innerWidth - toolbarWidth - 8)
+    );
+    const below = rect.bottom + 8;
+    const top = below + 40 <= window.innerHeight
+      ? below
+      : Math.max(8, rect.top - 40);
+    toolbar.style.left = `${left}px`;
+    toolbar.style.top = `${top}px`;
+  };
+
+  const onMove = (event) => {
+    if (selectedTarget) return;
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      target === overlay ||
+      toolbar.contains(target)
+    ) {
+      return;
+    }
+    positionSelection(target);
+  };
+
+  const send = (kind, payload = {}) => {
+    const encoded = encodeURIComponent(JSON.stringify(payload));
+    window.location.href = `foya-element://${kind}?payload=${encoded}`;
+  };
+
+  const disable = () => {
+    if (!active) return;
+    active = false;
+    selectedTarget = null;
+    selectedElement = null;
+    overlay.remove();
+    toolbar.remove();
+    document.removeEventListener("mousemove", onMove, true);
+    document.removeEventListener("click", onClick, true);
+    document.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("scroll", onViewportChange, true);
+    window.removeEventListener("resize", onViewportChange, true);
+    document.documentElement.style.cursor = "";
+  };
+
+  const onClick = (event) => {
+    if (!active) return;
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      target === overlay ||
+      toolbar.contains(target)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    selectedTarget = target;
+    selectedElement = {
+      page_url: location.href,
+      page_title: cleanText(document.title, 300),
+      tag: target.tagName.toLowerCase(),
+      selector: selectorFor(target),
+      text: cleanText(target.innerText || target.textContent, 2000),
+      html: String(target.outerHTML || "").slice(0, 8000),
+    };
+    positionSelection(target, true);
+    document.documentElement.style.cursor = "";
+  };
+
+  const confirmSelection = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedElement) return;
+    const element = selectedElement;
+    disable();
+    send("selected", element);
+  };
+
+  const cancelSelection = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    disable();
+    send("cancelled");
+  };
+
+  const onViewportChange = () => {
+    if (selectedTarget && document.contains(selectedTarget)) {
+      positionSelection(selectedTarget, true);
+    }
+  };
+
+  const onKeyDown = (event) => {
+    if (!active || event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    cancelSelection(event);
+  };
+
+  const enable = () => {
+    if (active) return;
+    active = true;
+    document.documentElement.appendChild(overlay);
+    document.documentElement.appendChild(toolbar);
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("scroll", onViewportChange, true);
+    window.addEventListener("resize", onViewportChange, true);
+    document.documentElement.style.cursor = "crosshair";
+  };
+
+  addButton.addEventListener("click", confirmSelection);
+  cancelButton.addEventListener("click", cancelSelection);
+  window[key] = { enable, disable };
+  enable();
+})();
+"##;
 
 fn project_root(project_path: &str) -> Result<PathBuf, String> {
     let root = fs::canonicalize(project_path).map_err(|e| format!("无法访问项目目录: {e}"))?;
@@ -447,10 +740,12 @@ async fn submit_turn(
     session_id: String,
     message: String,
     attachments: Option<Vec<serde_json::Value>>,
+    browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
         "attachments": attachments.unwrap_or_default(),
+        "browser_elements": browser_elements.unwrap_or_default(),
     })
     .to_string();
     kernel::request(
@@ -551,10 +846,12 @@ async fn enqueue_message(
     session_id: String,
     message: String,
     attachments: Option<Vec<serde_json::Value>>,
+    browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
         "attachments": attachments.unwrap_or_default(),
+        "browser_elements": browser_elements.unwrap_or_default(),
     })
     .to_string();
     kernel::request(
@@ -1227,10 +1524,7 @@ async fn list_background_commands(session_id: String) -> Result<String, String> 
 
 #[cfg(unix)]
 #[tauri::command]
-async fn get_background_command(
-    session_id: String,
-    command_id: String,
-) -> Result<String, String> {
+async fn get_background_command(session_id: String, command_id: String) -> Result<String, String> {
     kernel::request(
         "GET",
         &format!("/sessions/{session_id}/background-commands/{command_id}"),
@@ -1241,10 +1535,7 @@ async fn get_background_command(
 
 #[cfg(unix)]
 #[tauri::command]
-async fn stop_background_command(
-    session_id: String,
-    command_id: String,
-) -> Result<String, String> {
+async fn stop_background_command(session_id: String, command_id: String) -> Result<String, String> {
     kernel::request(
         "POST",
         &format!("/sessions/{session_id}/background-commands/{command_id}/cancel"),
@@ -1405,13 +1696,65 @@ async fn navigate_browser(
     let window = app.get_window("main").ok_or("主窗口不可用")?;
     let load_browser_id = browser_id.clone();
     let title_browser_id = browser_id.clone();
+    let navigation_browser_id = browser_id.clone();
+    let navigation_app = app.clone();
     let builder = tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed))
-        .on_navigation(|target| matches!(target.scheme(), "http" | "https" | "about"))
+        .on_navigation(move |target| {
+            if target.scheme() == "foya-element" {
+                let was_active = ACTIVE_BROWSER_PICKERS
+                    .lock()
+                    .map(|mut active| active.remove(&navigation_browser_id))
+                    .unwrap_or(false);
+                let _ = navigation_app.emit_to(
+                    "main",
+                    "browser-element-picker-state",
+                    BrowserElementPickerState {
+                        browser_id: navigation_browser_id.clone(),
+                        active: false,
+                    },
+                );
+                if was_active && target.host_str() == Some("selected") {
+                    let payload = target
+                        .query_pairs()
+                        .find(|(key, _)| key == "payload")
+                        .map(|(_, value)| value.into_owned());
+                    if let Some(payload) = payload {
+                        if let Ok(raw) = serde_json::from_str::<BrowserElementSelection>(&payload) {
+                            if let Ok(element) = sanitize_browser_element(raw) {
+                                let _ = navigation_app.emit_to(
+                                    "main",
+                                    "browser-element-selected",
+                                    BrowserElementSelected {
+                                        browser_id: navigation_browser_id.clone(),
+                                        element,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            matches!(target.scheme(), "http" | "https" | "about")
+        })
         .on_page_load(move |webview, payload| {
             let status = match payload.event() {
                 tauri::webview::PageLoadEvent::Started => "started",
                 tauri::webview::PageLoadEvent::Finished => "finished",
             };
+            if status == "started" {
+                if let Ok(mut active) = ACTIVE_BROWSER_PICKERS.lock() {
+                    active.remove(&load_browser_id);
+                }
+                let _ = webview.app_handle().emit_to(
+                    "main",
+                    "browser-element-picker-state",
+                    BrowserElementPickerState {
+                        browser_id: load_browser_id.clone(),
+                        active: false,
+                    },
+                );
+            }
             let _ = webview.app_handle().emit_to(
                 "main",
                 "browser-page-load",
@@ -1495,6 +1838,35 @@ fn browser_reload(app: tauri::AppHandle, browser_id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
+fn set_browser_element_picker(
+    app: tauri::AppHandle,
+    browser_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let label = browser_view_label(&browser_id)?;
+    let Some(webview) = app.get_webview(&label) else {
+        return Err("浏览器页面尚未打开".into());
+    };
+    if enabled {
+        ACTIVE_BROWSER_PICKERS
+            .lock()
+            .map_err(|_| "无法更新元素选择状态")?
+            .insert(browser_id);
+        webview
+            .eval(BROWSER_ELEMENT_PICKER_SCRIPT)
+            .map_err(|e| e.to_string())
+    } else {
+        ACTIVE_BROWSER_PICKERS
+            .lock()
+            .map_err(|_| "无法更新元素选择状态")?
+            .remove(&browser_id);
+        webview
+            .eval("window.__foyaElementPicker && window.__foyaElementPicker.disable();")
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
 fn hide_browser(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
     let label = browser_view_label(&browser_id)?;
     if let Some(webview) = app.get_webview(&label) {
@@ -1506,6 +1878,9 @@ fn hide_browser(app: tauri::AppHandle, browser_id: String) -> Result<(), String>
 #[tauri::command]
 fn close_browser(app: tauri::AppHandle, browser_id: String) -> Result<(), String> {
     let label = browser_view_label(&browser_id)?;
+    if let Ok(mut active) = ACTIVE_BROWSER_PICKERS.lock() {
+        active.remove(&browser_id);
+    }
     if let Some(webview) = app.get_webview(&label) {
         webview.close().map_err(|e| e.to_string())?;
     }
@@ -1531,6 +1906,7 @@ fn submit_turn(
     _session_id: String,
     _message: String,
     _attachments: Option<Vec<serde_json::Value>>,
+    _browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -1583,6 +1959,7 @@ fn enqueue_message(
     _session_id: String,
     _message: String,
     _attachments: Option<Vec<serde_json::Value>>,
+    _browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -1765,10 +2142,7 @@ async fn background_tool(_session_id: String, _tool_call_id: String) -> Result<S
 
 #[cfg(not(unix))]
 #[tauri::command]
-async fn reveal_tool_command(
-    _session_id: String,
-    _tool_call_id: String,
-) -> Result<String, String> {
+async fn reveal_tool_command(_session_id: String, _tool_call_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -2167,6 +2541,7 @@ pub fn run() {
             browser_back,
             browser_forward,
             browser_reload,
+            set_browser_element_picker,
             hide_browser,
             close_browser,
             list_project_files,

@@ -11,14 +11,15 @@ import (
 
 // Message is a user message waiting to start a turn.
 type Message struct {
-	ID          string                  `json:"id"`
-	SessionID   string                  `json:"session_id"`
-	Text        string                  `json:"text"`
-	Command     string                  `json:"command,omitempty"`
-	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
-	Position    int                     `json:"position"`
-	CreatedAt   time.Time               `json:"created_at"`
-	UpdatedAt   time.Time               `json:"updated_at"`
+	ID              string                   `json:"id"`
+	SessionID       string                   `json:"session_id"`
+	Text            string                   `json:"text"`
+	Command         string                   `json:"command,omitempty"`
+	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
+	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
+	Position        int                      `json:"position"`
+	CreatedAt       time.Time                `json:"created_at"`
+	UpdatedAt       time.Time                `json:"updated_at"`
 }
 
 // Snapshot is the complete ordered queue projected to clients.
@@ -30,14 +31,15 @@ type Snapshot struct {
 func NewMessage(sessionID string, input message.UserInput, position int) Message {
 	now := time.Now()
 	return Message{
-		ID:          newID(),
-		SessionID:   sessionID,
-		Text:        input.Text,
-		Command:     input.Command,
-		Attachments: append([]message.AttachmentRef(nil), input.Attachments...),
-		Position:    position,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:              newID(),
+		SessionID:       sessionID,
+		Text:            input.Text,
+		Command:         input.Command,
+		Attachments:     append([]message.AttachmentRef(nil), input.Attachments...),
+		BrowserElements: append([]message.BrowserElement(nil), input.BrowserElements...),
+		Position:        position,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 }
 

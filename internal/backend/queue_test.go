@@ -122,6 +122,42 @@ func TestEnqueueInputPreservesCanonicalAttachment(t *testing.T) {
 	}
 }
 
+func TestEnqueueInputPreservesBrowserElement(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	element := message.BrowserElement{
+		PageURL:   "https://example.com/settings",
+		PageTitle: "Settings",
+		Tag:       "button",
+		Selector:  "#save",
+		Text:      "Save",
+		HTML:      `<button id="save">Save</button>`,
+	}
+	item, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		BrowserElements: []message.BrowserElement{element},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Text != "" || len(item.BrowserElements) != 1 ||
+		item.BrowserElements[0] != element {
+		t.Fatalf("queued browser input = %#v", item)
+	}
+}
+
+func TestEnqueueInputRejectsInvalidBrowserElementURL(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	_, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		BrowserElements: []message.BrowserElement{{
+			PageURL:  "file:///tmp/private",
+			Tag:      "div",
+			Selector: "#secret",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid browser element URL to be rejected")
+	}
+}
+
 func awaitStarted(t *testing.T, p *controlledProvider, want string) {
 	t.Helper()
 	select {

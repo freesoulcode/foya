@@ -20,6 +20,7 @@ import {
   type PendingQuestionBatch,
   type QuestionAnswer,
   type BackgroundCommand,
+  type BrowserElementSelection,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -1005,11 +1006,16 @@ async function ensureSession(): Promise<string> {
 // 发送一条消息。内核原子决定直接启动或进入队列;用户消息与运行态
 // 统一由 SSE 事件投影,从而让多个客户端保持一致。
 // 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
-async function send(text: string, files: File[] = [], restore?: () => void) {
-  if (!text.trim() && files.length === 0) return;
+async function send(
+  text: string,
+  files: File[] = [],
+  browserElements: BrowserElementSelection[] = [],
+  restore?: () => void
+) {
+  if (!text.trim() && files.length === 0 && browserElements.length === 0) return;
 
   let id = activeId.value;
-  if (text.trim() === "/compact" && files.length === 0) {
+  if (text.trim() === "/compact" && files.length === 0 && browserElements.length === 0) {
     if (!id) return;
     try {
       await api.compactSession(id);
@@ -1031,7 +1037,7 @@ async function send(text: string, files: File[] = [], restore?: () => void) {
     for (const file of files) {
       uploaded.push(await api.uploadImage(id, file));
     }
-    const result = await api.submitTurn(id, text, uploaded);
+    const result = await api.submitTurn(id, text, uploaded, browserElements);
     if (result.status === "queued" && result.queued) {
       const current = queuedBySession.value[id] ?? [];
       if (!current.some((item) => item.id === result.queued!.id)) {

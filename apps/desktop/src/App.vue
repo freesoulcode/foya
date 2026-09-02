@@ -10,6 +10,7 @@ import {
   api,
   type ApprovalMode,
   type BackgroundCommand,
+  type BrowserElementSelection,
   type ReasoningEffort,
   type UpdateSessionPatch,
 } from "@/lib/api";
@@ -92,6 +93,7 @@ const projectCreateError = ref("");
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
 const questionPanelExpanded = ref(false);
+const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -116,6 +118,10 @@ watch(
     activeTurn.value = Math.max(0, n - 1);
   }
 );
+
+watch(activeId, () => {
+  pendingBrowserElements.value = [];
+});
 
 function onTurnSelect(i: number) {
   messageListRef.value?.scrollToTurn(i);
@@ -226,6 +232,30 @@ async function onOpenLink(url: string) {
     return;
   }
   openWorkbarBrowser(url);
+}
+
+function onBrowserElementSelected(element: BrowserElementSelection) {
+  const duplicate = pendingBrowserElements.value.some(
+    (item) =>
+      item.page_url === element.page_url &&
+      item.selector === element.selector
+  );
+  if (duplicate || pendingBrowserElements.value.length >= 8) return;
+  pendingBrowserElements.value = [...pendingBrowserElements.value, element];
+}
+
+function removeBrowserElement(index: number) {
+  pendingBrowserElements.value = pendingBrowserElements.value.filter(
+    (_, itemIndex) => itemIndex !== index
+  );
+}
+
+function clearBrowserElements() {
+  pendingBrowserElements.value = [];
+}
+
+function restoreBrowserElements(elements: BrowserElementSelection[]) {
+  pendingBrowserElements.value = elements;
 }
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
@@ -443,6 +473,7 @@ onBeforeUnmount(() => {
             :context-window="composerContextWindow"
             :has-session="!isDraft"
             :session-id="activeId"
+            :browser-elements="pendingBrowserElements"
             @send="send"
             @command="executeComposerCommand"
             @stop="cancelTurn"
@@ -455,6 +486,9 @@ onBeforeUnmount(() => {
             @add-project="onAddProject"
             @update:approval="onApprovalChange"
             @refresh-models="refreshConnections"
+            @remove-browser-element="removeBrowserElement"
+            @clear-browser-elements="clearBrowserElements"
+            @restore-browser-elements="restoreBrowserElements"
           />
         </main>
       </div>
@@ -466,6 +500,7 @@ onBeforeUnmount(() => {
         :messages="messages"
         :obscured="workbarObscured"
         :ensure-session="ensureSession"
+        @browser-element-selected="onBrowserElementSelected"
       />
     </SidebarInset>
   </SidebarProvider>

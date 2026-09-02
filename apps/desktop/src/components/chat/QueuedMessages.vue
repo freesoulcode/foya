@@ -6,6 +6,7 @@ import {
   ImageIcon,
   ListOrderedIcon,
   LoaderCircleIcon,
+  MousePointer2Icon,
   PencilIcon,
   SendIcon,
   Trash2Icon,
@@ -260,6 +261,13 @@ watch(
                 <span class="truncate">
                   {{ item.attachments.map((attachment) => attachment.name).join("、") }}
                 </span>
+              </div>
+              <div
+                v-if="item.browser_elements?.length"
+                class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
+              >
+                <MousePointer2Icon class="size-3 shrink-0" />
+                <span>{{ item.browser_elements.length }} 个页面元素</span>
               </div>
             </template>
           </div>

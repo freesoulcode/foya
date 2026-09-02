@@ -1309,8 +1309,9 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.backend.SubmitInput(r.Context(), id, message.UserInput{
-		Text:        req.Message,
-		Attachments: req.Attachments,
+		Text:            req.Message,
+		Attachments:     req.Attachments,
+		BrowserElements: req.BrowserElements,
 	})
 	if err != nil {
 		writeQueueErr(w, err)
@@ -1530,8 +1531,9 @@ func (s *Server) handleEnqueueMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.backend.EnqueueInput(r.Context(), r.PathValue("id"), message.UserInput{
-		Text:        req.Message,
-		Attachments: req.Attachments,
+		Text:            req.Message,
+		Attachments:     req.Attachments,
+		BrowserElements: req.BrowserElements,
 	})
 	if err != nil {
 		writeQueueErr(w, err)

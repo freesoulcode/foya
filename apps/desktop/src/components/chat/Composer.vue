@@ -18,7 +18,6 @@ import {
   RouteIcon,
   TargetIcon,
 } from "@lucide/vue";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Command,
   CommandEmpty,
@@ -41,9 +40,11 @@ import {
   type CommandInfo,
   type QueuedMessage,
   type ProjectInfo,
+  type BrowserElementSelection,
   api,
 } from "@/lib/api";
 import ContextUsage from "./ContextUsage.vue";
+import InlineComposerEditor from "./InlineComposerEditor.vue";
 import QueuedMessages from "./QueuedMessages.vue";
 
 const props = withDefaults(
@@ -65,6 +66,7 @@ const props = withDefaults(
     hasSession?: boolean;
     sessionId?: string;
     projectLocked?: boolean;
+    browserElements?: BrowserElementSelection[];
   }>(),
   {
     disabled: false,
@@ -84,11 +86,18 @@ const props = withDefaults(
     hasSession: false,
     sessionId: "",
     projectLocked: false,
+    browserElements: () => [],
   }
 );
 
 const emit = defineEmits<{
-  (e: "send", text: string, files: File[], restore: () => void): void;
+  (
+    e: "send",
+    text: string,
+    files: File[],
+    browserElements: BrowserElementSelection[],
+    restore: () => void
+  ): void;
   (e: "command", name: string, args: string): void;
   (e: "stop"): void;
   (e: "edit-queued", id: string, text: string): void;
@@ -103,10 +112,13 @@ const emit = defineEmits<{
   (e: "add-project"): void;
   (e: "update:approval", value: ApprovalMode): void;
   (e: "refresh-models"): void;
+  (e: "remove-browser-element", index: number): void;
+  (e: "clear-browser-elements"): void;
+  (e: "restore-browser-elements", elements: BrowserElementSelection[]): void;
 }>();
 
 const input = ref("");
-const textareaRef = ref<InstanceType<typeof Textarea> | null>(null);
+const editorRef = ref<InstanceType<typeof InlineComposerEditor> | null>(null);
 const inputFocused = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachmentError = ref("");
@@ -254,13 +266,13 @@ function completeCommand(command: SlashCommand) {
   completingCommand = true;
   input.value = "";
   commandMenuDismissed.value = true;
-  void nextTick(() => textareaRef.value?.$el?.focus());
+  void nextTick(() => editorRef.value?.focus());
 }
 
 function clearSelectedCommand() {
   selectedSlashCommand.value = null;
   commandError.value = "";
-  void nextTick(() => textareaRef.value?.$el?.focus());
+  void nextTick(() => editorRef.value?.focus());
 }
 
 function selectedCommandIcon() {
@@ -408,8 +420,19 @@ function createProjectFromPicker(event: Event) {
 // ---- 发送 ----
 async function submit() {
   const text = input.value.trim();
-  if ((!text && pendingImages.value.length === 0) || props.disabled) return;
-  if (selectedSlashCommand.value && pendingImages.value.length === 0) {
+  if (
+    (!text &&
+      pendingImages.value.length === 0 &&
+      props.browserElements.length === 0) ||
+    props.disabled
+  ) {
+    return;
+  }
+  if (
+    selectedSlashCommand.value &&
+    pendingImages.value.length === 0 &&
+    props.browserElements.length === 0
+  ) {
     emit("command", selectedSlashCommand.value.name, text);
     selectedSlashCommand.value = null;
     input.value = "";
@@ -417,12 +440,16 @@ async function submit() {
     return;
   }
   const files = pendingImages.value.map((item) => item.file);
+  const browserElements =
+    editorRef.value?.orderedElements() ?? [...props.browserElements];
   input.value = "";
   for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
   pendingImages.value = [];
-  emit("send", text, files, () => {
+  emit("clear-browser-elements");
+  emit("send", text, files, browserElements, () => {
     if (!input.value) input.value = text;
     addImages(files);
+    emit("restore-browser-elements", browserElements);
   });
 }
 
@@ -557,7 +584,7 @@ function onKeydown(e: KeyboardEvent) {
           <button
             v-if="selectedSlashCommand"
             type="button"
-            class="mt-3 flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            class="mt-3 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             title="取消命令"
             @click="clearSelectedCommand"
           >
@@ -565,9 +592,10 @@ function onKeydown(e: KeyboardEvent) {
             <span>{{ selectedSlashCommand.name[0].toUpperCase() + selectedSlashCommand.name.slice(1) }}</span>
             <XIcon class="size-3" />
           </button>
-          <Textarea
-            ref="textareaRef"
+          <InlineComposerEditor
+            ref="editorRef"
             v-model="input"
+            :browser-elements="browserElements"
             :aria-activedescendant="
               commandMenuOpen ? `composer-command-${selectedCommandIndex}` : undefined
             "
@@ -581,14 +609,13 @@ function onKeydown(e: KeyboardEvent) {
                   ? `输入 ${selectedSlashCommand.name} 的目标`
                   : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
             "
-            class="max-h-60 min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-transparent px-0 py-3 text-sm shadow-none focus-visible:ring-0"
             :class="selectedSlashCommand && 'pl-2'"
-            rows="2"
             :disabled="disabled"
             @focus="inputFocused = true"
             @blur="inputFocused = false"
             @keydown="onKeydown"
             @paste="onPaste"
+            @remove-browser-element="emit('remove-browser-element', $event)"
           />
         </div>
 
@@ -816,7 +843,12 @@ function onKeydown(e: KeyboardEvent) {
             <button
               type="button"
               class="flex size-8 items-center justify-center rounded-lg bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
-              :disabled="disabled || (!input.trim() && pendingImages.length === 0)"
+              :disabled="
+                disabled ||
+                (!input.trim() &&
+                  pendingImages.length === 0 &&
+                  browserElements.length === 0)
+              "
               :title="streaming ? '加入待发送队列 (Enter)' : '发送 (Enter)'"
               @click="submit"
             >

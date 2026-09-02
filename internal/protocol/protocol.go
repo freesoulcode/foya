@@ -15,9 +15,10 @@ import (
 
 // SubmitTurnRequest 发起一个回合。
 type SubmitTurnRequest struct {
-	Session     string                  `json:"session"`
-	Message     string                  `json:"message"`
-	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
+	Session         string                   `json:"session"`
+	Message         string                   `json:"message"`
+	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
+	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 }
 
 type ArtifactResponse struct {
@@ -71,8 +72,9 @@ type EditTurnResponse struct {
 
 // QueueMessageRequest 显式向待发送队列追加消息。
 type QueueMessageRequest struct {
-	Message     string                  `json:"message"`
-	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
+	Message         string                   `json:"message"`
+	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
+	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 }
 
 // UpdateQueuedMessageRequest 修改队列消息正文或位置。

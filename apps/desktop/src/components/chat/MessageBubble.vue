@@ -9,6 +9,7 @@ import {
   ChevronRightIcon,
   BrainIcon,
   FileTextIcon,
+  MousePointer2Icon,
   RouteIcon,
   TargetIcon,
 } from "@lucide/vue";
@@ -256,7 +257,14 @@ async function copyAll() {
 }
 
 function beginEdit() {
-  if (!props.editable || !props.message.event_seq || props.message.attachments?.length) return;
+  if (
+    !props.editable ||
+    !props.message.event_seq ||
+    props.message.attachments?.length ||
+    props.message.browser_elements?.length
+  ) {
+    return;
+  }
   editText.value = props.message.content;
   editing.value = true;
   void nextTick(() => {
@@ -347,7 +355,14 @@ function onEditKeydown(event: KeyboardEvent) {
             </p>
           </div>
         </div>
-        <div :class="cn('flex items-start gap-2', message.command && 'min-w-0')">
+        <div
+          :class="
+            cn(
+              'flex items-start gap-1.5',
+              (message.command || message.browser_elements?.length) && 'min-w-0'
+            )
+          "
+        >
           <span
             v-if="message.command"
             class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
@@ -355,7 +370,23 @@ function onEditKeydown(event: KeyboardEvent) {
             <component :is="commandIcon" class="size-3.5" />
             {{ message.command[0].toUpperCase() + message.command.slice(1) }}
           </span>
-          <div :class="cn('min-w-0', message.command && 'flex-1')">
+          <span
+            v-for="element in message.browser_elements"
+            :key="`${element.page_url}:${element.selector}`"
+            class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
+            :title="`${element.page_title || element.page_url}\n${element.selector}`"
+          >
+            <MousePointer2Icon class="size-3.5 shrink-0 text-blue-600 dark:text-blue-400" />
+            <span class="font-mono">{{ element.tag.toLowerCase() }}</span>
+          </span>
+          <div
+            :class="
+              cn(
+                'min-w-0',
+                (message.command || message.browser_elements?.length) && 'flex-1'
+              )
+            "
+          >
             <template v-if="editing">
               <Textarea
                 ref="editRef"
@@ -526,10 +557,14 @@ function onEditKeydown(event: KeyboardEvent) {
         v-if="message.event_seq"
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-        :disabled="!editable || !!message.attachments?.length"
+        :disabled="
+          !editable ||
+          !!message.attachments?.length ||
+          !!message.browser_elements?.length
+        "
         :title="
-          message.attachments?.length
-            ? '带图片的消息暂不支持编辑'
+          message.attachments?.length || message.browser_elements?.length
+            ? '带上下文的消息暂不支持编辑'
             : editable
               ? '编辑消息'
               : '会话运行时不可编辑'

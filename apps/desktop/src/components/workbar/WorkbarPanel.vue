@@ -12,7 +12,7 @@ import {
 } from "@lucide/vue";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
-import type { ChatMessage } from "@/lib/api";
+import type { BrowserElementSelection, ChatMessage } from "@/lib/api";
 import {
   useWorkbar,
   type WorkbarLaunchKind,
@@ -36,6 +36,10 @@ const props = defineProps<{
   messages: ChatMessage[];
   obscured?: boolean;
   ensureSession: () => Promise<string>;
+}>();
+
+const emit = defineEmits<{
+  (event: "browser-element-selected", element: BrowserElementSelection): void;
 }>();
 
 const { showCustomWindowControls } = usePlatform();
@@ -404,6 +408,7 @@ watch(
             :active="open && activeTabId === tab.id"
             :obscured="obscured || addMenuOpen"
             @title-change="setTabTitle(tab.id, $event)"
+            @element-selected="emit('browser-element-selected', $event)"
           />
         </template>
       </div>
