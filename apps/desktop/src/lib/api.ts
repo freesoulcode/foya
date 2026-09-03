@@ -3,6 +3,13 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 // 会话元信息(与 Go session.Session 对齐的子集)。
+export type TaskStatus = "pending" | "in_progress" | "completed";
+
+export interface SessionTask {
+  content: string;
+  status: TaskStatus;
+}
+
 export interface Session {
   id: string;
   parent_id?: string;
@@ -25,6 +32,7 @@ export interface Session {
   title_is_manual?: boolean;
   pinned?: boolean;
   pinned_at?: string;
+  tasks?: SessionTask[];
   created_at: string;
   updated_at: string;
 }

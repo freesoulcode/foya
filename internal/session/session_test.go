@@ -38,6 +38,37 @@ func TestPersistentManagerRestoresChildRuntimeSnapshot(t *testing.T) {
 	}
 }
 
+func TestPersistentManagerRestoresTasks(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	manager, err := NewPersistentManager(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.Create(CreateOptions{Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.SetTasks(created.ID, []Task{
+		{Content: "Read implementation", Status: TaskStatusCompleted},
+		{Content: "Add task UI", Status: TaskStatusInProgress},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := NewPersistentManager(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, ok := restored.Get(created.ID)
+	if !ok {
+		t.Fatal("restored session missing")
+	}
+	if len(item.Tasks) != 2 || item.Tasks[0].Status != TaskStatusCompleted ||
+		item.Tasks[1].Content != "Add task UI" {
+		t.Fatalf("Tasks = %#v", item.Tasks)
+	}
+}
+
 func stringPointer(value string) *string {
 	return &value
 }

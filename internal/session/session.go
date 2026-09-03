@@ -68,6 +68,21 @@ func ValidReasoningEffort(effort string) bool {
 	}
 }
 
+// TaskStatus 是会话内执行任务的当前状态。
+type TaskStatus string
+
+const (
+	TaskStatusPending    TaskStatus = "pending"
+	TaskStatusInProgress TaskStatus = "in_progress"
+	TaskStatusCompleted  TaskStatus = "completed"
+)
+
+// Task 是模型维护的会话内任务列表条目。
+type Task struct {
+	Content string     `json:"content"`
+	Status  TaskStatus `json:"status"`
+}
+
 // Session 是一个长生命周期的交互会话。
 type Session struct {
 	ID              string          `json:"id"`
@@ -88,6 +103,7 @@ type Session struct {
 	TitleIsManual   bool            `json:"title_is_manual,omitempty"`
 	Pinned          bool            `json:"pinned,omitempty"`
 	PinnedAt        *time.Time      `json:"pinned_at,omitempty"`
+	Tasks           []Task          `json:"tasks,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 
@@ -135,6 +151,7 @@ type Manager interface {
 	// SetPhase 更新由内核控制的执行阶段。
 	SetPhase(id string, phase Phase) (*Session, error)
 	SetAgentMode(id string, mode, prePlanMode AgentMode) (*Session, error)
+	SetTasks(id string, tasks []Task) (*Session, error)
 	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
 	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
 	// AI 结果永不覆盖手动改名。
@@ -349,6 +366,21 @@ func (m *memManager) SetAgentMode(id string, mode, prePlanMode AgentMode) (*Sess
 	}
 	s.AgentMode = mode
 	s.PrePlanMode = prePlanMode
+	s.UpdatedAt = time.Now()
+	if err := m.persistLocked(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (m *memManager) SetTasks(id string, tasks []Task) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	s.Tasks = append([]Task(nil), tasks...)
 	s.UpdatedAt = time.Now()
 	if err := m.persistLocked(); err != nil {
 		return nil, err

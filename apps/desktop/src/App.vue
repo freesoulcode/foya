@@ -20,6 +20,7 @@ import { diffFilePath } from "@/lib/diff";
 import AppTitleBar from "@/components/AppTitleBar.vue";
 import SessionSidebar from "@/components/chat/SessionSidebar.vue";
 import MessageList from "@/components/chat/MessageList.vue";
+import TaskProgress from "@/components/chat/TaskProgress.vue";
 import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import SettingsPanel from "@/components/settings/SettingsPanel.vue";
@@ -473,6 +474,10 @@ onBeforeUnmount(() => {
               @open-link="onOpenLink"
             />
           </div>
+          <TaskProgress
+            :tasks="activeSession?.tasks"
+            :running="Boolean(activeId && runningSessions[activeId])"
+          />
           <BackgroundCommandsPanel
             :commands="backgroundCommands"
             @stop="stopBackgroundCommand"

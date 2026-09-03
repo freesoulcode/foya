@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/agentdef"
@@ -89,6 +90,13 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewWriteTool(gw, executionRunner))
 	tools.Register(tool.NewEditTool(gw, executionRunner))
 	tools.Register(tool.NewAskUserTool(questions))
+	tools.Register(tool.NewReadTasksTool(sessions))
+	tools.Register(tool.NewUpdateTasksTool(sessions, func(ctx context.Context, s *session.Session) {
+		ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
+		seq, _ := log.Append(ctx, ev)
+		ev.Seq = seq
+		_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, ev)
+	}))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
 	skills, err := skill.NewManager(cfg.DataDir, homeDir, skill.BuiltinDefinitions())
