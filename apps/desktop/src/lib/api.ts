@@ -406,6 +406,8 @@ export interface ConnectionConfig {
   base_url: string;
   context_window?: number;
   model_settings: Record<string, ModelSettings>;
+  models?: string[];
+  models_cached?: boolean;
   api_key?: string;
   has_api_key?: boolean;
   sort_order: number;
@@ -973,8 +975,8 @@ export const api = {
   deleteConnection: (connectionId: string) =>
     invoke("delete_connection", { connectionId }),
 
-  listConnectionModels: (connectionId: string) =>
-    invoke<string>("list_connection_models", { connectionId }).then(
+  listConnectionModels: (connectionId: string, refresh = false) =>
+    invoke<string>("list_connection_models", { connectionId, refresh }).then(
       (r) => {
         const result = JSON.parse(r) as Partial<ConnectionModelCatalog>;
         return {

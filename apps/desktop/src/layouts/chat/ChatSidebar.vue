@@ -46,7 +46,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ProjectInfo, Session } from "@/lib/api";
-import SessionSidebarItem from "./SessionSidebarItem.vue";
+import SessionSidebarItem from "@/components/chat/SessionSidebarItem.vue";
 
 const props = defineProps<{
   isMac: boolean;

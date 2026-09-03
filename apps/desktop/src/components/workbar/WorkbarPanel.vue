@@ -248,12 +248,8 @@ watch(
     </button>
 
     <div class="flex min-w-0 flex-1 flex-col">
-      <div
-        data-tauri-drag-region
-        class="flex h-11 shrink-0 items-center"
-      >
+      <div class="flex h-11 shrink-0 items-center">
         <div
-          data-tauri-drag-region
           class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2"
         >
           <div

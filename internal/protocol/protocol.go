@@ -115,6 +115,8 @@ type ConnectionConfig struct {
 	HasAPIKey     bool                     `json:"has_api_key,omitempty"`
 	ContextWindow int64                    `json:"context_window,omitempty"`
 	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
+	Models        []string                 `json:"models,omitempty"`
+	ModelsCached  bool                     `json:"models_cached,omitempty"`
 	SortOrder     int                      `json:"sort_order"`
 }
 

@@ -1685,7 +1685,18 @@ func (b *Backend) Connection(id string) (config.Connection, bool) {
 }
 
 // ListModels lists the catalog from one Connection's provider.
-func (b *Backend) ListModels(ctx context.Context, connectionID string) ([]provider.ModelInfo, error) {
+func (b *Backend) ListModels(ctx context.Context, connectionID string, refresh bool) ([]provider.ModelInfo, error) {
+	connection, exists := b.Connection(connectionID)
+	if !exists {
+		return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID)
+	}
+	if !refresh && connection.ModelsCached {
+		models := make([]provider.ModelInfo, 0, len(connection.Models))
+		for _, id := range connection.Models {
+			models = append(models, provider.ModelInfo{ID: id})
+		}
+		return models, nil
+	}
 	b.mu.RLock()
 	prov, ok := b.providers[connectionID]
 	b.mu.RUnlock()
@@ -1696,7 +1707,24 @@ func (b *Backend) ListModels(ctx context.Context, connectionID string) ([]provid
 	if !ok {
 		return nil, fmt.Errorf("connection %q does not support model discovery", connectionID)
 	}
-	return lister.ListModels(ctx)
+	models, err := lister.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	connections := b.Connections()
+	for index := range connections {
+		if connections[index].ID == connectionID {
+			connections[index].Models = ids
+			connections[index].ModelsCached = true
+			break
+		}
+	}
+	b.SetConnections(connections)
+	return models, nil
 }
 
 // Usage 返回会话最近一次模型请求的 token 使用情况。

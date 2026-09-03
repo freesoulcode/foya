@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
+import { RouterView, useRouter } from "vue-router";
 import {
   ArrowLeftIcon,
   ImageIcon,
@@ -31,76 +32,37 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { api, type CanvasDocument } from "@/lib/api";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
-import StudioCanvas from "./StudioCanvas.vue";
+import { useStudioWorkspace } from "@/composables/useStudioWorkspace";
 
-const emit = defineEmits<{
-  (event: "close"): void;
-}>();
-
+const router = useRouter();
 const { isMac, showCustomWindowControls } = usePlatform();
-const projects = ref<CanvasDocument[]>([]);
 const sidebarOpen = ref(true);
-const activeId = ref("");
-const loading = ref(true);
-const creating = ref(false);
-const error = ref("");
-const pendingDelete = ref<CanvasDocument | null>(null);
-
-const activeProject = computed(
-  () => projects.value.find((project) => project.id === activeId.value) ?? null
-);
+const pendingDelete = ref<ReturnType<typeof useStudioWorkspace>["activeProject"]["value"]>(null);
+const {
+  projects,
+  activeId,
+  loading,
+  creating,
+  error,
+  activeProject,
+  createProject,
+  deleteProject: removeProject,
+} = useStudioWorkspace();
 const isSidebarCollapsed = computed(() => !sidebarOpen.value);
-
-async function loadProjects() {
-  loading.value = true;
-  try {
-    projects.value = await api.listCanvases();
-    if (activeId.value && !projects.value.some((item) => item.id === activeId.value)) {
-      activeId.value = "";
-    }
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
-  } finally {
-    loading.value = false;
-  }
-}
-
-async function createProject() {
-  if (creating.value) return;
-  creating.value = true;
-  try {
-    const project = await api.createCanvas(`创作项目 ${projects.value.length + 1}`);
-    projects.value = [project, ...projects.value];
-    activeId.value = project.id;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
-  } finally {
-    creating.value = false;
-  }
-}
 
 async function deleteProject() {
   const project = pendingDelete.value;
   if (!project) return;
-  try {
-    await api.deleteCanvas(project.id);
-    projects.value = projects.value.filter((item) => item.id !== project.id);
-    if (activeId.value === project.id) activeId.value = "";
-    pendingDelete.value = null;
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
-  }
+  await removeProject(project);
+  pendingDelete.value = null;
 }
 
-function updateProject(project: CanvasDocument) {
-  const index = projects.value.findIndex((item) => item.id === project.id);
-  if (index >= 0) projects.value[index] = project;
+function close() {
+  void router.push({ name: "chat" });
 }
 
-onMounted(() => void loadProjects());
 </script>
 
 <template>
@@ -176,7 +138,7 @@ onMounted(() => void loadProjects());
           variant="ghost"
           class="no-drag w-full justify-start gap-2"
           title="返回对话"
-          @click="emit('close')"
+          @click="close"
         >
           <ArrowLeftIcon class="size-4" />
           <span>返回对话</span>
@@ -203,28 +165,7 @@ onMounted(() => void loadProjects());
         </div>
       </header>
 
-      <main class="relative min-h-0 flex-1">
-        <StudioCanvas
-          v-if="activeProject"
-          :key="activeProject.id"
-          :project-id="activeProject.id"
-          @project-change="updateProject"
-        />
-        <div v-else class="grid size-full place-items-center bg-muted/10 px-6">
-          <div class="flex max-w-md flex-col items-center text-center">
-            <ImageIcon class="size-8 text-muted-foreground/45" />
-            <h1 class="mt-5 text-xl font-semibold">创作工作台</h1>
-            <p class="mt-2 text-sm leading-6 text-muted-foreground">
-              从左侧选择一个项目，或新建项目开始创作。
-            </p>
-            <Button class="mt-6" :disabled="creating" @click="createProject">
-              <LoaderCircleIcon v-if="creating" class="size-4 animate-spin" />
-              <PlusIcon v-else class="size-4" />
-              新建项目
-            </Button>
-          </div>
-        </div>
-      </main>
+      <RouterView />
     </SidebarInset>
 
     <p v-if="error" class="absolute bottom-3 left-1/2 z-50 -translate-x-1/2 rounded bg-destructive px-3 py-1.5 text-xs text-destructive-foreground">

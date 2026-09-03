@@ -9,6 +9,7 @@ import {
   Trash2Icon,
 } from "@lucide/vue";
 import { api, type CommandInfo, type ProjectInfo } from "@/lib/api";
+import { useCurrentProjectId } from "@/composables/useCurrentProjectId";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Input } from "@/components/ui/input";
@@ -29,8 +30,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 
-const props = defineProps<{ currentProjectId?: string }>();
+const currentProjectId = useCurrentProjectId();
 
 type Scope = "global" | "project";
 const scope = ref<Scope>("global");
@@ -72,7 +74,7 @@ function resetEditor(item?: CommandInfo) {
 
 async function loadProjects() {
   projects.value = await api.listProjects();
-  const preferred = props.currentProjectId || projectId.value;
+  const preferred = currentProjectId.value || projectId.value;
   projectId.value = projects.value.some((item) => item.id === preferred)
     ? preferred
     : projects.value[0]?.id ?? "";
@@ -217,7 +219,7 @@ async function remove() {
 }
 
 watch(
-  () => props.currentProjectId,
+  currentProjectId,
   () => {
     if (scope.value === "project") void initialize();
   }
@@ -227,15 +229,8 @@ void initialize();
 </script>
 
 <template>
-  <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col px-5 pb-6 sm:px-8">
-    <div class="mb-6 flex min-h-11 flex-wrap items-center justify-between gap-3 pt-4">
-      <div>
-        <h2 class="text-base font-medium">命令</h2>
-        <p class="mt-1 text-xs text-muted-foreground">
-          将常用 Prompt 保存为可通过 <code>/</code> 快速触发的命令。
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <SettingsPage title="命令" description="将常用 Prompt 保存为可通过 / 快速触发的命令。">
+    <template #actions>
         <Button
           size="icon-sm"
           variant="ghost"
@@ -250,8 +245,7 @@ void initialize();
           <PlusIcon class="size-4" />
           创建命令
         </Button>
-      </div>
-    </div>
+    </template>
 
     <div class="mb-5 flex flex-wrap items-center gap-3">
       <ButtonGroup aria-label="命令范围">
@@ -284,7 +278,7 @@ void initialize();
       </Select>
     </div>
 
-    <section v-if="!editorOpen" class="flex min-h-[520px] flex-1 flex-col border-y border-border bg-background">
+    <section v-if="!editorOpen" class="flex min-h-0 flex-1 flex-col border-y border-border bg-background">
       <div class="grid h-11 shrink-0 grid-cols-[minmax(180px,0.8fr)_minmax(220px,1.4fr)_132px] items-center gap-3 border-b border-border px-4 text-xs font-medium text-muted-foreground">
         <span>命令</span>
         <span>描述</span>
@@ -327,7 +321,7 @@ void initialize();
       </div>
     </section>
 
-    <section v-else class="flex min-h-[520px] flex-1 flex-col border-y border-border bg-background">
+    <section v-else class="flex min-h-0 flex-1 flex-col border-y border-border bg-background">
       <div class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
         <div class="flex min-w-0 items-center gap-3">
           <Button size="icon-sm" variant="ghost" title="返回命令列表" aria-label="返回命令列表" @click="back">
@@ -398,5 +392,5 @@ void initialize();
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  </div>
+  </SettingsPage>
 </template>

@@ -1724,8 +1724,13 @@ async fn delete_connection(connection_id: String) -> Result<(), String> {
 /// 拉取指定连接可用的模型目录。
 #[cfg(unix)]
 #[tauri::command]
-async fn list_connection_models(connection_id: String) -> Result<String, String> {
-    kernel::request("GET", &format!("/connections/{connection_id}/models"), None).await
+async fn list_connection_models(connection_id: String, refresh: bool) -> Result<String, String> {
+    let path = if refresh {
+        format!("/connections/{connection_id}/models?refresh=true")
+    } else {
+        format!("/connections/{connection_id}/models")
+    };
+    kernel::request("GET", &path, None).await
 }
 
 #[cfg(unix)]
@@ -3024,7 +3029,7 @@ fn delete_connection(_connection_id: String) -> Result<(), String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn list_connection_models(_connection_id: String) -> Result<String, String> {
+fn list_connection_models(_connection_id: String, _refresh: bool) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 

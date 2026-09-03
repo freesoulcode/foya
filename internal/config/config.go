@@ -73,6 +73,8 @@ type Connection struct {
 	APIKey        string                   `json:"api_key,omitempty"`
 	ContextWindow int64                    `json:"context_window,omitempty"`
 	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
+	Models        []string                 `json:"models,omitempty"`
+	ModelsCached  bool                     `json:"models_cached,omitempty"`
 	SortOrder     int                      `json:"sort_order"`
 	// LegacyDefault is read only to migrate older connection catalogs. The
 	// first connection by SortOrder is now the new-session preference.

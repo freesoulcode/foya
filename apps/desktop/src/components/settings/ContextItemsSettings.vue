@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 
 const props = defineProps<{
   kind: ContextItemKind;
@@ -355,22 +356,15 @@ onMounted(() => void load());
 </script>
 
 <template>
-  <div class="mx-auto flex min-h-full w-full max-w-6xl flex-col px-5 pb-6 sm:px-8">
-    <div
-      data-tauri-drag-region
-      class="mb-6 flex min-h-11 flex-wrap items-center justify-between gap-3 pt-4"
-    >
-      <div>
-        <h2 class="text-base font-medium">{{ title }}</h2>
-        <p class="mt-1 text-xs text-muted-foreground">
-          {{
-            kind === "rule"
-              ? "为 Agent 设定可复用的行为约束。"
-              : "记录跨会话可复用的偏好、事实和经验。"
-          }}
-        </p>
-      </div>
-      <div class="no-drag flex min-w-0 flex-wrap items-center justify-end gap-2">
+  <SettingsPage
+    :title="title"
+    :description="
+      kind === 'rule'
+        ? '为 Agent 设定可复用的行为约束。'
+        : '记录跨会话可复用的偏好、事实和经验。'
+    "
+  >
+    <template #actions>
         <Button
           v-if="kind === 'rule'"
           size="sm"
@@ -411,8 +405,7 @@ onMounted(() => void load());
         >
           <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
         </Button>
-      </div>
-    </div>
+    </template>
 
     <div class="mb-5 flex flex-wrap items-center gap-3">
       <ButtonGroup :aria-label="`${title}范围`">
@@ -673,5 +666,5 @@ onMounted(() => void load());
         </div>
       </div>
     </section>
-  </div>
+  </SettingsPage>
 </template>

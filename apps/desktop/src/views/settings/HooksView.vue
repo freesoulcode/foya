@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { RefreshCwIcon } from "@lucide/vue";
 import { api, type HookConfig, type ProjectInfo } from "@/lib/api";
+import { useCurrentProjectId } from "@/composables/useCurrentProjectId";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Label } from "@/components/ui/label";
@@ -13,8 +14,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 
-const props = defineProps<{ currentProjectId?: string }>();
+const currentProjectId = useCurrentProjectId();
 
 type Scope = "global" | "project";
 
@@ -41,7 +43,7 @@ function formatHooks(items: HookConfig[]): string {
 
 async function loadProjects() {
   projects.value = await api.listProjects();
-  const preferred = props.currentProjectId || projectId.value;
+  const preferred = currentProjectId.value || projectId.value;
   if (projects.value.some((item) => item.id === preferred)) {
     projectId.value = preferred;
   } else {
@@ -129,7 +131,7 @@ async function save() {
 }
 
 watch(
-  () => props.currentProjectId,
+  currentProjectId,
   () => {
     if (scope.value === "project") void initialize();
   }
@@ -139,17 +141,15 @@ void initialize();
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl p-6">
-    <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="text-base font-medium">Hooks</h2>
-        <p class="mt-1 text-xs text-muted-foreground">
-          在 Session、请求、工具和回合生命周期中执行本地命令。
-        </p>
-      </div>
+  <SettingsPage
+    title="Hooks"
+    description="在 Session、请求、工具和回合生命周期中执行本地命令。"
+  >
+    <template #actions>
       <Button
         size="icon-sm"
         variant="ghost"
+        class="no-drag"
         :disabled="loading || saving"
         title="刷新 Hooks"
         aria-label="刷新 Hooks"
@@ -157,7 +157,7 @@ void initialize();
       >
         <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
       </Button>
-    </div>
+    </template>
 
     <div class="mb-5 flex flex-wrap items-center gap-3">
       <ButtonGroup aria-label="Hooks 范围">
@@ -200,14 +200,14 @@ void initialize();
       </Select>
     </div>
 
-    <div class="space-y-2">
+    <div class="flex min-h-0 flex-1 flex-col space-y-2">
       <Label for="hooks-config">
         {{ scope === "global" ? "~/.foya/hooks.json" : projectPath }}
       </Label>
       <Textarea
         id="hooks-config"
         v-model="source"
-        class="min-h-80 resize-y font-mono text-xs leading-5"
+        class="min-h-0 flex-1 resize-none font-mono text-xs leading-5"
         :disabled="loading || saving || (scope === 'project' && !projectId)"
         spellcheck="false"
       />
@@ -228,5 +228,5 @@ void initialize();
         {{ saving ? "保存中…" : "保存" }}
       </Button>
     </div>
-  </div>
+  </SettingsPage>
 </template>

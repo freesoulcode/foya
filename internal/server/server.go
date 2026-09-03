@@ -1178,6 +1178,8 @@ func publicConnection(connection config.Connection) protocol.ConnectionConfig {
 		HasAPIKey:     connection.APIKey != "",
 		ContextWindow: connection.ContextWindow,
 		ModelSettings: modelSettings,
+		Models:        append([]string(nil), connection.Models...),
+		ModelsCached:  connection.ModelsCached,
 		SortOrder:     connection.SortOrder,
 	}
 }
@@ -1202,6 +1204,8 @@ func toConnection(input protocol.ConnectionConfig) config.Connection {
 		APIKey:        input.APIKey,
 		ContextWindow: input.ContextWindow,
 		ModelSettings: modelSettings,
+		Models:        append([]string(nil), input.Models...),
+		ModelsCached:  input.ModelsCached,
 		SortOrder:     input.SortOrder,
 	}
 }
@@ -1272,7 +1276,7 @@ func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleListConnectionModels(w http.ResponseWriter, r *http.Request) {
-	models, err := s.backend.ListModels(r.Context(), r.PathValue("id"))
+	models, err := s.backend.ListModels(r.Context(), r.PathValue("id"), r.URL.Query().Get("refresh") == "true")
 	if err != nil {
 		if errors.Is(err, backend.ErrConnectionNotFound) {
 			writeErr(w, http.StatusNotFound, "connection_not_found", err.Error())
