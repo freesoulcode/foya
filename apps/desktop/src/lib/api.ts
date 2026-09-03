@@ -523,6 +523,42 @@ export interface AgentLimits {
   max_tree_tokens: number;
 }
 
+export type FeishuBotStatus = "stopped" | "running" | "error";
+
+export interface FeishuBotSettings {
+  id: string;
+  kind: "feishu";
+  name: string;
+  enabled: boolean;
+  app_id: string;
+  has_app_secret: boolean;
+  connection_id?: string;
+  model?: string;
+  project_id?: string;
+  approval_mode: "auto" | "full_access";
+  allowed_users: string[];
+  allowed_chats: string[];
+  allow_all: boolean;
+  status: FeishuBotStatus;
+  last_error?: string;
+}
+
+export interface FeishuBotUpdate {
+  name: string;
+  enabled: boolean;
+  app_id: string;
+  app_secret?: string;
+  connection_id?: string;
+  model?: string;
+  project_id?: string;
+  approval_mode: "auto" | "full_access";
+  allowed_users: string[];
+  allowed_chats: string[];
+  allow_all: boolean;
+}
+
+export type ChannelCreate = FeishuBotUpdate & { kind: "feishu" };
+
 export type HookEvent =
   | "SessionStart"
   | "UserPromptSubmit"
@@ -1142,6 +1178,34 @@ export const api = {
     invoke<string>("update_agent_limits", { limits }).then(
       (r) => JSON.parse(r) as AgentLimits
     ),
+
+  getFeishuBotSettings: () =>
+    invoke<string>("get_feishu_bot_settings").then(
+      (r) => JSON.parse(r) as FeishuBotSettings
+    ),
+
+  updateFeishuBotSettings: (settings: FeishuBotUpdate) =>
+    invoke<string>("update_feishu_bot_settings", { settings }).then(
+      (r) => JSON.parse(r) as FeishuBotSettings
+    ),
+
+  listChannels: () =>
+    invoke<string>("list_channels").then(
+      (r) => (JSON.parse(r) as FeishuBotSettings[]) ?? []
+    ),
+
+  createChannel: (settings: ChannelCreate) =>
+    invoke<string>("create_channel", { settings }).then(
+      (r) => JSON.parse(r) as FeishuBotSettings
+    ),
+
+  updateChannel: (channelId: string, settings: FeishuBotUpdate) =>
+    invoke<string>("update_channel", { channelId, settings }).then(
+      (r) => JSON.parse(r) as FeishuBotSettings
+    ),
+
+  deleteChannel: (channelId: string) =>
+    invoke("delete_channel", { channelId }),
 
   getHooks: (scope: "global" | "project", projectId?: string) =>
     invoke<string>("get_hooks", { scope, projectId: projectId ?? "" }).then(

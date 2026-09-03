@@ -98,6 +98,16 @@ func (b *Backend) SubmitTurn(ctx context.Context, sessionID, text string) (Submi
 	return b.SubmitInput(ctx, sessionID, message.UserInput{Text: text})
 }
 
+// SubmitChatInput exposes message submission to platform-neutral chat adapters.
+func (b *Backend) SubmitChatInput(
+	ctx context.Context,
+	sessionID string,
+	input message.UserInput,
+) error {
+	_, err := b.SubmitInput(ctx, sessionID, input)
+	return err
+}
+
 // SubmitInput starts or queues one structured user input.
 func (b *Backend) SubmitInput(
 	ctx context.Context,

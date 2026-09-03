@@ -9,6 +9,7 @@ import {
   FileJsonIcon,
   GaugeIcon,
   GlobeIcon,
+  MessageCircleIcon,
   PaletteIcon,
   PlugZapIcon,
   ScrollTextIcon,
@@ -35,6 +36,7 @@ export type SettingsSection =
   | "hooks"
   | "mcp"
   | "web-search"
+  | "channels"
   | "agents"
   | "appearance";
 
@@ -56,6 +58,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
   { id: "hooks", label: "Hooks", icon: FileJsonIcon },
   { id: "mcp", label: "MCP", icon: BlocksIcon },
   { id: "web-search", label: "联网搜索", icon: GlobeIcon },
+  { id: "channels", label: "消息渠道", icon: MessageCircleIcon },
   { id: "agents", label: "Agent", icon: BotIcon },
   { id: "appearance", label: "外观", icon: PaletteIcon },
 ];

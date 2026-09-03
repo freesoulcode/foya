@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,27 @@ func (b *lockedBuffer) Write(data []byte) (int, error) {
 		_, _ = b.Buffer.Write(current[len(current)-maxProcessOutputBytes:])
 	}
 	return size, nil
+}
+
+func (b *lockedBuffer) ReadFrom(reader io.Reader) (int64, error) {
+	buffer := make([]byte, 32*1024)
+	var total int64
+	for {
+		count, err := reader.Read(buffer)
+		if count > 0 {
+			written, writeErr := b.Write(buffer[:count])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
 }
 
 func (b *lockedBuffer) BytesCopy() []byte {

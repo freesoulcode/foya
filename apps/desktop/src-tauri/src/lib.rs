@@ -1790,6 +1790,57 @@ async fn update_agent_limits(limits: serde_json::Value) -> Result<String, String
 
 #[cfg(unix)]
 #[tauri::command]
+async fn get_feishu_bot_settings() -> Result<String, String> {
+    kernel::request("GET", "/settings/feishu-bot", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_feishu_bot_settings(settings: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "PUT",
+        "/settings/feishu-bot",
+        Some(&settings.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn list_channels() -> Result<String, String> {
+    kernel::request("GET", "/channels", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn create_channel(settings: serde_json::Value) -> Result<String, String> {
+    kernel::request("POST", "/channels", Some(&settings.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_channel(
+    channel_id: String,
+    settings: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "PUT",
+        &format!("/channels/{channel_id}"),
+        Some(&settings.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_channel(channel_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/channels/{channel_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn get_memory_settings() -> Result<String, String> {
     kernel::request("GET", "/settings/memory", None).await
 }
@@ -3246,6 +3297,45 @@ async fn update_agent_limits(_limits: serde_json::Value) -> Result<String, Strin
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn get_feishu_bot_settings() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_feishu_bot_settings(_settings: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn list_channels() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn create_channel(_settings: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_channel(
+    _channel_id: String,
+    _settings: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_channel(_channel_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn get_memory_settings() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -3570,6 +3660,12 @@ pub fn run() {
             list_agents,
             get_agent_limits,
             update_agent_limits,
+            get_feishu_bot_settings,
+            update_feishu_bot_settings,
+            list_channels,
+            create_channel,
+            update_channel,
+            delete_channel,
             get_memory_settings,
             update_memory_settings,
             get_hooks,

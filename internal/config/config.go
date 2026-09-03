@@ -35,6 +35,9 @@ type Config struct {
 	Addr       string // 监听地址(TransportTCP 时)
 	DataDir    string // 事件日志、SQLite 索引所在目录
 	Agents     AgentLimits
+	// DisableExternalIntegrations prevents short-lived CLI commands from
+	// starting persisted long-running transports such as the Feishu bot.
+	DisableExternalIntegrations bool
 
 	// Provider 是旧的单连接启动配置，仅用于从环境变量迁移初始 Connection。
 	Provider Provider

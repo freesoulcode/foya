@@ -16,6 +16,7 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/canvas"
+	"github.com/freesoulcode/foya/internal/channel/feishu"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -40,12 +41,13 @@ import (
 
 // App 是内核组合根。
 type App struct {
-	cfg     config.Config
-	backend *backend.Backend
-	cancel  context.CancelFunc
-	mcp     *mcpclient.Manager
-	memory  *memorymaint.Manager
-	browser *browseruse.Controller
+	cfg      config.Config
+	backend  *backend.Backend
+	cancel   context.CancelFunc
+	mcp      *mcpclient.Manager
+	memory   *memorymaint.Manager
+	browser  *browseruse.Controller
+	channels *feishu.Manager
 }
 
 // New 按配置装配内核。
@@ -265,6 +267,17 @@ func New(cfg config.Config) (*App, error) {
 	be.SetBackgroundCommandManager(backgroundCommands)
 	engine.SetWorkflowCompletionHandler(be.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
+	feishuManager, err := feishu.NewManager(
+		appCtx,
+		cfg.DataDir,
+		be,
+		nil,
+		!cfg.DisableExternalIntegrations,
+	)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	memoryManager, err := memorymaint.New(
 		cfg.DataDir,
 		sessions,
@@ -273,6 +286,7 @@ func New(cfg config.Config) (*App, error) {
 		be.MemoryCompleter,
 	)
 	if err != nil {
+		feishuManager.Close()
 		cancel()
 		return nil, err
 	}
@@ -281,7 +295,7 @@ func New(cfg config.Config) (*App, error) {
 	go mcpManager.Start(appCtx)
 	return &App{
 		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
-		memory: memoryManager, browser: browserController,
+		memory: memoryManager, browser: browserController, channels: feishuManager,
 	}, nil
 }
 
@@ -323,8 +337,11 @@ func (a *App) Backend() *backend.Backend { return a.backend }
 // Config 返回内核配置。
 func (a *App) Config() config.Config { return a.cfg }
 
+func (a *App) Channels() *feishu.Manager { return a.channels }
+
 // Close 停止后台能力并释放 MCP 会话及其子进程。
 func (a *App) Close() {
+	a.channels.Close()
 	a.cancel()
 	a.browser.Close()
 	a.mcp.Close()

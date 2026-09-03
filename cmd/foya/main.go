@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/channel/feishu"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	"github.com/freesoulcode/foya/internal/event"
@@ -60,6 +61,9 @@ func main() {
 		case "web-search":
 			runWebSearch(os.Args[2:])
 			return
+		case "bot":
+			runBot(os.Args[2:])
+			return
 		}
 	}
 	runDaemon()
@@ -75,6 +79,7 @@ func runDaemon() {
 	}
 	defer app.Close()
 	srv := server.New(cfg, app.Backend())
+	srv.SetChannelManager(app.Channels())
 
 	ln, desc, err := listen(cfg)
 	if err != nil {
@@ -162,7 +167,9 @@ func listenUnix(path string) (net.Listener, string, error) {
 }
 
 func newApp() *kernel.App {
-	app, err := kernel.New(config.Default())
+	cfg := config.Default()
+	cfg.DisableExternalIntegrations = true
+	app, err := kernel.New(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -246,6 +253,117 @@ func runExec(args []string) {
 			return
 		}
 	}
+}
+
+// runBot starts the kernel and exposes it through a Feishu long connection.
+// The regular HTTP listener stays available so desktop clients can share the
+// same sessions without opening the data directory from a second process.
+func runBot(args []string) {
+	flags := flag.NewFlagSet("foya bot", flag.ExitOnError)
+	appID := flags.String("app-id", os.Getenv("FOYA_FEISHU_APP_ID"), "Feishu app ID")
+	appSecret := flags.String("app-secret", os.Getenv("FOYA_FEISHU_APP_SECRET"), "Feishu app secret")
+	connectionID := flags.String("connection", os.Getenv("FOYA_FEISHU_CONNECTION_ID"), "model connection id")
+	model := flags.String("model", os.Getenv("FOYA_FEISHU_MODEL"), "model id")
+	projectID := flags.String("project", os.Getenv("FOYA_FEISHU_PROJECT_ID"), "project id")
+	mode := flags.String("approval", envOrDefault("FOYA_FEISHU_APPROVAL_MODE", string(approval.ModeAuto)), "auto or full_access")
+	allowAll := flags.Bool("allow-all", false, "allow every Feishu user and chat")
+	allowUsers := stringListFlag(splitCommaList(os.Getenv("FOYA_FEISHU_ALLOWED_USERS")))
+	allowChats := stringListFlag(splitCommaList(os.Getenv("FOYA_FEISHU_ALLOWED_CHATS")))
+	flags.Var(&allowUsers, "allow-user", "allowed Feishu user open_id (repeatable)")
+	flags.Var(&allowChats, "allow-chat", "allowed Feishu chat_id (repeatable)")
+	_ = flags.Parse(args)
+	if flags.NArg() != 0 {
+		fatal(errors.New("usage: foya bot [flags]"))
+	}
+	if strings.TrimSpace(*appID) == "" || strings.TrimSpace(*appSecret) == "" {
+		fatal(errors.New("Feishu app ID and app secret are required"))
+	}
+
+	cfg := config.Default()
+	cfg.DisableExternalIntegrations = true
+	app, err := kernel.New(cfg)
+	if err != nil {
+		fatal(fmt.Errorf("kernel initialization failed: %w", err))
+	}
+	defer app.Close()
+
+	channelInput := feishu.UpdateInput{
+		Name:         "飞书 Bot",
+		Enabled:      true,
+		ConnectionID: *connectionID,
+		Model:        *model,
+		ProjectID:    *projectID,
+		ApprovalMode: approval.Mode(*mode),
+		AllowedUsers: append([]string(nil), allowUsers...),
+		AllowedChats: append([]string(nil), allowChats...),
+		AllowAll:     *allowAll,
+		AppID:        *appID,
+		AppSecret:    *appSecret,
+	}
+	var updateErr error
+	if channels := app.Channels().List(); len(channels) > 0 {
+		_, updateErr = app.Channels().Update(channels[0].ID, channelInput)
+	} else {
+		_, updateErr = app.Channels().Create(channelInput)
+	}
+	if updateErr != nil {
+		fatal(updateErr)
+	}
+
+	ln, desc, err := listen(cfg)
+	if err != nil {
+		fatal(fmt.Errorf("kernel listen failed: %w", err))
+	}
+	defer ln.Close()
+	if cfg.Transport == config.TransportUnixSocket {
+		defer os.Remove(cfg.SocketPath)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	srv := server.New(cfg, app.Backend())
+	srv.SetChannelManager(app.Channels())
+	httpServer := &http.Server{Handler: srv.Handler()}
+	httpResult := make(chan error, 1)
+	go func() {
+		httpResult <- httpServer.Serve(ln)
+	}()
+	fmt.Printf("foya kernel listening on %s\n", desc)
+	fmt.Println("foya Feishu bot starting")
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case err := <-httpResult:
+		if !errors.Is(err, http.ErrServerClosed) {
+			runErr = err
+		}
+	}
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = httpServer.Shutdown(shutdownCtx)
+	_ = ln.Close()
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		fatal(runErr)
+	}
+}
+
+func splitCommaList(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 type stringListFlag []string

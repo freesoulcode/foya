@@ -91,6 +91,13 @@ export const router = createRouter({
               meta: { settingsSection: "web-search" },
             },
             {
+              path: "channels",
+              name: "settings-channels",
+              component: () => import("@/views/settings/ChannelsView.vue"),
+              meta: { settingsSection: "channels" },
+            },
+            { path: "feishu-bot", redirect: { name: "settings-channels" } },
+            {
               path: "agents",
               name: "settings-agents",
               component: () => import("@/views/settings/AgentsView.vue"),

@@ -22,6 +22,7 @@ import (
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/canvas"
+	"github.com/freesoulcode/foya/internal/channel/feishu"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -43,9 +44,18 @@ import (
 
 // Server 承载 REST + SSE 路由。
 type Server struct {
-	cfg     config.Config
-	backend *backend.Backend
-	mux     *http.ServeMux
+	cfg      config.Config
+	backend  *backend.Backend
+	channels ChannelManager
+	mux      *http.ServeMux
+}
+
+type ChannelManager interface {
+	List() []feishu.State
+	Get(string) (feishu.State, bool)
+	Create(feishu.UpdateInput) (feishu.State, error)
+	Update(string, feishu.UpdateInput) (feishu.State, error)
+	Delete(string) error
 }
 
 // New 组装一个 Server。
@@ -118,6 +128,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /settings/agent-limits", s.handleUpdateAgentLimits)
 	s.mux.HandleFunc("GET /settings/memory", s.handleGetMemorySettings)
 	s.mux.HandleFunc("PUT /settings/memory", s.handleUpdateMemorySettings)
+	s.mux.HandleFunc("GET /channels", s.handleListChannels)
+	s.mux.HandleFunc("POST /channels", s.handleCreateChannel)
+	s.mux.HandleFunc("GET /channels/{id}", s.handleGetChannel)
+	s.mux.HandleFunc("PUT /channels/{id}", s.handleUpdateChannel)
+	s.mux.HandleFunc("DELETE /channels/{id}", s.handleDeleteChannel)
+	s.mux.HandleFunc("GET /settings/feishu-bot", s.handleGetFeishuBot)
+	s.mux.HandleFunc("PUT /settings/feishu-bot", s.handleUpdateFeishuBot)
 	s.mux.HandleFunc("GET /hooks", s.handleGetHooks)
 	s.mux.HandleFunc("PUT /hooks", s.handleReplaceHooks)
 	s.mux.HandleFunc("GET /commands", s.handleListCommands)
@@ -162,6 +179,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/terminals/{ref}/resize", s.handleResizeTerminal)
 	s.mux.HandleFunc("DELETE /sessions/{id}/terminals/{ref}", s.handleStopTerminal)
 	s.mux.HandleFunc("GET /sessions/{id}/terminals/{ref}/events", s.handleTerminalEvents)
+}
+
+func (s *Server) SetChannelManager(manager ChannelManager) {
+	s.channels = manager
 }
 
 type contextCreateRequest struct {
@@ -389,6 +410,144 @@ func (s *Server) handleUpdateMemorySettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+type channelCreateRequest struct {
+	Kind string `json:"kind"`
+	feishu.UpdateInput
+}
+
+func (s *Server) handleListChannels(w http.ResponseWriter, _ *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.channels.List())
+}
+
+func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	var input channelCreateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if input.Kind != "feishu" {
+		writeErr(w, http.StatusBadRequest, "unsupported_channel", "unsupported channel kind")
+		return
+	}
+	state, err := s.channels.Create(input.UpdateInput)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "channel_create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, state)
+}
+
+func (s *Server) handleGetChannel(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	state, ok := s.channels.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "channel_not_found", "channel not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	var input feishu.UpdateInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	state, err := s.channels.Update(r.PathValue("id"), input)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeErr(w, http.StatusNotFound, "channel_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "channel_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	if err := s.channels.Delete(r.PathValue("id")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeErr(w, http.StatusNotFound, "channel_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "channel_delete_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGetFeishuBot(w http.ResponseWriter, _ *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	items := s.channels.List()
+	if len(items) == 0 {
+		writeJSON(w, http.StatusOK, feishu.State{
+			Kind: "feishu", Name: "飞书 Bot", ApprovalMode: approvalpkg.ModeAuto,
+			Status: feishu.StatusStopped,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, items[0])
+}
+
+func (s *Server) handleUpdateFeishuBot(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	var input feishu.UpdateInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if input.Name == "" {
+		input.Name = "飞书 Bot"
+	}
+	items := s.channels.List()
+	var (
+		state feishu.State
+		err   error
+	)
+	if len(items) == 0 {
+		state, err = s.channels.Create(input)
+	} else {
+		state, err = s.channels.Update(items[0].ID, input)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "channel_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
