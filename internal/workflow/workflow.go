@@ -228,7 +228,7 @@ func (m *Manager) Policy(sessionID string) (Policy, bool) {
 	}
 	return Policy{
 		AllowedTools: []string{
-			"read", "web_search", "web_fetch", "skill_search", "skill_load", "rule_load", "ask_user",
+			"read", "web_search", "web_fetch", "skill_search", "skill_load", "skill_read_resource", "rule_load", "ask_user",
 		},
 		Instructions: fmt.Sprintf(`You are in %s workflow mode.
 Goal: %s

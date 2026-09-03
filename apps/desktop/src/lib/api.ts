@@ -332,10 +332,34 @@ export interface SkillInfo {
   ref: string;
   name: string;
   description?: string;
-  scope: "builtin" | "user" | "project";
+  scope: "builtin" | "global" | "user" | "project";
   path?: string;
+  root?: string;
+  main_path?: string;
   enabled: boolean;
+  pinned?: boolean;
   allowed_tools?: string[];
+  required_tools?: string[];
+  required_capabilities?: string[];
+  resources?: SkillResourceInfo[];
+  content_hash?: string;
+  diagnostics?: SkillDiagnostic[];
+}
+
+export interface SkillResourceInfo {
+  path: string;
+  size?: number;
+  media_type?: string;
+}
+
+export interface SkillDiagnostic {
+  ref?: string;
+  name?: string;
+  path?: string;
+  code: string;
+  severity: string;
+  message: string;
+  field?: string;
 }
 
 export interface AgentInfo {
@@ -997,6 +1021,9 @@ export const api = {
 
   setSkillEnabled: (skillRef: string, enabled: boolean) =>
     invoke("set_skill_enabled", { skillRef, enabled }),
+
+  setSkillPinned: (skillRef: string, pinned: boolean) =>
+    invoke("set_skill_pinned", { skillRef, pinned }),
 
   getWebSearchSettings: () =>
     invoke<string>("get_web_search_settings").then(

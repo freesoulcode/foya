@@ -60,6 +60,7 @@ commands.allow = [
   "delete_context_item",
   "subscribe_context_events",
   "set_skill_enabled",
+  "set_skill_pinned",
   "get_web_search_settings",
   "update_web_search_settings",
   "test_web_search",

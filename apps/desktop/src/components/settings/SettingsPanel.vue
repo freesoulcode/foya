@@ -18,6 +18,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
+  PinIcon,
   PlusIcon,
   PlugZapIcon,
   RefreshCwIcon,
@@ -522,6 +523,18 @@ async function toggleSkill(item: SkillInfo) {
   capabilitySaving.value = true;
   try {
     await api.setSkillEnabled(item.ref, !item.enabled);
+    await loadSelectedSkills();
+  } catch (cause) {
+    error.value = String(cause);
+  } finally {
+    capabilitySaving.value = false;
+  }
+}
+
+async function toggleSkillPinned(item: SkillInfo) {
+  capabilitySaving.value = true;
+  try {
+    await api.setSkillPinned(item.ref, !item.pinned);
     await loadSelectedSkills();
   } catch (cause) {
     error.value = String(cause);
@@ -1473,12 +1486,35 @@ async function remove() {
                       {{ item.description || item.path }}
                     </p>
                   </div>
-                  <Checkbox
-                    :checked="item.enabled"
-                    :disabled="capabilitySaving"
-                    :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
-                    @update:checked="toggleSkill(item)"
-                  />
+                  <div class="flex shrink-0 items-center gap-2">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          class="h-8 w-8"
+                          :disabled="capabilitySaving"
+                          :aria-label="`${item.pinned ? '取消固定' : '固定'} ${item.name}`"
+                          @click="toggleSkillPinned(item)"
+                        >
+                          <PinIcon
+                            class="h-4 w-4"
+                            :class="item.pinned ? 'fill-current text-foreground' : 'text-muted-foreground'"
+                          />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {{ item.pinned ? "取消固定到上下文" : "固定到上下文" }}
+                      </TooltipContent>
+                    </Tooltip>
+                    <Checkbox
+                      :checked="item.enabled"
+                      :disabled="capabilitySaving"
+                      :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
+                      @update:checked="toggleSkill(item)"
+                    />
+                  </div>
                 </div>
                 <p
                   v-if="!capabilityLoading && group.items.length === 0"

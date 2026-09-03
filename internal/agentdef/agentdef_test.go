@@ -59,11 +59,11 @@ func TestBuiltinDefinitions(t *testing.T) {
 		t.Fatalf("builtin definitions = %d, want 3", len(definitions))
 	}
 	expected := map[string][]string{
-		"explorer":   {"read", "skill_search", "skill_load"},
-		"researcher": {"web_search", "web_fetch", "skill_search", "skill_load"},
+		"explorer":   {"read", "skill_search", "skill_load", "skill_read_resource"},
+		"researcher": {"web_search", "web_fetch", "skill_search", "skill_load", "skill_read_resource"},
 		"worker": {
 			"read", "bash", "write", "edit",
-			"skill_search", "skill_load",
+			"skill_search", "skill_load", "skill_read_resource",
 		},
 	}
 	for _, definition := range definitions {

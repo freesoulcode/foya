@@ -104,3 +104,16 @@ func TestSkillCatalogFragmentIsBounded(t *testing.T) {
 		t.Fatal("catalog should report omitted skills")
 	}
 }
+
+func TestRenderSkillCatalogEntryClosesPinnedAttribute(t *testing.T) {
+	result := renderSkillCatalogEntry(SkillCatalogEntry{
+		Ref:         "global:example",
+		Name:        "example",
+		Description: "Use for examples.",
+		Scope:       "global",
+		Pinned:      true,
+	})
+	if !strings.Contains(result, `<skill ref="global:example" name="example" scope="global" pinned="true">`) {
+		t.Fatalf("pinned skill tag is malformed:\n%s", result)
+	}
+}

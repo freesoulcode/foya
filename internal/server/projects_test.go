@@ -145,6 +145,31 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 	if code := requestJSON(
 		t,
 		handler,
+		http.MethodPatch,
+		"/skills/"+items[0].Ref+"/pinned",
+		map[string]bool{"pinned": true},
+		nil,
+	); code != http.StatusNoContent {
+		t.Fatalf("pin project skill status = %d", code)
+	}
+	var report skill.ScanResult
+	if code := requestJSON(
+		t,
+		handler,
+		http.MethodGet,
+		"/projects/"+createdProject.ID+"/skills/inspect",
+		nil,
+		&report,
+	); code != http.StatusOK {
+		t.Fatalf("inspect project skills status = %d", code)
+	}
+	if len(report.Skills) != 1 || !report.Skills[0].Pinned ||
+		report.Skills[0].Ref != "project:"+createdProject.ID+":review" {
+		t.Fatalf("project skill inspection = %#v", report.Skills)
+	}
+	if code := requestJSON(
+		t,
+		handler,
 		http.MethodDelete,
 		"/projects/"+createdProject.ID,
 		nil,

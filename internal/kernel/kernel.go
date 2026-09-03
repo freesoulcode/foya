@@ -99,8 +99,11 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	tools.Register(tool.NewSkillSearchTool(skills))
-	tools.Register(tool.NewSkillLoadTool(skills))
+	skillTools := tool.DefaultSkillAvailableTools()
+	skillCapabilities := tool.DefaultSkillCapabilities()
+	tools.Register(tool.NewSkillSearchTool(skills, skillTools, skillCapabilities))
+	tools.Register(tool.NewSkillLoadTool(skills, skillTools, skillCapabilities))
+	tools.Register(tool.NewSkillReadResourceTool(skills, skillTools, skillCapabilities))
 	tools.Register(tool.NewToolSearchTool(tools))
 	tools.Register(tool.NewWebSearchTool(web, gw))
 	tools.Register(tool.NewWebFetchTool(gw))

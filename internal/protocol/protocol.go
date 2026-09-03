@@ -188,6 +188,10 @@ type SkillEnableRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+type SkillPinnedRequest struct {
+	Pinned bool `json:"pinned"`
+}
+
 type ProjectCreateRequest struct {
 	Name string `json:"name,omitempty"`
 	Path string `json:"path"`

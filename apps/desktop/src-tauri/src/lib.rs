@@ -1866,7 +1866,18 @@ async fn subscribe_context_events(channel: Channel<String>) -> Result<(), String
 #[tauri::command]
 async fn set_skill_enabled(skill_ref: String, enabled: bool) -> Result<(), String> {
     let body = serde_json::json!({ "enabled": enabled }).to_string();
-    kernel::request("PATCH", &format!("/skills/{skill_ref}"), Some(&body))
+    let path = format!("/skills/{}", encode_query_component(&skill_ref));
+    kernel::request("PATCH", &path, Some(&body))
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn set_skill_pinned(skill_ref: String, pinned: bool) -> Result<(), String> {
+    let body = serde_json::json!({ "pinned": pinned }).to_string();
+    let path = format!("/skills/{}/pinned", encode_query_component(&skill_ref));
+    kernel::request("PATCH", &path, Some(&body))
         .await
         .map(|_| ())
 }
@@ -3165,6 +3176,12 @@ async fn set_skill_enabled(_skill_ref: String, _enabled: bool) -> Result<(), Str
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn set_skill_pinned(_skill_ref: String, _pinned: bool) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn get_web_search_settings() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -3332,6 +3349,7 @@ pub fn run() {
             delete_context_item,
             subscribe_context_events,
             set_skill_enabled,
+            set_skill_pinned,
             get_web_search_settings,
             update_web_search_settings,
             test_web_search,

@@ -3,6 +3,8 @@ package skill
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +20,10 @@ import (
 )
 
 const (
-	maxSkillFileBytes = 256 * 1024
-	maxSkillsPerRoot  = 256
+	maxSkillFileBytes     = 256 * 1024
+	maxSkillResourceBytes = 512 * 1024
+	maxSkillsPerRoot      = 256
+	maxSkillResources     = 512
 )
 
 type Scope string
@@ -32,24 +36,78 @@ const (
 
 // Skill is one effective SKILL.md definition.
 type Skill struct {
-	Ref          string   `json:"ref"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Scope        Scope    `json:"scope"`
-	Path         string   `json:"path,omitempty"`
-	Enabled      bool     `json:"enabled"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	Body         string   `json:"-"`
+	Ref                  string        `json:"ref"`
+	Name                 string        `json:"name"`
+	Description          string        `json:"description"`
+	Scope                Scope         `json:"scope"`
+	Path                 string        `json:"path,omitempty"`
+	Root                 string        `json:"root,omitempty"`
+	MainPath             string        `json:"main_path,omitempty"`
+	Manifest             SkillManifest `json:"manifest"`
+	Enabled              bool          `json:"enabled"`
+	Pinned               bool          `json:"pinned"`
+	AllowedTools         []string      `json:"allowed_tools,omitempty"`
+	RequiredTools        []string      `json:"required_tools,omitempty"`
+	RequiredCapabilities []string      `json:"required_capabilities,omitempty"`
+	Resources            []Resource    `json:"resources,omitempty"`
+	ContentHash          string        `json:"content_hash,omitempty"`
+	Diagnostics          []Diagnostic  `json:"diagnostics,omitempty"`
+	Body                 string        `json:"-"`
 }
 
-type frontmatter struct {
-	Name         string   `yaml:"name"`
-	Description  string   `yaml:"description"`
-	AllowedTools []string `yaml:"allowed-tools"`
+type SkillManifest struct {
+	Name                 string            `json:"name,omitempty" yaml:"name"`
+	Description          string            `json:"description,omitempty" yaml:"description"`
+	AllowedTools         []string          `json:"allowed_tools,omitempty" yaml:"allowed-tools"`
+	RequiredTools        []string          `json:"required_tools,omitempty" yaml:"required-tools"`
+	RequiredCapabilities []string          `json:"required_capabilities,omitempty" yaml:"required-capabilities"`
+	License              string            `json:"license,omitempty" yaml:"license"`
+	Compatibility        string            `json:"compatibility,omitempty" yaml:"compatibility"`
+	Metadata             map[string]string `json:"metadata,omitempty" yaml:"metadata"`
+	Category             string            `json:"category,omitempty" yaml:"category"`
+}
+
+type Resource struct {
+	Path      string `json:"path"`
+	Size      int64  `json:"size,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+}
+
+type ResourceContent struct {
+	SkillRef  string `json:"skill_ref"`
+	Path      string `json:"path"`
+	MediaType string `json:"media_type,omitempty"`
+	Content   string `json:"content"`
+}
+
+type Diagnostic struct {
+	Ref      string `json:"ref,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Field    string `json:"field,omitempty"`
+}
+
+type RejectedSkill struct {
+	Ref         string       `json:"ref,omitempty"`
+	Name        string       `json:"name,omitempty"`
+	Path        string       `json:"path,omitempty"`
+	Scope       Scope        `json:"scope"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+type ScanResult struct {
+	Skills      []Skill         `json:"skills"`
+	Inventory   []Skill         `json:"inventory"`
+	Rejected    []RejectedSkill `json:"rejected,omitempty"`
+	Diagnostics []Diagnostic    `json:"diagnostics,omitempty"`
 }
 
 type persistedState struct {
 	Disabled []string `json:"disabled"`
+	Pinned   []string `json:"pinned"`
 }
 
 // Manager owns discovery precedence and persisted enablement state.
@@ -59,6 +117,7 @@ type Manager struct {
 	builtins []Skill
 	mu       sync.RWMutex
 	disabled map[string]bool
+	pinned   map[string]bool
 }
 
 func NewManager(dataDir, homeDir string, builtins []Skill) (*Manager, error) {
@@ -67,6 +126,10 @@ func NewManager(dataDir, homeDir string, builtins []Skill) (*Manager, error) {
 		homeDir:  homeDir,
 		builtins: append([]Skill(nil), builtins...),
 		disabled: make(map[string]bool),
+		pinned:   make(map[string]bool),
+	}
+	for index := range m.builtins {
+		completeSkillDefaults(&m.builtins[index], ScopeBuiltin)
 	}
 	if err := m.loadState(); err != nil {
 		return nil, err
@@ -75,14 +138,21 @@ func NewManager(dataDir, homeDir string, builtins []Skill) (*Manager, error) {
 }
 
 func (m *Manager) List(ctx context.Context, projectID, projectPath string) ([]Skill, error) {
-	all, err := m.ListAll(ctx, projectID, projectPath)
+	report, err := m.Inspect(ctx, projectID, projectPath)
 	if err != nil {
 		return nil, err
 	}
+	return report.Skills, nil
+}
 
+func (m *Manager) Inspect(ctx context.Context, projectID, projectPath string) (ScanResult, error) {
+	report, err := m.InspectAll(ctx, projectID, projectPath)
+	if err != nil {
+		return ScanResult{}, err
+	}
 	// Higher-ranked scopes win by name: project > global > builtin.
 	effective := make(map[string]Skill)
-	for _, item := range all {
+	for _, item := range report.Inventory {
 		key := strings.ToLower(item.Name)
 		current, exists := effective[key]
 		if !exists || scopeRank(item.Scope) > scopeRank(current.Scope) {
@@ -94,41 +164,62 @@ func (m *Manager) List(ctx context.Context, projectID, projectPath string) ([]Sk
 		out = append(out, item)
 	}
 	sortSkills(out)
-	return out, nil
+	report.Skills = out
+	return report, nil
 }
 
 // ListAll returns every discovered skill scope so management clients can
 // present global and project skills separately. Within one scope, .foya wins
 // over .agents when both define the same skill name.
-func (m *Manager) ListAll(_ context.Context, projectID, projectPath string) ([]Skill, error) {
+func (m *Manager) ListAll(ctx context.Context, projectID, projectPath string) ([]Skill, error) {
+	report, err := m.InspectAll(ctx, projectID, projectPath)
+	if err != nil {
+		return nil, err
+	}
+	return report.Inventory, nil
+}
+
+func (m *Manager) InspectAll(_ context.Context, projectID, projectPath string) (ScanResult, error) {
 	all := make([]Skill, 0, len(m.builtins)+16)
+	rejected := make([]RejectedSkill, 0)
+	diagnostics := make([]Diagnostic, 0)
 	for _, item := range m.builtins {
-		item.Scope = ScopeBuiltin
-		item.Ref = skillRef(item.Scope, item.Name)
+		completeSkillDefaults(&item, ScopeBuiltin)
 		all = append(all, item)
 	}
 	if m.homeDir != "" {
 		for _, root := range []string{".agents", ".foya"} {
-			items, err := scanRoot(filepath.Join(m.homeDir, root, "skills"), ScopeGlobal)
+			result, err := scanRoot(filepath.Join(m.homeDir, root, "skills"), ScopeGlobal)
 			if err != nil {
-				return nil, err
+				diagnostics = append(diagnostics, diagnostic("", "", filepath.Join(m.homeDir, root, "skills"), "read_failed", "error", err.Error(), ""))
+				continue
 			}
-			all = append(all, items...)
+			all = append(all, result.Skills...)
+			rejected = append(rejected, result.Rejected...)
+			diagnostics = append(diagnostics, result.Diagnostics...)
 		}
 	}
 	if projectPath != "" {
 		if strings.TrimSpace(projectID) == "" {
-			return nil, errors.New("project ID is required for project skills")
+			return ScanResult{}, errors.New("project ID is required for project skills")
 		}
 		for _, root := range []string{".agents", ".foya"} {
-			items, err := scanRoot(filepath.Join(projectPath, root, "skills"), ScopeProject)
+			result, err := scanRoot(filepath.Join(projectPath, root, "skills"), ScopeProject)
 			if err != nil {
-				return nil, err
+				diagnostics = append(diagnostics, diagnostic("", "", filepath.Join(projectPath, root, "skills"), "read_failed", "error", err.Error(), ""))
+				continue
 			}
-			for index := range items {
-				items[index].Ref = projectSkillRef(projectID, items[index].Name)
+			for index := range result.Skills {
+				result.Skills[index].Ref = projectSkillRef(projectID, result.Skills[index].Name)
 			}
-			all = append(all, items...)
+			for index := range result.Rejected {
+				if result.Rejected[index].Name != "" {
+					result.Rejected[index].Ref = projectSkillRef(projectID, result.Rejected[index].Name)
+				}
+			}
+			all = append(all, result.Skills...)
+			rejected = append(rejected, result.Rejected...)
+			diagnostics = append(diagnostics, result.Diagnostics...)
 		}
 	}
 
@@ -142,10 +233,13 @@ func (m *Manager) ListAll(_ context.Context, projectID, projectPath string) ([]S
 	out := make([]Skill, 0, len(byScopeAndName))
 	for _, item := range byScopeAndName {
 		item.Enabled = !m.disabled[item.Ref]
+		item.Pinned = m.pinned[item.Ref]
 		out = append(out, item)
 	}
 	sortSkills(out)
-	return out, nil
+	sortRejected(rejected)
+	sortDiagnostics(diagnostics)
+	return ScanResult{Inventory: out, Rejected: rejected, Diagnostics: diagnostics}, nil
 }
 
 func sortSkills(items []Skill) {
@@ -176,6 +270,53 @@ func (m *Manager) Get(
 	return Skill{}, fs.ErrNotExist
 }
 
+func (m *Manager) ReadResource(
+	ctx context.Context,
+	projectID, projectPath, refOrName, relativePath string,
+) (ResourceContent, error) {
+	item, err := m.Get(ctx, projectID, projectPath, refOrName)
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	if item.Root == "" {
+		return ResourceContent{}, errors.New("builtin skill does not have package resources")
+	}
+	cleanPath, err := cleanResourcePath(relativePath)
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	if !readableResource(cleanPath) {
+		return ResourceContent{}, errors.New("skill resource type is not readable as text")
+	}
+	root, err := filepath.EvalSymlinks(item.Root)
+	if err != nil {
+		return ResourceContent{}, fmt.Errorf("resolve skill root: %w", err)
+	}
+	candidate := filepath.Join(root, filepath.FromSlash(cleanPath))
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return ResourceContent{}, fmt.Errorf("resolve skill resource: %w", err)
+	}
+	if !pathInside(root, resolved) {
+		return ResourceContent{}, errors.New("skill resource escapes package root")
+	}
+	file, err := os.Open(resolved)
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	defer file.Close()
+	data, err := ioReadAllLimit(file, maxSkillResourceBytes)
+	if err != nil {
+		return ResourceContent{}, err
+	}
+	return ResourceContent{
+		SkillRef:  item.Ref,
+		Path:      cleanPath,
+		MediaType: mediaTypeForPath(cleanPath),
+		Content:   string(data),
+	}, nil
+}
+
 func (m *Manager) SetEnabled(ref string, enabled bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -183,6 +324,17 @@ func (m *Manager) SetEnabled(ref string, enabled bool) error {
 		delete(m.disabled, ref)
 	} else {
 		m.disabled[ref] = true
+	}
+	return m.saveStateLocked()
+}
+
+func (m *Manager) SetPinned(ref string, pinned bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if pinned {
+		m.pinned[ref] = true
+	} else {
+		delete(m.pinned, ref)
 	}
 	return m.saveStateLocked()
 }
@@ -209,6 +361,12 @@ func (m *Manager) loadState() error {
 		}
 		m.disabled[ref] = true
 	}
+	for _, ref := range state.Pinned {
+		if strings.HasPrefix(ref, "user:") {
+			ref = "global:" + strings.TrimPrefix(ref, "user:")
+		}
+		m.pinned[ref] = true
+	}
 	return nil
 }
 
@@ -217,8 +375,13 @@ func (m *Manager) saveStateLocked() error {
 	for ref := range m.disabled {
 		disabled = append(disabled, ref)
 	}
+	pinned := make([]string, 0, len(m.pinned))
+	for ref := range m.pinned {
+		pinned = append(pinned, ref)
+	}
 	sort.Strings(disabled)
-	data, err := json.MarshalIndent(persistedState{Disabled: disabled}, "", "  ")
+	sort.Strings(pinned)
+	data, err := json.MarshalIndent(persistedState{Disabled: disabled, Pinned: pinned}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -228,18 +391,20 @@ func (m *Manager) saveStateLocked() error {
 	return os.WriteFile(m.statePath(), data, 0o600)
 }
 
-func scanRoot(root string, scope Scope) ([]Skill, error) {
+func scanRoot(root string, scope Scope) (ScanResult, error) {
 	info, err := os.Stat(root)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return ScanResult{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return ScanResult{}, err
 	}
 	if !info.IsDir() {
-		return nil, nil
+		return ScanResult{}, nil
 	}
 	var out []Skill
+	var rejected []RejectedSkill
+	var diagnostics []Diagnostic
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -256,64 +421,115 @@ func scanRoot(root string, scope Scope) ([]Skill, error) {
 		if len(out) >= maxSkillsPerRoot {
 			return filepath.SkipAll
 		}
-		item, err := parseFile(path, scope)
+		item, itemDiagnostics, err := parseFile(path, scope)
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			name := filepath.Base(filepath.Dir(path))
+			rejectedDiagnostics := []Diagnostic{
+				diagnostic("", name, path, "invalid_skill", "error", err.Error(), ""),
+			}
+			rejected = append(rejected, RejectedSkill{
+				Name:        name,
+				Path:        path,
+				Scope:       scope,
+				Diagnostics: rejectedDiagnostics,
+			})
+			diagnostics = append(diagnostics, rejectedDiagnostics...)
+			return nil
 		}
+		item.Diagnostics = itemDiagnostics
+		diagnostics = append(diagnostics, itemDiagnostics...)
 		out = append(out, item)
 		return nil
 	})
-	return out, err
+	return ScanResult{Skills: out, Inventory: out, Rejected: rejected, Diagnostics: diagnostics}, err
 }
 
-func parseFile(path string, scope Scope) (Skill, error) {
+func parseFile(path string, scope Scope) (Skill, []Diagnostic, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return Skill{}, err
+		return Skill{}, nil, err
 	}
 	defer file.Close()
 	data, err := ioReadAllLimit(file, maxSkillFileBytes)
 	if err != nil {
-		return Skill{}, err
+		return Skill{}, nil, err
 	}
-	meta, body, err := parseDocument(string(data))
+	meta, body, fields, hasFrontmatter, err := parseDocument(string(data))
 	if err != nil {
-		return Skill{}, err
+		return Skill{}, nil, err
 	}
 	name := strings.TrimSpace(meta.Name)
 	if name == "" {
 		name = filepath.Base(filepath.Dir(path))
 	}
 	if name == "" || len([]rune(name)) > 128 {
-		return Skill{}, errors.New("skill name is empty or too long")
+		return Skill{}, nil, errors.New("skill name is empty or too long")
 	}
-	return Skill{
-		Ref:          skillRef(scope, name),
-		Name:         name,
-		Description:  strings.TrimSpace(meta.Description),
-		Scope:        scope,
-		Path:         path,
-		Enabled:      true,
-		AllowedTools: compactStrings(meta.AllowedTools),
-		Body:         strings.TrimSpace(body),
-	}, nil
+	root := filepath.Dir(path)
+	manifest := SkillManifest{
+		Name:                 name,
+		Description:          strings.TrimSpace(meta.Description),
+		AllowedTools:         compactStrings(meta.AllowedTools),
+		RequiredTools:        compactStrings(meta.RequiredTools),
+		RequiredCapabilities: compactStrings(meta.RequiredCapabilities),
+		License:              strings.TrimSpace(meta.License),
+		Compatibility:        strings.TrimSpace(meta.Compatibility),
+		Metadata:             compactMap(meta.Metadata),
+		Category:             strings.TrimSpace(meta.Category),
+	}
+	item := Skill{
+		Ref:                  skillRef(scope, name),
+		Name:                 name,
+		Description:          manifest.Description,
+		Scope:                scope,
+		Path:                 path,
+		Root:                 root,
+		MainPath:             path,
+		Manifest:             manifest,
+		Enabled:              true,
+		AllowedTools:         manifest.AllowedTools,
+		RequiredTools:        manifest.RequiredTools,
+		RequiredCapabilities: manifest.RequiredCapabilities,
+		Resources:            collectResources(root, path),
+		ContentHash:          hashBytes(data),
+		Body:                 strings.TrimSpace(body),
+	}
+	var diagnostics []Diagnostic
+	if !hasFrontmatter {
+		diagnostics = append(diagnostics, diagnostic(item.Ref, item.Name, path, "missing_frontmatter", "warning", "SKILL.md has no YAML frontmatter", "frontmatter"))
+	}
+	if item.Description == "" {
+		diagnostics = append(diagnostics, diagnostic(item.Ref, item.Name, path, "missing_description", "warning", "SKILL.md has no description", "description"))
+	}
+	for _, field := range unsupportedManifestFields(fields) {
+		diagnostics = append(diagnostics, diagnostic(item.Ref, item.Name, path, "unsupported_field", "warning", "unsupported frontmatter field: "+field, field))
+	}
+	return item, diagnostics, nil
 }
 
-func parseDocument(source string) (frontmatter, string, error) {
+func parseDocument(source string) (SkillManifest, string, map[string]bool, bool, error) {
 	if !strings.HasPrefix(source, "---\n") && !strings.HasPrefix(source, "---\r\n") {
-		return frontmatter{}, source, nil
+		return SkillManifest{}, source, nil, false, nil
 	}
 	normalized := strings.ReplaceAll(source, "\r\n", "\n")
 	end := strings.Index(normalized[4:], "\n---\n")
 	if end < 0 {
-		return frontmatter{}, "", errors.New("unterminated YAML frontmatter")
+		return SkillManifest{}, "", nil, true, errors.New("unterminated YAML frontmatter")
 	}
 	end += 4
-	var meta frontmatter
-	if err := yaml.Unmarshal([]byte(normalized[4:end]), &meta); err != nil {
-		return frontmatter{}, "", fmt.Errorf("decode frontmatter: %w", err)
+	raw := normalized[4:end]
+	var meta SkillManifest
+	if err := yaml.Unmarshal([]byte(raw), &meta); err != nil {
+		return SkillManifest{}, "", nil, true, fmt.Errorf("decode frontmatter: %w", err)
 	}
-	return meta, normalized[end+5:], nil
+	fields := make(map[string]bool)
+	var rawFields map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &rawFields); err == nil {
+		for key := range rawFields {
+			fields[key] = true
+		}
+	}
+	return meta, normalized[end+5:], fields, true, nil
 }
 
 func ioReadAllLimit(file *os.File, max int64) ([]byte, error) {
@@ -338,6 +554,252 @@ func compactStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func compactMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func completeSkillDefaults(item *Skill, scope Scope) {
+	if item.Scope == "" {
+		item.Scope = scope
+	}
+	item.Name = strings.TrimSpace(item.Name)
+	item.Description = strings.TrimSpace(item.Description)
+	item.AllowedTools = compactStrings(item.AllowedTools)
+	item.RequiredTools = compactStrings(item.RequiredTools)
+	item.RequiredCapabilities = compactStrings(item.RequiredCapabilities)
+	item.Manifest.Name = item.Name
+	item.Manifest.Description = item.Description
+	item.Manifest.AllowedTools = item.AllowedTools
+	item.Manifest.RequiredTools = item.RequiredTools
+	item.Manifest.RequiredCapabilities = item.RequiredCapabilities
+	if item.Ref == "" && item.Name != "" {
+		item.Ref = skillRef(item.Scope, item.Name)
+	}
+	if item.MainPath == "" {
+		item.MainPath = item.Path
+	}
+	if item.Root == "" && item.MainPath != "" {
+		item.Root = filepath.Dir(item.MainPath)
+	}
+	if item.ContentHash == "" {
+		item.ContentHash = hashBytes([]byte(item.Body))
+	}
+}
+
+func collectResources(root, mainPath string) []Resource {
+	var out []Resource
+	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if len(out) >= maxSkillResources {
+			return filepath.SkipAll
+		}
+		if samePath(path, mainPath) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		out = append(out, Resource{
+			Path:      filepath.ToSlash(rel),
+			Size:      info.Size(),
+			MediaType: mediaTypeForPath(path),
+		})
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func samePath(a, b string) bool {
+	aa, errA := filepath.Abs(a)
+	bb, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && aa == bb
+}
+
+func mediaTypeForPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown":
+		return "text/markdown"
+	case ".txt", ".log":
+		return "text/plain"
+	case ".json":
+		return "application/json"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".sh", ".bash", ".zsh":
+		return "text/x-shellscript"
+	case ".py":
+		return "text/x-python"
+	case ".js", ".jsx":
+		return "text/javascript"
+	case ".ts", ".tsx":
+		return "text/typescript"
+	case ".go":
+		return "text/x-go"
+	case ".rs":
+		return "text/rust"
+	case ".toml":
+		return "application/toml"
+	case ".html":
+		return "text/html"
+	case ".css":
+		return "text/css"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func readableResource(path string) bool {
+	switch mediaTypeForPath(path) {
+	case "text/markdown", "text/plain", "application/json", "application/yaml",
+		"text/x-shellscript", "text/x-python", "text/javascript",
+		"text/typescript", "text/x-go", "text/rust", "application/toml",
+		"text/html", "text/css":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanResourcePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	path = strings.ReplaceAll(path, "\\", "/")
+	if path == "" {
+		return "", errors.New("resource path is required")
+	}
+	if strings.HasPrefix(path, "/") {
+		return "", errors.New("resource path must be relative")
+	}
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "../") || clean == ".." {
+		return "", errors.New("resource path must stay inside the skill package")
+	}
+	return clean, nil
+}
+
+func pathInside(root, child string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	childAbs, err := filepath.Abs(child)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, childAbs)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func unsupportedManifestFields(fields map[string]bool) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{
+		"name": true, "description": true, "allowed-tools": true,
+		"required-tools": true, "required-capabilities": true,
+		"license": true, "compatibility": true, "metadata": true,
+		"category": true,
+	}
+	var out []string
+	for field := range fields {
+		if !allowed[field] {
+			out = append(out, field)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func diagnostic(ref, name, path, code, severity, message, field string) Diagnostic {
+	return Diagnostic{
+		Ref:      ref,
+		Name:     name,
+		Path:     path,
+		Code:     code,
+		Severity: severity,
+		Message:  message,
+		Field:    field,
+	}
+}
+
+func sortDiagnostics(items []Diagnostic) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Path != items[j].Path {
+			return items[i].Path < items[j].Path
+		}
+		if items[i].Code != items[j].Code {
+			return items[i].Code < items[j].Code
+		}
+		return items[i].Message < items[j].Message
+	})
+}
+
+func sortRejected(items []RejectedSkill) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Scope != items[j].Scope {
+			return scopeRank(items[i].Scope) > scopeRank(items[j].Scope)
+		}
+		return items[i].Path < items[j].Path
+	})
+}
+
+func MissingRequirements(item Skill, availableTools, capabilities map[string]bool) (tools, caps []string) {
+	for _, name := range item.RequiredTools {
+		if !availableTools[name] {
+			tools = append(tools, name)
+		}
+	}
+	for _, name := range item.RequiredCapabilities {
+		if !capabilities[name] {
+			caps = append(caps, name)
+		}
+	}
+	return tools, caps
+}
+
+func IsInvocable(item Skill, availableTools, capabilities map[string]bool) bool {
+	tools, caps := MissingRequirements(item, availableTools, capabilities)
+	return len(tools) == 0 && len(caps) == 0
 }
 
 func skillRef(scope Scope, name string) string {

@@ -767,6 +767,16 @@ func (b *Backend) AllSkills(ctx context.Context) ([]skill.Skill, error) {
 	return manager.ListAll(ctx, "", "")
 }
 
+func (b *Backend) InspectSkills(ctx context.Context) (skill.ScanResult, error) {
+	b.mu.RLock()
+	manager := b.skills
+	b.mu.RUnlock()
+	if manager == nil {
+		return skill.ScanResult{}, errors.New("skills are unavailable")
+	}
+	return manager.Inspect(ctx, "", "")
+}
+
 func (b *Backend) ProjectSkills(ctx context.Context, projectID string) ([]skill.Skill, error) {
 	b.mu.RLock()
 	skillManager := b.skills
@@ -782,6 +792,21 @@ func (b *Backend) ProjectSkills(ctx context.Context, projectID string) ([]skill.
 	return skillManager.ListAll(ctx, item.ID, item.Path)
 }
 
+func (b *Backend) InspectProjectSkills(ctx context.Context, projectID string) (skill.ScanResult, error) {
+	b.mu.RLock()
+	skillManager := b.skills
+	projectManager := b.projects
+	b.mu.RUnlock()
+	if skillManager == nil || projectManager == nil {
+		return skill.ScanResult{}, errors.New("project skills are unavailable")
+	}
+	item, ok := projectManager.Get(projectID)
+	if !ok {
+		return skill.ScanResult{}, project.ErrNotFound
+	}
+	return skillManager.Inspect(ctx, item.ID, item.Path)
+}
+
 func (b *Backend) SetSkillEnabled(ref string, enabled bool) error {
 	b.mu.RLock()
 	manager := b.skills
@@ -790,6 +815,16 @@ func (b *Backend) SetSkillEnabled(ref string, enabled bool) error {
 		return errors.New("skills are unavailable")
 	}
 	return manager.SetEnabled(ref, enabled)
+}
+
+func (b *Backend) SetSkillPinned(ref string, pinned bool) error {
+	b.mu.RLock()
+	manager := b.skills
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("skills are unavailable")
+	}
+	return manager.SetPinned(ref, pinned)
 }
 
 func (b *Backend) WebSearchSettings() (websearch.Settings, error) {

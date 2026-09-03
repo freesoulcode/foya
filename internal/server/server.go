@@ -97,7 +97,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/questions/{batch_id}/answer", s.handleAnswerQuestions)
 	s.mux.HandleFunc("POST /sessions/{id}/questions/{batch_id}/cancel", s.handleCancelQuestions)
 	s.mux.HandleFunc("GET /skills", s.handleListSkills)
+	s.mux.HandleFunc("GET /skills/inspect", s.handleInspectSkills)
 	s.mux.HandleFunc("PATCH /skills/{ref}", s.handleSetSkillEnabled)
+	s.mux.HandleFunc("PATCH /skills/{ref}/pinned", s.handleSetSkillPinned)
 	s.mux.HandleFunc("GET /agents", s.handleListAgents)
 	s.mux.HandleFunc("GET /settings/agent-limits", s.handleGetAgentLimits)
 	s.mux.HandleFunc("PUT /settings/agent-limits", s.handleUpdateAgentLimits)
@@ -118,6 +120,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
 	s.mux.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
 	s.mux.HandleFunc("GET /projects/{id}/skills", s.handleProjectSkills)
+	s.mux.HandleFunc("GET /projects/{id}/skills/inspect", s.handleInspectProjectSkills)
 	s.mux.HandleFunc("GET /projects/{id}/agents", s.handleProjectAgents)
 	s.mux.HandleFunc("GET /rules", s.handleListRules)
 	s.mux.HandleFunc("POST /rules", s.handleCreateRule)
@@ -796,6 +799,15 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) handleInspectSkills(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.InspectSkills(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "skills_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Server) handleListProjects(w http.ResponseWriter, _ *http.Request) {
 	items, err := s.backend.Projects()
 	if err != nil {
@@ -866,6 +878,19 @@ func (s *Server) handleProjectSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) handleInspectProjectSkills(w http.ResponseWriter, r *http.Request) {
+	items, err := s.backend.InspectProjectSkills(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "skills_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Server) handleSetSkillEnabled(w http.ResponseWriter, r *http.Request) {
 	var input protocol.SkillEnableRequest
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -878,6 +903,24 @@ func (s *Server) handleSetSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.backend.SetSkillEnabled(ref, input.Enabled); err != nil {
+		writeErr(w, http.StatusInternalServerError, "skill_update_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSetSkillPinned(w http.ResponseWriter, r *http.Request) {
+	var input protocol.SkillPinnedRequest
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	ref := strings.TrimSpace(r.PathValue("ref"))
+	if ref == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "skill ref is required")
+		return
+	}
+	if err := s.backend.SetSkillPinned(ref, input.Pinned); err != nil {
 		writeErr(w, http.StatusInternalServerError, "skill_update_failed", err.Error())
 		return
 	}

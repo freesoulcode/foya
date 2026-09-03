@@ -1529,16 +1529,30 @@ func (e *Engine) skillCatalog(ctx context.Context, sessionID string) []prompt.Sk
 		return nil
 	}
 	out := make([]prompt.SkillCatalogEntry, 0, len(items))
+	availableTools := tool.DefaultSkillAvailableTools()
+	capabilities := tool.DefaultSkillCapabilities()
 	for _, item := range items {
-		if !item.Enabled {
+		if !item.Enabled || !skill.IsInvocable(item, availableTools, capabilities) {
 			continue
 		}
+		resources := make([]prompt.SkillResourceEntry, 0, len(item.Resources))
+		for _, resource := range item.Resources {
+			resources = append(resources, prompt.SkillResourceEntry{
+				Path:      resource.Path,
+				MediaType: resource.MediaType,
+			})
+		}
 		out = append(out, prompt.SkillCatalogEntry{
-			Ref:          item.Ref,
-			Name:         item.Name,
-			Description:  item.Description,
-			Scope:        string(item.Scope),
-			AllowedTools: append([]string(nil), item.AllowedTools...),
+			Ref:                  item.Ref,
+			Name:                 item.Name,
+			Description:          item.Description,
+			Scope:                string(item.Scope),
+			Pinned:               item.Pinned,
+			AllowedTools:         append([]string(nil), item.AllowedTools...),
+			RequiredTools:        append([]string(nil), item.RequiredTools...),
+			RequiredCapabilities: append([]string(nil), item.RequiredCapabilities...),
+			Resources:            resources,
+			Body:                 item.Body,
 		})
 	}
 	return out

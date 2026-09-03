@@ -89,12 +89,15 @@ func TestParseSkillWithoutFrontmatterUsesDirectoryName(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "plain", "SKILL.md")
 	writeSkill(t, path, "# Plain\nDo the work.")
-	item, err := parseFile(path, ScopeGlobal)
+	item, diagnostics, err := parseFile(path, ScopeGlobal)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if item.Name != "plain" || item.Body != "# Plain\nDo the work." {
 		t.Fatalf("unexpected skill: %#v", item)
+	}
+	if len(diagnostics) == 0 || diagnostics[0].Code != "missing_frontmatter" {
+		t.Fatalf("expected missing frontmatter diagnostic, got %#v", diagnostics)
 	}
 }
 
@@ -154,6 +157,75 @@ review project`)
 	second, _ = manager.List(context.Background(), "project-second", secondPath)
 	if first[0].Enabled || !second[0].Enabled {
 		t.Fatalf("enablement leaked between projects: first=%v second=%v", first[0].Enabled, second[0].Enabled)
+	}
+}
+
+func TestReadResourceStaysInsideSkillPackage(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	data := filepath.Join(root, "data")
+	writeSkill(t, filepath.Join(home, ".foya", "skills", "pkg", "SKILL.md"), `---
+name: pkg
+description: packaged skill
+required-tools:
+  - read
+required-capabilities:
+  - filesystem
+---
+Read references/details.md`)
+	writeSkill(t, filepath.Join(home, ".foya", "skills", "pkg", "references", "details.md"), "Details.")
+	writeSkill(t, filepath.Join(home, ".foya", "outside.md"), "outside")
+
+	manager, err := NewManager(data, home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := manager.List(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || len(items[0].Resources) != 1 ||
+		items[0].RequiredTools[0] != "read" ||
+		items[0].RequiredCapabilities[0] != "filesystem" {
+		t.Fatalf("unexpected skill package metadata: %#v", items)
+	}
+	resource, err := manager.ReadResource(context.Background(), "", "", "pkg", "references/details.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource.Content != "Details." {
+		t.Fatalf("resource content = %q", resource.Content)
+	}
+	if _, err := manager.ReadResource(context.Background(), "", "", "pkg", "../outside.md"); err == nil {
+		t.Fatal("expected path traversal to be rejected")
+	}
+}
+
+func TestInvalidSkillDoesNotBreakDiscovery(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	writeSkill(t, filepath.Join(home, ".foya", "skills", "good", "SKILL.md"), `---
+name: good
+description: good skill
+---
+body`)
+	writeSkill(t, filepath.Join(home, ".foya", "skills", "bad", "SKILL.md"), `---
+name: bad
+description: broken
+`)
+	manager, err := NewManager(filepath.Join(root, "data"), home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.Inspect(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Skills) != 1 || report.Skills[0].Name != "good" {
+		t.Fatalf("unexpected valid skills: %#v", report.Skills)
+	}
+	if len(report.Rejected) != 1 || len(report.Diagnostics) == 0 {
+		t.Fatalf("expected rejected diagnostics, got %#v %#v", report.Rejected, report.Diagnostics)
 	}
 }
 

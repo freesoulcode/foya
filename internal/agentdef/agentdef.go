@@ -88,7 +88,7 @@ func ExplorerDefinition() Definition {
 	return builtinDefinition(
 		"explorer",
 		"Inspect the codebase and return evidence-backed findings without changing files.",
-		[]string{"read", "skill_search", "skill_load"},
+		[]string{"read", "skill_search", "skill_load", "skill_read_resource"},
 		"Investigate the delegated codebase question. Read relevant files and return concise findings with concrete paths and symbols. Do not modify files, run commands, ask the user questions, or delegate to another agent.",
 	)
 }
@@ -97,7 +97,7 @@ func ResearcherDefinition() Definition {
 	return builtinDefinition(
 		"researcher",
 		"Research external sources and return cited findings.",
-		[]string{"web_search", "web_fetch", "skill_search", "skill_load"},
+		[]string{"web_search", "web_fetch", "skill_search", "skill_load", "skill_read_resource"},
 		"Research the delegated topic using authoritative external sources. Return concise findings with source URLs, uncertainties, and clear separation between sourced facts and inference. Do not modify files, ask the user questions, or delegate to another agent.",
 	)
 }
@@ -108,7 +108,7 @@ func WorkerDefinition() Definition {
 		"Complete an implementation task, including code changes and verification.",
 		[]string{
 			"read", "bash", "write", "edit",
-			"skill_search", "skill_load",
+			"skill_search", "skill_load", "skill_read_resource",
 		},
 		"Complete the delegated implementation task end to end. Inspect relevant code before editing, keep changes scoped, and run focused verification. Other agents may share the workspace, so do not revert changes you did not make. Do not ask the user questions or delegate to another agent.",
 	)
