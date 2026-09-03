@@ -12,6 +12,7 @@ const props = defineProps<{
   sessionId: string;
   commandId: string;
   active: boolean;
+  command?: BackgroundCommand;
 }>();
 
 const { theme } = useTheme();
@@ -22,7 +23,6 @@ const stopping = ref(false);
 let terminal: Terminal | null = null;
 let fit: FitAddon | null = null;
 let resizeObserver: ResizeObserver | null = null;
-let poll: number | undefined;
 let renderedStdout = "";
 let renderedStderr = "";
 let stderrStarted = false;
@@ -120,16 +120,11 @@ async function refresh() {
     const next = await api.getBackgroundCommand(props.sessionId, props.commandId);
     error.value = "";
     render(next);
-    if (!next.running && poll !== undefined) {
-      window.clearInterval(poll);
-      poll = undefined;
-    }
   } catch (cause) {
     const message = String(cause);
     error.value = message.includes("background_command_not_found")
       ? "命令记录已结束或内核已重启"
       : message;
-    if (message.includes("background_command_not_found")) stopPolling();
   }
 }
 
@@ -145,39 +140,35 @@ async function stop() {
   }
 }
 
-function startPolling() {
-  if (poll !== undefined) window.clearInterval(poll);
-  poll = window.setInterval(() => void refresh(), 500);
-}
-
-function stopPolling() {
-  if (poll === undefined) return;
-  window.clearInterval(poll);
-  poll = undefined;
-}
-
 watch(theme, (value) => {
   if (terminal) terminal.options.theme = terminalTheme(value);
 });
 
 watch(
+  () => props.command,
+  (command) => {
+    if (command) {
+      error.value = "";
+      render(command);
+    }
+  }
+);
+
+watch(
   () => props.active,
   async (active) => {
     if (!active) {
-      stopPolling();
       return;
     }
     await nextTick();
     ensureTerminal();
     fit?.fit();
     await refresh();
-    if (snapshot.value?.running) startPolling();
   },
   { immediate: true }
 );
 
 onBeforeUnmount(() => {
-  stopPolling();
   resizeObserver?.disconnect();
   terminal?.dispose();
 });

@@ -533,6 +533,22 @@ function handleEvent(sessionId: string, data: string) {
     case "workflow_updated":
       workflowsBySession.value[sessionId] = ev.payload as WorkflowRecord;
       break;
+    case "background_command_updated": {
+      const command = ev.payload as BackgroundCommand;
+      if (!command?.command_id) break;
+      const current = backgroundCommandsBySession.value[sessionId] ?? [];
+      const index = current.findIndex(
+        (item) => item.command_id === command.command_id
+      );
+      if (index >= 0) {
+        const next = [...current];
+        next[index] = command;
+        backgroundCommandsBySession.value[sessionId] = next;
+      } else {
+        backgroundCommandsBySession.value[sessionId] = [command, ...current];
+      }
+      break;
+    }
     case "error": {
       // 优先填入当前回合的空 assistant 气泡,避免多出一条错误消息。
       delete runningSessions.value[sessionId];
@@ -957,29 +973,6 @@ async function revealToolCommand(
   return undefined;
 }
 
-async function refreshBackgroundCommands(sessionId = activeId.value) {
-  if (!sessionId) return;
-  try {
-    const pending = (backgroundCommandsBySession.value[sessionId] ?? []).filter(
-      (item) => item.command_id.startsWith("promoting:")
-    );
-    const running = await api.listBackgroundCommands(sessionId);
-    backgroundCommandsBySession.value[sessionId] = [
-      ...pending,
-      ...running.filter(
-        (item) =>
-          !pending.some(
-            (candidate) =>
-              candidate.command_id === item.command_id ||
-              candidate.command === item.command
-          )
-      ),
-    ];
-  } catch (e) {
-    console.error("刷新后台命令失败:", e);
-  }
-}
-
 async function stopBackgroundCommand(commandId: string) {
   const id = activeId.value;
   if (!id) return;
@@ -1218,7 +1211,6 @@ export function useKernel() {
     cancelTool,
     backgroundTool,
     revealToolCommand,
-    refreshBackgroundCommands,
     stopBackgroundCommand,
     ensureSession,
     updateSession,

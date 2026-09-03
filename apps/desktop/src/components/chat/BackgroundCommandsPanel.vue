@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import {
   ChevronRightIcon,
   LoaderCircleIcon,
@@ -9,9 +9,13 @@ import {
 } from "@lucide/vue";
 import type { BackgroundCommand } from "@/lib/api";
 
-defineProps<{
+const props = defineProps<{
   commands: BackgroundCommand[];
 }>();
+
+const runningCommands = computed(() =>
+  props.commands.filter((command) => command.running)
+);
 
 const emit = defineEmits<{
   (event: "stop", commandId: string): void;
@@ -26,7 +30,7 @@ function output(command: BackgroundCommand): string {
 
 <template>
   <section
-    v-if="commands.length"
+    v-if="runningCommands.length"
     class="shrink-0 px-4 pt-2"
     aria-label="后台命令"
   >
@@ -43,14 +47,14 @@ function output(command: BackgroundCommand): string {
         />
         <TerminalIcon class="size-4 shrink-0 text-muted-foreground" />
         <span class="min-w-0 flex-1 truncate text-sm font-medium">
-          {{ commands.length }} 个后台命令
+          {{ runningCommands.length }} 个后台命令
         </span>
         <span class="shrink-0 text-xs text-muted-foreground">正在运行</span>
       </button>
 
       <div v-if="expanded" class="max-h-64 overflow-y-auto border-t border-border">
         <article
-          v-for="command in commands"
+          v-for="command in runningCommands"
           :key="command.command_id"
           class="border-b border-border px-3 py-2.5 last:border-b-0"
         >

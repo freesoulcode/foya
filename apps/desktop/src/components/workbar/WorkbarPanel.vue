@@ -16,6 +16,7 @@ import type {
   BrowserActionRequest,
   BrowserActionResult,
   BrowserElementSelection,
+  BackgroundCommand,
   ChatMessage,
 } from "@/lib/api";
 import {
@@ -39,6 +40,7 @@ const props = defineProps<{
   sessionId?: string;
   projectPath?: string;
   messages: ChatMessage[];
+  backgroundCommands?: BackgroundCommand[];
   browserActions?: BrowserActionRequest[];
   obscured?: boolean;
   ensureSession: () => Promise<string>;
@@ -410,6 +412,11 @@ watch(
             class="absolute inset-0"
             :session-id="tab.sessionId"
             :command-id="tab.commandId"
+            :command="
+              backgroundCommands?.find(
+                (command) => command.command_id === tab.commandId
+              )
+            "
             :active="open && activeTabId === tab.id"
           />
           <BrowserPanel

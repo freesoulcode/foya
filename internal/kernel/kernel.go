@@ -87,6 +87,20 @@ func New(cfg config.Config) (*App, error) {
 	}
 	executionRunner := sandbox.NewRunner()
 	backgroundCommands := tool.NewBackgroundCommandManager(executionRunner)
+	backgroundCommands.SetNotifier(func(snapshot tool.BackgroundCommandSnapshot) {
+		ev := event.Event{
+			Kind:    event.KindBackgroundCommandUpdated,
+			Session: snapshot.SessionID,
+			Time:    time.Now(),
+			Payload: snapshot,
+		}
+		seq, err := log.Append(context.Background(), ev)
+		if err != nil {
+			return
+		}
+		ev.Seq = seq
+		_ = bus.PublishMustDeliver(context.Background(), "session:"+snapshot.SessionID, ev)
+	})
 	tools := tool.NewRegistry()
 	for _, canvasTool := range tool.CanvasTools(canvasStore, func(ctx context.Context, doc canvas.Document) {
 		ev := event.Event{Seq: event.Seq(doc.Revision), Kind: event.KindCanvasUpdated, Session: doc.ID, Time: time.Now(), Payload: doc}

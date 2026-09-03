@@ -69,15 +69,38 @@ type backgroundCommandManager struct {
 	runner   sandbox.ManagedRunner
 	commands map[string]*backgroundCommand
 	active   map[string]*backgroundCommand
+	notify   func(BackgroundCommandSnapshot)
 }
 
-func NewBackgroundCommandManager(runner sandbox.Runner) BackgroundCommandManager {
+func NewBackgroundCommandManager(runner sandbox.Runner) *backgroundCommandManager {
 	managed, _ := runner.(sandbox.ManagedRunner)
 	return &backgroundCommandManager{
 		runner:   managed,
 		commands: make(map[string]*backgroundCommand),
 		active:   make(map[string]*backgroundCommand),
 	}
+}
+
+func (m *backgroundCommandManager) SetNotifier(notify func(BackgroundCommandSnapshot)) {
+	m.mu.Lock()
+	m.notify = notify
+	m.mu.Unlock()
+}
+
+func (m *backgroundCommandManager) notifySnapshot(snapshot BackgroundCommandSnapshot) {
+	m.mu.RLock()
+	notify := m.notify
+	m.mu.RUnlock()
+	if notify != nil {
+		notify(snapshot)
+	}
+}
+
+func (m *backgroundCommandManager) watch(item *backgroundCommand) {
+	go func() {
+		<-item.process.Done()
+		m.notifySnapshot(item.snapshot())
+	}()
 }
 
 func (m *backgroundCommandManager) Start(
@@ -90,7 +113,10 @@ func (m *backgroundCommandManager) Start(
 	if err != nil {
 		return BackgroundCommandSnapshot{}, err
 	}
-	return item.snapshot(), nil
+	snapshot := item.snapshot()
+	m.notifySnapshot(snapshot)
+	m.watch(item)
+	return snapshot, nil
 }
 
 func (m *backgroundCommandManager) RunForeground(
@@ -119,6 +145,7 @@ func (m *backgroundCommandManager) RunForeground(
 		result, waitErr := item.process.Wait()
 		item.cancel()
 		snapshot := item.snapshot()
+		m.notifySnapshot(snapshot)
 		if snapshot.BackgroundedBy != "" {
 			return result, snapshot, true, waitErr
 		}
@@ -155,6 +182,8 @@ func (m *backgroundCommandManager) Promote(
 	item.mu.Lock()
 	item.backgroundedBy = "user"
 	item.mu.Unlock()
+	m.notifySnapshot(item.snapshot())
+	m.watch(item)
 	item.promote <- struct{}{}
 	return item.snapshot(), nil
 }
@@ -260,7 +289,9 @@ func (m *backgroundCommandManager) Stop(
 		return BackgroundCommandSnapshot{}, err
 	}
 	_, _ = item.process.Wait()
-	return item.snapshot(), nil
+	snapshot := item.snapshot()
+	m.notifySnapshot(snapshot)
+	return snapshot, nil
 }
 
 func (m *backgroundCommandManager) ClearSession(sessionID string) {

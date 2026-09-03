@@ -50,6 +50,7 @@ const (
 	KindCanvasCreated          Kind = "canvas_created"
 	KindCanvasUpdated          Kind = "canvas_updated"
 	KindCanvasDeleted          Kind = "canvas_deleted"
+	KindBackgroundCommandUpdated Kind = "background_command_updated"
 	KindError                  Kind = "error"
 )
 

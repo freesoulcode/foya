@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, onMounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useKernel } from "@/composables/useKernel";
 import { useLinkPreference } from "@/composables/useLinkPreference";
@@ -76,7 +76,6 @@ const {
   cancelTool,
   backgroundTool,
   revealToolCommand,
-  refreshBackgroundCommands,
   stopBackgroundCommand,
   updateSession,
   renameSession,
@@ -400,19 +399,8 @@ async function onPinProject(id: string, pinned: boolean) {
   }
 }
 
-let backgroundCommandPoll: number | undefined;
 onMounted(() => {
   void connect();
-  backgroundCommandPoll = window.setInterval(() => {
-    if (!studioActive.value && !settingsActive.value && activeId.value) {
-      void refreshBackgroundCommands(activeId.value);
-    }
-  }, 1000);
-});
-onBeforeUnmount(() => {
-  if (backgroundCommandPoll !== undefined) {
-    window.clearInterval(backgroundCommandPoll);
-  }
 });
 </script>
 
@@ -554,6 +542,7 @@ onBeforeUnmount(() => {
         :session-id="activeId || undefined"
         :project-path="projectPath"
         :messages="messages"
+        :background-commands="backgroundCommands"
         :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
         :ensure-session="ensureSession"
