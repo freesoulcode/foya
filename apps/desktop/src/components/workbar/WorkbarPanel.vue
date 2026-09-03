@@ -76,14 +76,15 @@ const {
 } = useWorkbar();
 const resizing = ref(false);
 const addMenuOpen = ref(false);
+const focused = ref(false);
 const panel = ref<HTMLElement | null>(null);
 const CHAT_MIN_WIDTH = 350;
 const CLOSE_VELOCITY_PX_PER_MS = 0.8;
 const VELOCITY_WINDOW_MS = 120;
 
 const panelStyle = computed(() => ({
-  width: `${width.value}px`,
-  maxWidth: `max(0px, calc(100% - ${CHAT_MIN_WIDTH}px))`,
+  width: focused.value ? "100%" : width.value + "px",
+  maxWidth: focused.value ? "none" : "max(0px, calc(100% - " + CHAT_MIN_WIDTH + "px))",
 }));
 const launcherVisible = computed(() => !activeTab.value);
 
@@ -107,7 +108,7 @@ const launcherItems = computed<
   { kind: "terminal", title: "终端", icon: TerminalIcon },
 ]);
 
-function addFeature(kind: WorkbarLaunchKind) {
+async function addFeature(kind: WorkbarLaunchKind) {
   addTab(kind);
   addMenuOpen.value = false;
 }
@@ -151,6 +152,7 @@ function entryDeleted(path: string, isDirectory: boolean) {
 }
 
 function closeWorkbar() {
+	focused.value = false;
   addMenuOpen.value = false;
   setOpen(false);
 }
@@ -228,7 +230,7 @@ watch(
   <aside
     ref="panel"
     :class="[
-      'relative flex min-h-0 shrink-0 border-l border-border bg-background',
+      focused ? 'absolute inset-0 z-40 flex min-h-0 border-l border-border bg-background' : 'relative flex min-h-0 shrink-0 border-l border-border bg-background',
       !resizing && 'transition-[width] duration-150',
     ]"
     :style="panelStyle"

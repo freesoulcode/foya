@@ -15,6 +15,7 @@ import (
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
+	"github.com/freesoulcode/foya/internal/canvas"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -67,6 +68,10 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	canvasStore, err := canvas.NewStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	terminalManager := terminal.NewManager()
 	workflows, err := workflow.NewManager(cfg.DataDir)
 	if err != nil {
@@ -83,6 +88,12 @@ func New(cfg config.Config) (*App, error) {
 	executionRunner := sandbox.NewRunner()
 	backgroundCommands := tool.NewBackgroundCommandManager(executionRunner)
 	tools := tool.NewRegistry()
+	for _, canvasTool := range tool.CanvasTools(canvasStore, func(ctx context.Context, doc canvas.Document) {
+		ev := event.Event{Seq: event.Seq(doc.Revision), Kind: event.KindCanvasUpdated, Session: doc.ID, Time: time.Now(), Payload: doc}
+		_ = bus.PublishMustDeliver(ctx, "canvas:"+doc.ID, ev)
+	}) {
+		tools.Register(canvasTool)
+	}
 	tools.Register(tool.NewBashToolWithManager(gw, executionRunner, backgroundCommands))
 	tools.Register(tool.NewBashStatusTool(backgroundCommands))
 	tools.Register(tool.NewBashCancelTool(backgroundCommands))
@@ -227,6 +238,7 @@ func New(cfg config.Config) (*App, error) {
 	be.SetConnections(connections)
 	be.SetCapabilityManagers(skills, web, mcpManager)
 	be.SetArtifactStore(artifactStore)
+	be.SetCanvasStore(canvasStore)
 	be.SetAgentManager(agents)
 	be.SetSubAgentManager(subagents)
 	be.SetProjectManager(projects)

@@ -30,6 +30,7 @@ import BackgroundCommandsPanel from "@/components/chat/BackgroundCommandsPanel.v
 import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
+import StudioWorkspace from "@/components/studio/StudioWorkspace.vue";
 import { Button } from "@/components/ui/button";
 
 const { isMac } = usePlatform();
@@ -92,6 +93,7 @@ const {
 } = useKernel();
 
 const settingsActive = ref(false);
+const studioActive = ref(false);
 const projectCreateOpen = ref(false);
 const projectCreateBusy = ref(false);
 const projectCreateError = ref("");
@@ -402,7 +404,9 @@ let backgroundCommandPoll: number | undefined;
 onMounted(() => {
   void connect();
   backgroundCommandPoll = window.setInterval(() => {
-    if (activeId.value) void refreshBackgroundCommands(activeId.value);
+    if (!studioActive.value && !settingsActive.value && activeId.value) {
+      void refreshBackgroundCommands(activeId.value);
+    }
   }, 1000);
 });
 onBeforeUnmount(() => {
@@ -413,8 +417,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <StudioWorkspace
+    v-if="studioActive"
+    @close="studioActive = false"
+  />
+
   <SettingsPanel
-    v-if="settingsActive"
+    v-else-if="settingsActive"
     :active="settingsActive"
     :current-project-id="currentProjectID"
     @close="settingsActive = false"
@@ -439,9 +448,10 @@ onBeforeUnmount(() => {
       @rename-project="onRenameProject"
       @pin-project="onPinProject"
       @open-settings="settingsActive = true"
+      @open-studio="studioActive = true"
     />
 
-    <SidebarInset class="min-w-0 flex-row overflow-hidden">
+    <SidebarInset class="relative min-w-0 flex-row overflow-hidden">
       <div class="flex min-h-0 min-w-[350px] flex-1 flex-col">
         <AppTitleBar :session="activeSession" @rename="onRename" />
 

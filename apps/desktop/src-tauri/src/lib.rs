@@ -1396,6 +1396,125 @@ async fn delete_artifact(session_id: String, artifact_id: String) -> Result<(), 
     .map(|_| ())
 }
 
+#[cfg(unix)]
+#[tauri::command]
+async fn list_canvases(session_id: Option<String>) -> Result<String, String> {
+    let path = session_id
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("/canvases?session_id={}", encode_query_component(&value)))
+        .unwrap_or_else(|| "/canvases".to_string());
+    kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn create_canvas(
+    session_id: Option<String>,
+    project_id: Option<String>,
+    title: Option<String>,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "session_id": session_id.unwrap_or_default(),
+        "project_id": project_id.unwrap_or_default(),
+        "title": title.unwrap_or_default(),
+    })
+    .to_string();
+    kernel::request("POST", "/canvases", Some(&body)).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_canvas(canvas_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/canvases/{canvas_id}"), None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_canvas(canvas_id: String, patch: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "PATCH",
+        &format!("/canvases/{canvas_id}"),
+        Some(&patch.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_canvas(canvas_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/canvases/{canvas_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn upload_canvas_asset(
+    canvas_id: String,
+    name: String,
+    media_type: String,
+    data: Vec<u8>,
+) -> Result<String, String> {
+    let boundary = "foya-canvas-asset-boundary";
+    let safe_name = name.replace(['"', '\r', '\n'], "_");
+    let safe_type = media_type.replace(['\r', '\n'], "");
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_name}\"\r\nContent-Type: {safe_type}\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(&data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let response = kernel::request_bytes(
+        "POST",
+        &format!("/canvases/{canvas_id}/assets"),
+        Some(&format!("multipart/form-data; boundary={boundary}")),
+        body,
+    )
+    .await?;
+    String::from_utf8(response).map_err(|e| format!("画布资产响应不是 UTF-8: {e}"))
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn read_canvas_asset(canvas_id: String, asset_id: String) -> Result<Vec<u8>, String> {
+    kernel::request_bytes(
+        "GET",
+        &format!("/canvases/{canvas_id}/assets/{asset_id}"),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn generate_canvas_image(
+    canvas_id: String,
+    request: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/canvases/{canvas_id}/generate-image"),
+        Some(&request.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn subscribe_canvas_events(
+    canvas_id: String,
+    channel: Channel<String>,
+) -> Result<(), String> {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let path = format!("/canvases/{canvas_id}/events");
+        let _ = kernel::subscribe_path(&path, channel, ready_tx).await;
+    });
+    ready_rx
+        .await
+        .map_err(|_| "画布事件订阅在连接前意外结束".to_string())?
+}
+
 /// 编辑一条已完成的用户消息并从该位置创建新分支。
 #[cfg(unix)]
 #[tauri::command]
@@ -2742,6 +2861,64 @@ fn delete_artifact(_session_id: String, _artifact_id: String) -> Result<(), Stri
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn list_canvases(_session_id: Option<String>) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn create_canvas(
+    _session_id: Option<String>,
+    _project_id: Option<String>,
+    _title: Option<String>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn get_canvas(_canvas_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn update_canvas(_canvas_id: String, _patch: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn delete_canvas(_canvas_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn upload_canvas_asset(
+    _canvas_id: String,
+    _name: String,
+    _media_type: String,
+    _data: Vec<u8>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn read_canvas_asset(_canvas_id: String, _asset_id: String) -> Result<Vec<u8>, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn generate_canvas_image(
+    _canvas_id: String,
+    _request: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
+fn subscribe_canvas_events(_canvas_id: String, _channel: Channel<String>) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn edit_turn(
     _session_id: String,
     _message_seq: u64,
@@ -3301,6 +3478,15 @@ pub fn run() {
             upload_image,
             read_artifact,
             delete_artifact,
+            list_canvases,
+            create_canvas,
+            get_canvas,
+            update_canvas,
+            delete_canvas,
+            upload_canvas_asset,
+            read_canvas_asset,
+            generate_canvas_image,
+            subscribe_canvas_events,
             edit_turn,
             compact_session,
             list_queued_messages,

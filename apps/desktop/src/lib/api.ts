@@ -89,6 +89,81 @@ export interface AttachmentRef {
   sha256?: string;
 }
 
+export type CanvasNodeType =
+  | "image"
+  | "video"
+  | "text"
+  | "generation";
+
+export interface CanvasGenerationSpec {
+  connection_id?: string;
+  mode: "image" | "video";
+  model?: string;
+  aspect_ratio?: string;
+  quality?: string;
+  count?: number;
+  duration?: number;
+}
+
+export interface CanvasNode {
+  id: string;
+  type: CanvasNodeType;
+  title?: string;
+  asset_id?: string;
+  text?: string;
+  prompt?: string;
+  parent_id?: string;
+  status?: "idle" | "queued" | "running" | "success" | "error";
+  error?: string;
+  generation?: CanvasGenerationSpec;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
+  z_index: number;
+}
+
+export interface CanvasEdge {
+  id: string;
+  from_node_id: string;
+  to_node_id: string;
+  kind?: "reference" | "variation" | "output";
+}
+
+export interface CanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface CanvasAsset {
+  id: string;
+  name: string;
+  kind: "image" | "video";
+  media_type: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  sha256: string;
+  created_at: string;
+}
+
+export interface CanvasDocument {
+  id: string;
+  title: string;
+  session_id?: string;
+  project_id?: string;
+  revision: number;
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+  assets: CanvasAsset[];
+  viewport: CanvasViewport;
+  background: "dots" | "grid" | "blank";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface BranchEffect {
   tool: string;
   detail?: string;
@@ -718,6 +793,78 @@ export const api = {
 
   deleteArtifact: (sessionId: string, artifactId: string) =>
     invoke("delete_artifact", { sessionId, artifactId }),
+
+  listCanvases: () =>
+    invoke<string>("list_canvases", { sessionId: undefined }).then(
+      (result) => (JSON.parse(result) as CanvasDocument[]) ?? []
+    ),
+
+  createCanvas: (title?: string) =>
+    invoke<string>("create_canvas", {
+      sessionId: undefined,
+      projectId: undefined,
+      title,
+    }).then(
+      (result) => JSON.parse(result) as CanvasDocument
+    ),
+
+  getCanvas: (canvasId: string) =>
+    invoke<string>("get_canvas", { canvasId }).then(
+      (result) => JSON.parse(result) as CanvasDocument
+    ),
+
+  updateCanvas: (
+    canvasId: string,
+    patch: {
+      expected_revision: number;
+      title?: string;
+      nodes?: CanvasNode[];
+      edges?: CanvasEdge[];
+      viewport?: CanvasViewport;
+      background?: CanvasDocument["background"];
+    }
+  ) =>
+    invoke<string>("update_canvas", { canvasId, patch }).then(
+      (result) => JSON.parse(result) as CanvasDocument
+    ),
+
+  deleteCanvas: (canvasId: string) => invoke("delete_canvas", { canvasId }),
+
+  uploadCanvasAsset: async (canvasId: string, file: File) => {
+    const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+    return invoke<string>("upload_canvas_asset", {
+      canvasId,
+      name: file.name,
+      mediaType: file.type || "application/octet-stream",
+      data,
+    }).then(
+      (result) => JSON.parse(result) as { asset: CanvasAsset; canvas: CanvasDocument }
+    );
+  },
+
+  readCanvasAsset: (canvasId: string, assetId: string) =>
+    invoke<number[]>("read_canvas_asset", { canvasId, assetId }).then(
+      (bytes) => new Uint8Array(bytes)
+    ),
+
+  generateCanvasImage: (
+    canvasId: string,
+    request: {
+      expected_revision: number;
+      config_node_id: string;
+      output_node_id: string;
+      connection_id?: string;
+    }
+  ) =>
+    invoke<string>("generate_canvas_image", { canvasId, request }).then(
+      (result) => JSON.parse(result) as CanvasDocument
+    ),
+
+  subscribeCanvasEvents: (canvasId: string, onEvent: (data: string) => void) => {
+    const channel = new Channel<string>();
+    channel.onmessage = onEvent;
+    return invoke("subscribe_canvas_events", { canvasId, channel });
+  },
 
   editTurn: (
     sessionId: string,

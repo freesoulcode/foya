@@ -47,6 +47,9 @@ const (
 	KindAgentBudgetExceeded    Kind = "agent_budget_exceeded"
 	KindHookCompleted          Kind = "hook_completed"
 	KindWorkflowUpdated        Kind = "workflow_updated"
+	KindCanvasCreated          Kind = "canvas_created"
+	KindCanvasUpdated          Kind = "canvas_updated"
+	KindCanvasDeleted          Kind = "canvas_deleted"
 	KindError                  Kind = "error"
 )
 

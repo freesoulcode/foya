@@ -181,9 +181,7 @@ function selectTab(tabId: string) {
 }
 
 function setTabTitle(tabId: string, title: string) {
-  const tab = tabs.value.find(
-    (candidate) => candidate.id === tabId && candidate.kind === "browser"
-  );
+  const tab = tabs.value.find((candidate) => candidate.id === tabId);
   if (!tab) return;
   const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
   tab.title = normalized || "新标签页";

@@ -7,6 +7,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   PencilIcon,
+  PaletteIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
@@ -77,6 +78,7 @@ const emit = defineEmits<{
   (e: "rename-project", id: string, name: string): void;
   (e: "pin-project", id: string, pinned: boolean): void;
   (e: "open-settings"): void;
+  (e: "open-studio"): void;
 }>();
 
 function title(s: Session) {
@@ -245,6 +247,16 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               >
                 <PlusIcon />
                 <span>新建对话</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                class="no-drag"
+                tooltip="创作工作台"
+                @click="emit('open-studio')"
+              >
+                <PaletteIcon />
+                <span>创作工作台</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SessionSidebarItem
