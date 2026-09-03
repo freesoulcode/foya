@@ -21,14 +21,24 @@ import {
 import {
   api,
   type ConnectionConfig,
+  type ConnectionType,
   type ModelSettings,
   type ReasoningEffort,
+  type VideoProtocol,
 } from "@/lib/api";
 import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -47,8 +57,15 @@ const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high"];
 const connections = ref<ConnectionConfig[]>([]);
 const selectedID = ref<string | null>(null);
 const name = ref("");
+const connectionType = ref<ConnectionType>("language");
+const videoProtocol = ref<VideoProtocol | "">("");
 const baseURL = ref("");
 const modelSettings = ref<Record<string, ModelSettings>>({});
+const importedModels = ref<Set<string>>(new Set());
+const pendingImportedModels = ref<Set<string>>(new Set());
+const modelImportOpen = ref(false);
+const modelImportQuery = ref("");
+const modelImportLoading = ref(false);
 const modelContextWindowValue = ref("");
 const modelMaxInputTokensValue = ref("");
 const modelMaxOutputTokensValue = ref("");
@@ -83,9 +100,17 @@ const selectedConnectionError = computed(
   () => connectionErrors.value[selectedID.value ?? ""] ?? ""
 );
 const isNewConnection = computed(() => selectedID.value === null);
-const selectedConnectionModels = computed(() =>
+const availableConnectionModels = computed(() =>
   selectedID.value ? connectionModels.value[selectedID.value] ?? [] : []
 );
+const selectedConnectionModels = computed(() => {
+  const catalog = availableConnectionModels.value;
+  const imported = importedModels.value;
+  return [
+    ...catalog.filter((model) => imported.has(model)),
+    ...[...imported].filter((model) => !catalog.includes(model)),
+  ];
+});
 const filteredConnections = computed(() => {
   const query = connectionQuery.value.trim().toLowerCase();
   if (!query) return connections.value;
@@ -114,25 +139,76 @@ const visibleConnectionModels = computed(() =>
   filteredConnectionModels.value.slice(modelStartIndex.value, modelEndIndex.value)
 );
 
-const defaultModelSettings = (): ModelSettings => ({
+const defaultModelSettings = (type = connectionType.value): ModelSettings => ({
   image_input: true,
-  image_generation: true,
-  video_generation: true,
-  audio_generation: true,
-  tool_calling: true,
-  web_search: true,
+  image_generation: type === "image",
+  video_generation: type === "video",
+  audio_generation: false,
+  tool_calling: type === "language",
+  web_search: type === "language",
   reasoning_efforts: [...reasoningEfforts],
 });
 
 function modelCapabilities(model: string): ModelSettings {
-  const settings = modelSettings.value[model];
-  if (!settings || !settings.capabilities_configured) {
-    return {
-      ...settings,
-      ...defaultModelSettings(),
-    };
+  return {
+    ...defaultModelSettings(),
+    ...modelSettings.value[model],
+  };
+}
+
+function connectionTypeLabel(type?: ConnectionType) {
+  if (type === "language") return "语言";
+  if (type === "image") return "生图";
+  if (type === "video") return "视频";
+  return "未设置类型";
+}
+
+const filteredImportModels = computed(() => {
+  const query = modelImportQuery.value.trim().toLowerCase();
+  return query
+    ? availableConnectionModels.value.filter((model) => model.toLowerCase().includes(query))
+    : availableConnectionModels.value;
+});
+const allImportModelsSelected = computed(
+  () => filteredImportModels.value.length > 0 &&
+    filteredImportModels.value.every((model) => pendingImportedModels.value.has(model))
+);
+
+function setPendingModelImported(model: string, checked: boolean | "indeterminate") {
+  if (checked === "indeterminate") return;
+  const next = new Set(pendingImportedModels.value);
+  checked ? next.add(model) : next.delete(model);
+  pendingImportedModels.value = next;
+}
+
+function setAllModelsImported(checked: boolean | "indeterminate") {
+  if (checked === "indeterminate") return;
+  const next = new Set(pendingImportedModels.value);
+  for (const model of filteredImportModels.value) {
+    checked ? next.add(model) : next.delete(model);
   }
-  return settings;
+  pendingImportedModels.value = next;
+}
+
+async function openModelImporter() {
+  if (!selectedConnection.value) return;
+  modelImportLoading.value = true;
+  modelImportQuery.value = "";
+  pendingImportedModels.value = new Set(importedModels.value);
+  modelImportOpen.value = true;
+  await checkConnection(selectedConnection.value, true);
+  modelImportLoading.value = false;
+}
+
+async function confirmModelImport() {
+  importedModels.value = new Set(pendingImportedModels.value);
+  const nextSettings: Record<string, ModelSettings> = {};
+  for (const model of importedModels.value) {
+    nextSettings[model] = modelSettings.value[model] ?? defaultModelSettings();
+  }
+  modelSettings.value = nextSettings;
+  modelImportOpen.value = false;
+  await save();
 }
 
 function onModelListScroll(event: Event) {
@@ -175,8 +251,11 @@ function resetForm(connection?: ConnectionConfig) {
   modelListEl.value?.scrollTo({ top: 0 });
   showApiKey.value = false;
   name.value = connection?.name ?? "";
+  connectionType.value = connection?.type ?? "language";
+  videoProtocol.value = connection?.video_protocol ?? "";
   baseURL.value = connection?.base_url ?? "";
   modelSettings.value = { ...(connection?.model_settings ?? {}) };
+  importedModels.value = new Set(connection?.models ?? []);
   apiKey.value = connection?.api_key ?? "";
   error.value = "";
 }
@@ -186,8 +265,7 @@ function setModelCapability(model: string, checked: boolean | "indeterminate") {
   modelSettings.value = {
     ...modelSettings.value,
     [model]: {
-      ...(modelSettings.value[model] ?? {}),
-      capabilities_configured: true,
+      ...modelCapabilities(model),
       image_input: checked,
     },
   };
@@ -207,8 +285,7 @@ function setModelCapabilityFlag(
   modelSettings.value = {
     ...modelSettings.value,
     [model]: {
-      ...(modelSettings.value[model] ?? {}),
-      capabilities_configured: true,
+      ...modelCapabilities(model),
       [key]: checked,
     },
   };
@@ -276,7 +353,7 @@ async function checkConnection(connection: ConnectionConfig, force = false) {
     };
     connections.value = connections.value.map((item) =>
       item.id === id
-        ? { ...item, models: catalog.models, models_cached: true }
+        ? { ...item, models_cached: true }
         : item
     );
     connectionErrors.value = {
@@ -321,6 +398,7 @@ watch(
 function selectConnection(connection: ConnectionConfig) {
   resetForm(connection);
   connectionEditorOpen.value = true;
+  void checkConnection(connection, true);
 }
 
 function openModelEditor(model: string) {
@@ -351,16 +429,43 @@ function startNewConnection() {
   connectionEditorOpen.value = true;
 }
 
+function updateConnectionType(value: unknown) {
+  if (value !== "language" && value !== "image" && value !== "video") return;
+  connectionType.value = value;
+  videoProtocol.value = "";
+  modelSettings.value = Object.fromEntries(
+    [...importedModels.value].map((model) => [model, defaultModelSettings(value)])
+  );
+}
+
+function updateVideoProtocol(value: unknown) {
+  if (value !== "seedance" && value !== "minimax_h3") return;
+  videoProtocol.value = value;
+  importedModels.value = new Set();
+  modelSettings.value = {};
+  if (selectedID.value) {
+    connectionModels.value = { ...connectionModels.value, [selectedID.value]: [] };
+  }
+}
+
 function formPayload(): ConnectionConfig {
+  const importedSettings = Object.fromEntries(
+    [...importedModels.value].map((model) => [
+      model,
+      modelSettings.value[model] ?? defaultModelSettings(),
+    ])
+  );
   return {
     ...(selectedID.value ? { id: selectedID.value } : {}),
     name: name.value.trim() || "未命名连接",
+    type: connectionType.value,
+    video_protocol: connectionType.value === "video" ? videoProtocol.value || undefined : undefined,
     kind: "openai",
     auth_kind: "api_key",
     base_url: baseURL.value.trim(),
-    model_settings: modelSettings.value,
-    models: selectedConnection.value?.models ?? [],
-    models_cached: selectedConnection.value?.models_cached ?? false,
+    model_settings: importedSettings,
+    models: [...importedModels.value],
+    models_cached: true,
     sort_order: selectedConnection.value?.sort_order ?? connections.value.length,
     ...(apiKey.value.trim() ? { api_key: apiKey.value.trim() } : {}),
   };
@@ -557,7 +662,7 @@ void loadConnections();
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-[13px] font-medium">{{ connection.name }}</span>
                 <span class="block truncate text-[11px] text-muted-foreground">
-                  {{ connection.base_url }}
+                  {{ connectionTypeLabel(connection.type) }} · {{ connection.base_url }}
                 </span>
               </span>
               <span
@@ -635,28 +740,57 @@ void loadConnections();
             >
               <Trash2Icon class="size-4" />
             </Button>
-            <Button :disabled="saving || deleting || loading" @click="save">
+            <Button :disabled="saving || deleting || loading || (connectionType === 'video' && !videoProtocol)" @click="save">
               {{ saving ? "保存中..." : isNewConnection ? "添加连接" : "保存" }}
             </Button>
           </div>
         </div>
         <div v-if="!modelEditor" class="flex min-h-0 max-w-4xl flex-1 flex-col gap-5 overflow-hidden py-6">
-          <div class="space-y-1.5">
-            <Label for="connection-name">名称</Label>
+          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+            <Label for="connection-name" class="text-sm text-muted-foreground">名称</Label>
             <Input id="connection-name" v-model="name" class="h-9 text-sm" placeholder="例如：OpenAI 个人" :disabled="loading" />
           </div>
-          <div class="space-y-1.5">
-            <Label for="connection-url">Base URL</Label>
+          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+            <Label class="text-sm text-muted-foreground">连接类型</Label>
+            <Select :model-value="connectionType" @update:model-value="updateConnectionType">
+              <SelectTrigger class="h-9 w-full">
+                <SelectValue placeholder="选择连接类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="language">语言模型</SelectItem>
+                <SelectItem value="image">生图模型</SelectItem>
+                <SelectItem value="video">视频模型</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div v-if="connectionType === 'video'" class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+            <Label class="text-sm text-muted-foreground">视频协议</Label>
+            <Select :model-value="videoProtocol" @update:model-value="updateVideoProtocol">
+              <SelectTrigger class="h-9 w-full">
+                <SelectValue placeholder="选择视频协议" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="seedance">Seedance</SelectItem>
+                <SelectItem value="minimax_h3">MiniMax H3</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+            <Label for="connection-url" class="text-sm text-muted-foreground">Base URL</Label>
             <Input
               id="connection-url"
               v-model="baseURL"
-              placeholder="https://api.openai.com/v1"
+              :placeholder="connectionType === 'video'
+                ? videoProtocol === 'minimax_h3'
+                  ? 'https://api.minimax.io'
+                  : 'https://ark.cn-beijing.volces.com'
+                : 'https://api.openai.com/v1'"
               class="h-9 text-sm"
               :disabled="loading"
             />
           </div>
-          <div class="space-y-1.5">
-            <Label for="connection-key">API Key</Label>
+          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
+            <Label for="connection-key" class="text-sm text-muted-foreground">API Key</Label>
             <div class="relative">
               <Input
                 id="connection-key"
@@ -686,11 +820,11 @@ void loadConnections();
               <Button
                 size="sm"
                 variant="outline"
-                :disabled="loading || saving"
-                @click="selectedConnection && checkConnection(selectedConnection, true)"
+                :disabled="loading || saving || isNewConnection || (connectionType === 'video' && !videoProtocol)"
+                @click="openModelImporter"
               >
-                <RefreshCwIcon class="size-4" />
-                获取模型列表
+                <PlusIcon class="size-4" />
+                获取并添加模型
               </Button>
             </div>
             <div v-if="selectedConnectionModels.length" class="flex min-h-0 flex-1 flex-col gap-2">
@@ -699,8 +833,8 @@ void loadConnections();
                 <Input
                   v-model="modelQuery"
                   class="h-9 pl-8 text-sm"
-                  placeholder="搜索模型"
-                  aria-label="搜索模型"
+                  placeholder="搜索已导入模型"
+                  aria-label="搜索已导入模型"
                 />
               </div>
               <div
@@ -785,6 +919,9 @@ void loadConnections();
                 </p>
               </div>
             </div>
+            <div v-else class="grid min-h-32 flex-1 place-items-center text-xs text-muted-foreground">
+              {{ isNewConnection ? "先建立连接，再获取模型列表" : "尚未导入模型" }}
+            </div>
           </div>
         </div>
         <div v-else class="max-w-4xl space-y-7 py-6">
@@ -803,7 +940,7 @@ void loadConnections();
                 />
                 <span class="text-sm">支持图片输入</span>
               </label>
-                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                  <label v-if="connectionType === 'image'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
                       :model-value="modelCapabilities(modelEditor).image_generation"
                       :disabled="loading"
@@ -812,7 +949,7 @@ void loadConnections();
                     <ImagePlusIcon class="size-4 text-muted-foreground" />
                     <span class="text-sm">生成图片</span>
                   </label>
-                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                  <label v-if="connectionType === 'video'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
                       :model-value="modelCapabilities(modelEditor).video_generation"
                       :disabled="loading"
@@ -821,7 +958,7 @@ void loadConnections();
                     <FilmIcon class="size-4 text-muted-foreground" />
                     <span class="text-sm">生成视频</span>
                   </label>
-                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                  <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
                       :model-value="modelCapabilities(modelEditor).audio_generation"
                       :disabled="loading"
@@ -830,7 +967,7 @@ void loadConnections();
                     <AudioLinesIcon class="size-4 text-muted-foreground" />
                     <span class="text-sm">生成音频</span>
                   </label>
-              <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+              <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
                   :model-value="modelCapabilities(modelEditor).tool_calling"
                   :disabled="loading"
@@ -838,7 +975,7 @@ void loadConnections();
                 />
                 <span class="text-sm">支持工具调用</span>
               </label>
-              <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+              <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
                   :model-value="modelCapabilities(modelEditor).web_search"
                   :disabled="loading"
@@ -849,7 +986,7 @@ void loadConnections();
             </div>
           </section>
 
-          <section class="space-y-3">
+          <section v-if="connectionType === 'language'" class="space-y-3">
             <h5 class="text-sm font-medium">思考强度</h5>
             <div class="flex flex-wrap gap-2">
               <label
@@ -867,7 +1004,7 @@ void loadConnections();
             </div>
           </section>
 
-          <section class="grid max-w-4xl gap-4 sm:grid-cols-3">
+          <section v-if="connectionType === 'language'" class="grid max-w-4xl gap-4 sm:grid-cols-3">
             <div class="space-y-1.5">
               <Label for="model-context-window">上下文长度</Label>
               <Input
@@ -934,6 +1071,60 @@ void loadConnections();
       </section>
     </div>
   </SettingsPage>
+
+  <Dialog v-model:open="modelImportOpen">
+    <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col">
+      <DialogHeader>
+        <DialogTitle>导入模型</DialogTitle>
+      </DialogHeader>
+      <div class="flex min-h-0 flex-1 flex-col gap-3">
+        <div class="flex items-center gap-3">
+          <div class="relative min-w-0 flex-1">
+            <SearchIcon class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              v-model="modelImportQuery"
+              class="h-9 pl-8 text-sm"
+              placeholder="搜索服务端模型"
+              aria-label="搜索服务端模型"
+            />
+          </div>
+          <label class="flex shrink-0 items-center gap-2 text-sm">
+            <Checkbox
+              :model-value="allImportModelsSelected"
+              :disabled="modelImportLoading"
+              @update:model-value="setAllModelsImported"
+            />
+            全选
+          </label>
+        </div>
+        <div class="min-h-64 flex-1 overflow-y-auto border-y border-border">
+          <label
+            v-for="model in filteredImportModels"
+            :key="model"
+            class="flex h-10 cursor-pointer items-center gap-3 px-2 hover:bg-muted/50"
+          >
+            <Checkbox
+              :model-value="pendingImportedModels.has(model)"
+              @update:model-value="setPendingModelImported(model, $event)"
+            />
+            <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
+          </label>
+          <div v-if="modelImportLoading" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
+            正在获取模型列表...
+          </div>
+          <div v-else-if="filteredImportModels.length === 0" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
+            没有可导入的模型
+          </div>
+        </div>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" @click="modelImportOpen = false">取消</Button>
+        <Button :disabled="modelImportLoading" @click="confirmModelImport">
+          导入 {{ pendingImportedModels.size }} 个模型
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
 
   <Teleport to="body">
     <div

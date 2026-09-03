@@ -204,7 +204,6 @@ export interface ModelSettings {
   context_window?: number;
   max_input_tokens?: number;
   max_output_tokens?: number;
-  capabilities_configured?: boolean;
   image_input: boolean;
   image_generation: boolean;
   video_generation: boolean;
@@ -404,9 +403,14 @@ export interface ChatMessage {
 }
 
 // Connection 是一个独立模型账号或端点。API Key 仅在写入时携带。
+export type ConnectionType = "language" | "image" | "video";
+export type VideoProtocol = "seedance" | "minimax_h3";
+
 export interface ConnectionConfig {
   id?: string;
   name: string;
+  type: ConnectionType;
+  video_protocol?: VideoProtocol;
   kind: string;
   auth_kind: "api_key";
   base_url: string;
@@ -416,6 +420,18 @@ export interface ConnectionConfig {
   api_key?: string;
   has_api_key?: boolean;
   sort_order: number;
+}
+
+export interface ModelRef {
+  connection_id: string;
+  model: string;
+}
+
+export interface DefaultModels {
+  language: ModelRef;
+  fast: ModelRef;
+  image: ModelRef;
+  video: ModelRef;
 }
 
 export interface SkillInfo {
@@ -867,6 +883,19 @@ export const api = {
       (result) => JSON.parse(result) as CanvasDocument
     ),
 
+  generateCanvasVideo: (
+    canvasId: string,
+    request: {
+      expected_revision: number;
+      config_node_id: string;
+      output_node_id: string;
+      connection_id?: string;
+    }
+  ) =>
+    invoke<string>("generate_canvas_video", { canvasId, request }).then(
+      (result) => JSON.parse(result) as CanvasDocument
+    ),
+
   subscribeCanvasEvents: (canvasId: string, onEvent: (data: string) => void) => {
     const channel = new Channel<string>();
     channel.onmessage = onEvent;
@@ -990,6 +1019,16 @@ export const api = {
           capabilities: result.capabilities ?? {},
         } satisfies ConnectionModelCatalog;
       }
+    ),
+
+  getDefaultModels: () =>
+    invoke<string>("get_default_models").then(
+      (r) => JSON.parse(r) as DefaultModels
+    ),
+
+  updateDefaultModels: (defaults: DefaultModels) =>
+    invoke<string>("update_default_models", { defaults }).then(
+      (r) => JSON.parse(r) as DefaultModels
     ),
 
   listSkills: () =>

@@ -9,10 +9,10 @@ import {
   LoaderCircleIcon,
   MousePointer2Icon,
   Redo2Icon,
-  RotateCcwIcon,
   SparklesIcon,
   Trash2Icon,
   TypeIcon,
+  Undo2Icon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "@lucide/vue";
@@ -40,6 +40,7 @@ import {
   type CanvasEdge,
   type CanvasNode,
   type ConnectionConfig,
+  type DefaultModels,
 } from "@/lib/api";
 
 const props = defineProps<{ projectId: string }>();
@@ -56,7 +57,9 @@ const fileInput = ref<HTMLInputElement>();
 const project = ref<CanvasDocument>();
 const loading = ref(true);
 const saving = ref(false);
+const showSaving = ref(false);
 const error = ref("");
+const saveError = ref("");
 const tool = ref<Tool>("select");
 const selected = ref<Set<string>>(new Set());
 const selectedEdge = ref("");
@@ -65,6 +68,7 @@ const connectionTarget = ref("");
 const connectionCursor = ref<{ x: number; y: number }>();
 const assetURLs = ref<Record<string, string>>({});
 const connections = ref<ConnectionConfig[]>([]);
+const defaultModels = ref<DefaultModels>();
 const history = ref<Snapshot[]>([]);
 const future = ref<Snapshot[]>([]);
 const marquee = ref<{ x: number; y: number; width: number; height: number }>();
@@ -73,10 +77,12 @@ const pan = reactive({ x: 160, y: 120 });
 const zoom = ref(1);
 let mounted = true;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let saveIndicatorTimer: ReturnType<typeof setTimeout> | undefined;
 let saveAgain = false;
 
 const nodes = computed(() => project.value?.nodes ?? []);
 const edges = computed(() => project.value?.edges ?? []);
+const displayError = computed(() => error.value || saveError.value);
 const assets = computed(
   () => new Map((project.value?.assets ?? []).map((asset) => [asset.id, asset]))
 );
@@ -86,22 +92,28 @@ const configuredConnections = computed(() =>
       Boolean(connection.id)
   )
 );
-const imageGenerationConnections = computed(() =>
-  configuredConnections.value.filter((connection) =>
+function generationConnections(mode: "image" | "video") {
+  return configuredConnections.value.filter((connection) =>
+    connection.type === mode &&
+    (mode !== "video" || Boolean(connection.video_protocol)) &&
     (connection.models ?? []).some(
       (model) => {
         const settings = connection.model_settings?.[model];
-        return !settings?.capabilities_configured || settings.image_generation;
+        return settings
+          ? (mode === "image" ? settings.image_generation : settings.video_generation)
+          : true;
       }
     )
-  )
-);
-function imageGenerationModels(connectionID?: string) {
+  );
+}
+function generationModels(mode: "image" | "video", connectionID?: string) {
   const connection = configuredConnections.value.find((item) => item.id === connectionID);
   return (connection?.models ?? []).filter(
     (model) => {
       const settings = connection?.model_settings?.[model];
-      return !settings?.capabilities_configured || settings.image_generation;
+      return settings
+        ? (mode === "image" ? settings.image_generation : settings.video_generation)
+        : true;
     }
   );
 }
@@ -170,6 +182,29 @@ function scheduleSave(delay = 180) {
   saveTimer = setTimeout(() => void persist(), delay);
 }
 
+function formatError(reason: unknown, fallback = "操作失败") {
+  const raw = reason instanceof Error ? reason.message : String(reason);
+  let message = raw;
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const payload = JSON.parse(raw.slice(jsonStart)) as { code?: string; message?: string };
+      if (payload.message) message = payload.message;
+    } catch {
+      // Keep the original transport error when the suffix is not valid JSON.
+    }
+  }
+  if (message.includes("TLS handshake timeout")) return "无法连接生成服务：TLS 握手超时";
+  if (message.includes("can't assign requested address")) return "无法连接生成服务：网络接口已变化，请检查代理或网络";
+  if (message.includes("upstream_error")) return "生成服务的上游暂不可用，请稍后重试或更换连接";
+  if (message.includes("fail_submit_task")) return "生成服务拒绝了任务，请检查模型、素材和账户状态";
+  if (message.includes("does not support video generation")) return "当前模型未启用视频生成能力";
+  if (message.includes("unsupported video protocol")) return "当前视频连接尚未配置协议";
+  if (message.includes("HTTP 401") || message.includes("HTTP 403")) return "生成服务鉴权失败，请检查 API Key";
+  if (message.includes("HTTP 429")) return "生成服务请求过多，请稍后重试";
+  return message || fallback;
+}
+
 async function persist() {
   const current = project.value;
   if (!current) return;
@@ -178,6 +213,10 @@ async function persist() {
     return;
   }
   saving.value = true;
+  clearTimeout(saveIndicatorTimer);
+  saveIndicatorTimer = setTimeout(() => {
+    if (saving.value) showSaving.value = true;
+  }, 350);
   const payload = {
     expected_revision: current.revision,
     title: current.title,
@@ -189,19 +228,25 @@ async function persist() {
   try {
     const updated = await api.updateCanvas(current.id, payload);
     if (!mounted || project.value?.id !== updated.id) return;
-    project.value = {
-      ...updated,
-      nodes: payload.nodes,
-      edges: payload.edges,
-      viewport: payload.viewport,
-      background: payload.background,
-    };
-    emit("project-change", project.value);
-    error.value = "";
+    current.revision = updated.revision;
+    current.updated_at = updated.updated_at;
+    current.assets = updated.assets;
+    emit("project-change", { ...current });
+    saveError.value = "";
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
+    saveError.value = formatError(reason, "保存画布失败");
+    if (String(reason).includes("409") || String(reason).includes("canvas_revision_conflict")) {
+      try {
+        project.value = await api.getCanvas(props.projectId);
+        await loadAssets();
+      } catch {
+        // Keep the conflict visible if reloading also fails.
+      }
+    }
   } finally {
     saving.value = false;
+    clearTimeout(saveIndicatorTimer);
+    showSaving.value = false;
     if (saveAgain) {
       saveAgain = false;
       void persist();
@@ -246,21 +291,27 @@ async function downloadAsset(node: CanvasNode) {
     anchor.click();
     URL.revokeObjectURL(url);
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
+    error.value = formatError(reason, "下载素材失败");
   }
 }
 
 async function load() {
   loading.value = true;
   try {
-    const [value, availableConnections] = await Promise.all([
+    const [value, availableConnections, defaults] = await Promise.all([
       api.getCanvas(props.projectId),
       api.listConnections(),
+      api.getDefaultModels(),
     ]);
     connections.value = availableConnections;
+    defaultModels.value = defaults;
     project.value = {
       ...value,
-      nodes: value.nodes ?? [],
+      nodes: (value.nodes ?? []).map((node) =>
+        node.type === "generation" && node.height === 350
+          ? { ...node, height: 310 }
+          : node
+      ),
       edges: value.edges ?? [],
       viewport: value.viewport ?? { x: 160, y: 120, zoom: 1 },
       background: value.background ?? "dots",
@@ -271,7 +322,7 @@ async function load() {
     await loadAssets();
     emit("project-change", project.value);
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
+    error.value = formatError(reason, "加载画布失败");
   } finally {
     loading.value = false;
   }
@@ -326,8 +377,11 @@ function startNodeDrag(event: PointerEvent, node: CanvasNode) {
       .filter((item) => selected.value.has(item.id))
       .map((item) => [item.id, { x: item.x, y: item.y }])
   );
-  const move = (next: PointerEvent) => {
-    const point = worldPoint(next);
+  let frame = 0;
+  let pendingPoint = origin;
+  const applyMove = () => {
+    frame = 0;
+    const point = pendingPoint;
     for (const item of nodes.value) {
       const start = starts.get(item.id);
       if (!start) continue;
@@ -335,8 +389,16 @@ function startNodeDrag(event: PointerEvent, node: CanvasNode) {
       item.y = Math.round(start.y + point.y - origin.y);
     }
   };
+  const move = (next: PointerEvent) => {
+    pendingPoint = worldPoint(next);
+    if (!frame) frame = requestAnimationFrame(applyMove);
+  };
   const finish = () => {
     window.removeEventListener("pointermove", move);
+    if (frame) {
+      cancelAnimationFrame(frame);
+      applyMove();
+    }
     scheduleSave();
   };
   window.addEventListener("pointermove", move);
@@ -350,13 +412,23 @@ function startResize(event: PointerEvent, node: CanvasNode) {
   const origin = worldPoint(event);
   const width = node.width;
   const height = node.height;
+  let frame = 0;
+  let pendingPoint = origin;
+  const applyResize = () => {
+    frame = 0;
+    node.width = Math.round(Math.max(120, width + pendingPoint.x - origin.x));
+    node.height = Math.round(Math.max(72, height + pendingPoint.y - origin.y));
+  };
   const move = (next: PointerEvent) => {
-    const point = worldPoint(next);
-    node.width = Math.round(Math.max(120, width + point.x - origin.x));
-    node.height = Math.round(Math.max(72, height + point.y - origin.y));
+    pendingPoint = worldPoint(next);
+    if (!frame) frame = requestAnimationFrame(applyResize);
   };
   const finish = () => {
     window.removeEventListener("pointermove", move);
+    if (frame) {
+      cancelAnimationFrame(frame);
+      applyResize();
+    }
     scheduleSave();
   };
   window.addEventListener("pointermove", move);
@@ -369,12 +441,23 @@ function startViewport(event: PointerEvent) {
   if (shouldPan) {
     event.preventDefault();
     const start = { ...pan };
+    let frame = 0;
+    let pending = { x: event.clientX, y: event.clientY };
+    const applyPan = () => {
+      frame = 0;
+      pan.x = start.x + pending.x - event.clientX;
+      pan.y = start.y + pending.y - event.clientY;
+    };
     const move = (next: PointerEvent) => {
-      pan.x = start.x + next.clientX - event.clientX;
-      pan.y = start.y + next.clientY - event.clientY;
+      pending = { x: next.clientX, y: next.clientY };
+      if (!frame) frame = requestAnimationFrame(applyPan);
     };
     const finish = () => {
       window.removeEventListener("pointermove", move);
+      if (frame) {
+        cancelAnimationFrame(frame);
+        applyPan();
+      }
       scheduleSave(500);
     };
     window.addEventListener("pointermove", move);
@@ -390,16 +473,26 @@ function startViewport(event: PointerEvent) {
   emitSelection();
   const origin = screenPoint(event);
   marquee.value = { x: origin.x, y: origin.y, width: 0, height: 0 };
-  const move = (next: PointerEvent) => {
-    const point = screenPoint(next);
+  let frame = 0;
+  let pendingPoint = origin;
+  const applyMarquee = () => {
+    frame = 0;
     marquee.value = {
-      x: Math.min(origin.x, point.x),
-      y: Math.min(origin.y, point.y),
-      width: Math.abs(point.x - origin.x),
-      height: Math.abs(point.y - origin.y),
+      x: Math.min(origin.x, pendingPoint.x),
+      y: Math.min(origin.y, pendingPoint.y),
+      width: Math.abs(pendingPoint.x - origin.x),
+      height: Math.abs(pendingPoint.y - origin.y),
     };
   };
+  const move = (next: PointerEvent) => {
+    pendingPoint = screenPoint(next);
+    if (!frame) frame = requestAnimationFrame(applyMarquee);
+  };
   const finish = () => {
+    if (frame) {
+      cancelAnimationFrame(frame);
+      applyMarquee();
+    }
     const box = marquee.value;
     if (box && box.width > 3 && box.height > 3) {
       selected.value = new Set(
@@ -473,8 +566,14 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
     height: 180,
     z_index: nodes.value.length + 1,
   };
-  const firstConnection = imageGenerationConnections.value[0];
-  const firstModel = imageGenerationModels(firstConnection?.id)[0] ?? "";
+  const preferred = defaultModels.value?.image;
+  const firstConnection = generationConnections("image").find(
+    (connection) => connection.id === preferred?.connection_id
+  ) ?? generationConnections("image")[0];
+  const firstModel = firstConnection?.id === preferred?.connection_id &&
+    generationModels("image", firstConnection.id).includes(preferred.model)
+    ? preferred.model
+    : generationModels("image", firstConnection?.id)[0] ?? "";
   const node: CanvasNode = type === "text"
     ? { ...common, title: "提示词", text: "", height: 160 }
     : {
@@ -490,6 +589,7 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
           aspect_ratio: "1:1",
           quality: "auto",
           count: 1,
+          duration: 4,
         },
         status: "idle",
       };
@@ -499,26 +599,34 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
   scheduleSave();
 }
 
-async function generateImage(node: CanvasNode) {
+async function generateMedia(node: CanvasNode) {
   if (!project.value || node.type !== "generation" || !node.generation) return;
+  const mode = node.generation.mode;
+  if (!generationModels(mode, node.generation.connection_id).includes(node.generation.model ?? "")) {
+    error.value = mode === "video" ? "请选择视频生成模型" : "请选择生图模型";
+    return;
+  }
   if (!node.generation.model?.trim()) {
-    error.value = "请先填写生图模型";
+    error.value = mode === "video" ? "请先填写视频模型" : "请先填写生图模型";
     return;
   }
   if (node.status === "running") return;
 
   clearTimeout(saveTimer);
   commitHistory();
-  const outputID = id("image");
+  const outputID = id(mode);
+  const landscape = ["16:9", "4:3", "3:2"].includes(node.generation.aspect_ratio ?? "");
+  const outputWidth = mode === "video" ? (landscape ? 420 : 236) : 360;
+  const outputHeight = mode === "video" ? (landscape ? 236 : 420) : 360;
   const output: CanvasNode = {
     id: outputID,
-    type: "image",
+    type: mode,
     title: "生成结果",
     status: "running",
     x: node.x + node.width + 140,
     y: node.y,
-    width: 360,
-    height: 360,
+    width: outputWidth,
+    height: outputHeight,
     z_index: nodes.value.length + 1,
   };
   node.status = "running";
@@ -539,18 +647,21 @@ async function generateImage(node: CanvasNode) {
   await flushSave();
   if (!project.value) return;
   try {
-    const updated = await api.generateCanvasImage(project.value.id, {
+    const request = {
       expected_revision: project.value.revision,
       config_node_id: node.id,
       output_node_id: outputID,
       connection_id: node.generation.connection_id,
-    });
+    };
+    const updated = mode === "video"
+      ? await api.generateCanvasVideo(project.value.id, request)
+      : await api.generateCanvasImage(project.value.id, request);
     project.value = updated;
     await loadAssets();
     emit("project-change", updated);
     error.value = "";
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : String(reason);
+    error.value = formatError(reason, mode === "video" ? "视频生成失败" : "图片生成失败");
     try {
       project.value = await api.getCanvas(props.projectId);
       await loadAssets();
@@ -590,18 +701,47 @@ function inputSummary(nodeID: string) {
 
 function updateGenerationField(
   node: CanvasNode,
-  field: "connection_id" | "model" | "aspect_ratio" | "quality",
+  field: "model" | "aspect_ratio" | "quality",
   value: unknown
 ) {
   if (!node.generation) return;
   const nextValue = String(value ?? "");
   node.generation[field] = nextValue;
-  if (field === "connection_id") {
-    const models = imageGenerationModels(nextValue);
-    if (!models.includes(node.generation.model ?? "")) {
-      node.generation.model = models[0] ?? "";
+  scheduleSave();
+}
+
+function updateGenerationMode(node: CanvasNode, value: unknown) {
+  if (!node.generation || (value !== "image" && value !== "video")) return;
+  node.generation.mode = value;
+  const availableConnections = generationConnections(value);
+  const preferred = defaultModels.value?.[value];
+  if (!availableConnections.some((connection) => connection.id === node.generation?.connection_id)) {
+    node.generation.connection_id = availableConnections.find(
+      (connection) => connection.id === preferred?.connection_id
+    )?.id ?? availableConnections[0]?.id;
+  }
+  const models = generationModels(value, node.generation.connection_id);
+  if (!models.includes(node.generation.model ?? "")) {
+    node.generation.model = preferred &&
+      node.generation.connection_id === preferred.connection_id &&
+      models.includes(preferred.model)
+      ? preferred.model
+      : models[0] ?? "";
+  }
+  if (value === "video") {
+    if (!node.generation.duration) node.generation.duration = 4;
+    if (!["16:9", "9:16"].includes(node.generation.aspect_ratio ?? "")) {
+      node.generation.aspect_ratio = "16:9";
     }
   }
+  scheduleSave();
+}
+
+function updateGenerationDuration(node: CanvasNode, value: unknown) {
+  if (!node.generation) return;
+  const duration = Number(value);
+  if (!Number.isInteger(duration) || duration < 4 || duration > 15) return;
+  node.generation.duration = duration;
   scheduleSave();
 }
 
@@ -648,7 +788,7 @@ async function uploadFiles(files: FileList | File[]) {
       await loadAssets();
       await persist();
     } catch (reason) {
-      error.value = reason instanceof Error ? reason.message : String(reason);
+      error.value = formatError(reason, "上传素材失败");
     }
   }
   if (fileInput.value) fileInput.value.value = "";
@@ -780,6 +920,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   mounted = false;
   clearTimeout(saveTimer);
+  clearTimeout(saveIndicatorTimer);
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   Object.values(assetURLs.value).forEach(URL.revokeObjectURL);
@@ -802,7 +943,7 @@ onBeforeUnmount(() => {
       @drop="onDrop"
     >
       <div v-if="loading" class="absolute inset-0 grid place-items-center"><LoaderCircleIcon class="size-5 animate-spin text-muted-foreground" /></div>
-      <div v-else class="absolute left-0 top-0 origin-top-left" :style="worldStyle">
+      <div v-else class="studio-world absolute left-0 top-0 origin-top-left" :style="worldStyle">
         <svg class="pointer-events-none absolute left-0 top-0 overflow-visible">
           <path
             v-for="edge in edges"
@@ -834,12 +975,12 @@ onBeforeUnmount(() => {
             selected.has(node.id) ? 'border-primary ring-1 ring-primary' : 'border-border',
           ]"
           :style="{
-            left: node.x + 'px',
-            top: node.y + 'px',
+            left: '0px',
+            top: '0px',
             width: node.width + 'px',
             height: node.height + 'px',
             zIndex: node.z_index,
-            transform: `rotate(${node.rotation ?? 0}deg)`,
+            transform: `translate3d(${node.x}px, ${node.y}px, 0) rotate(${node.rotation ?? 0}deg)`,
           }"
           @pointerdown="startNodeDrag($event, node)"
         >
@@ -847,11 +988,11 @@ onBeforeUnmount(() => {
             <component :is="nodeIcon(node.type)" class="size-3.5 text-muted-foreground" />
             <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ node.title }}</span>
             <Button
-              v-if="node.type === 'image' && node.asset_id"
+              v-if="(node.type === 'image' || node.type === 'video') && node.asset_id"
               size="icon"
               variant="ghost"
               class="no-drag size-6 shrink-0"
-              title="下载图片"
+              :title="node.type === 'video' ? '下载视频' : '下载图片'"
               @pointerdown.stop
               @click.stop="downloadAsset(node)"
             >
@@ -883,6 +1024,18 @@ onBeforeUnmount(() => {
             @pointerdown.stop
           />
           <div v-else-if="node.type === 'generation'" class="min-h-0 flex-1 space-y-2 overflow-auto p-3" @pointerdown.stop>
+            <Select
+              :model-value="node.generation!.mode"
+              @update:model-value="updateGenerationMode(node, $event)"
+            >
+              <SelectTrigger size="sm" class="w-full text-xs">
+                <SelectValue placeholder="生成类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="image">图片</SelectItem>
+                <SelectItem value="video">视频</SelectItem>
+              </SelectContent>
+            </Select>
             <div class="flex items-center gap-3 text-[11px] text-muted-foreground">
               <span>提示词 {{ inputSummary(node.id).text }}</span>
               <span>参考图 {{ inputSummary(node.id).image }}</span>
@@ -893,47 +1046,32 @@ onBeforeUnmount(() => {
               placeholder="补充描述（可选）"
               @update:model-value="scheduleSave()"
             />
-            <div class="grid grid-cols-2 gap-2">
-              <Select
-                :model-value="node.generation!.connection_id"
-                @update:model-value="updateGenerationField(node, 'connection_id', $event)"
-              >
-                <SelectTrigger size="sm" class="w-full text-xs">
-                  <SelectValue placeholder="默认连接" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="connection in imageGenerationConnections" :key="connection.id" :value="connection.id">
-                    {{ connection.name }}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                :model-value="node.generation!.aspect_ratio"
-                @update:model-value="updateGenerationField(node, 'aspect_ratio', $event)"
-              >
-                <SelectTrigger size="sm" class="w-full text-xs">
-                  <SelectValue placeholder="比例" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1:1">1:1</SelectItem>
-                  <SelectItem value="4:3">4:3</SelectItem>
-                  <SelectItem value="3:4">3:4</SelectItem>
-                  <SelectItem value="16:9">16:9</SelectItem>
-                  <SelectItem value="9:16">9:16</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <Select
+              :model-value="node.generation!.aspect_ratio"
+              @update:model-value="updateGenerationField(node, 'aspect_ratio', $event)"
+            >
+              <SelectTrigger size="sm" class="w-full text-xs">
+                <SelectValue placeholder="比例" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem v-if="node.generation!.mode === 'image'" value="1:1">1:1</SelectItem>
+                <SelectItem v-if="node.generation!.mode === 'image'" value="4:3">4:3</SelectItem>
+                <SelectItem v-if="node.generation!.mode === 'image'" value="3:4">3:4</SelectItem>
+                <SelectItem value="16:9">16:9</SelectItem>
+                <SelectItem value="9:16">9:16</SelectItem>
+              </SelectContent>
+            </Select>
             <Select
               :model-value="node.generation!.model"
-              :disabled="!imageGenerationModels(node.generation!.connection_id).length"
+              :disabled="!generationModels(node.generation!.mode, node.generation!.connection_id).length"
               @update:model-value="updateGenerationField(node, 'model', $event)"
             >
               <SelectTrigger size="sm" class="w-full text-xs">
-                <SelectValue placeholder="选择生图模型" />
+                <SelectValue :placeholder="node.generation!.mode === 'video' ? '选择视频模型' : '选择生图模型'" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem
-                  v-for="model in imageGenerationModels(node.generation!.connection_id)"
+                  v-for="model in generationModels(node.generation!.mode, node.generation!.connection_id)"
                   :key="model"
                   :value="model"
                 >
@@ -943,6 +1081,7 @@ onBeforeUnmount(() => {
             </Select>
             <div class="grid grid-cols-2 gap-2">
               <Select
+                v-if="node.generation!.mode === 'image'"
                 :model-value="node.generation!.quality"
                 @update:model-value="updateGenerationField(node, 'quality', $event)"
               >
@@ -958,19 +1097,38 @@ onBeforeUnmount(() => {
                   <SelectItem value="hd">HD</SelectItem>
                 </SelectContent>
               </Select>
-              <Button size="sm" class="h-8" :disabled="node.status === 'running'" @click="generateImage(node)">
+              <Select
+                v-else
+                :model-value="String(node.generation!.duration || 4)"
+                @update:model-value="updateGenerationDuration(node, $event)"
+              >
+                <SelectTrigger size="sm" class="w-full text-xs">
+                  <SelectValue placeholder="时长" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="4">4 秒</SelectItem>
+                  <SelectItem value="5">5 秒</SelectItem>
+                  <SelectItem value="6">6 秒</SelectItem>
+                  <SelectItem value="8">8 秒</SelectItem>
+                  <SelectItem value="10">10 秒</SelectItem>
+                  <SelectItem value="12">12 秒</SelectItem>
+                  <SelectItem value="15">15 秒</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button size="sm" class="h-8" :disabled="node.status === 'running'" @click="generateMedia(node)">
                 <LoaderCircleIcon v-if="node.status === 'running'" class="size-3.5 animate-spin" />
+                <FilmIcon v-else-if="node.generation!.mode === 'video'" class="size-3.5" />
                 <SparklesIcon v-else class="size-3.5" />
-                {{ node.status === "running" ? "生成中" : "生成图片" }}
+                {{ node.status === "running" ? "生成中" : node.generation!.mode === "video" ? "生成视频" : "生成图片" }}
               </Button>
             </div>
-            <p v-if="node.error" class="line-clamp-2 text-[11px] text-destructive">{{ node.error }}</p>
+            <p v-if="node.error" class="line-clamp-2 text-[11px] text-destructive">{{ formatError(node.error) }}</p>
           </div>
           <div v-else-if="node.status === 'running'" class="grid min-h-0 flex-1 place-items-center">
             <LoaderCircleIcon class="size-6 animate-spin text-muted-foreground" />
           </div>
           <div v-else-if="node.status === 'error'" class="grid min-h-0 flex-1 place-items-center px-4 text-center text-xs text-destructive">
-            {{ node.error || "生成失败" }}
+            {{ formatError(node.error || "生成失败") }}
           </div>
           <div v-else class="grid min-h-0 flex-1 place-items-center text-xs text-muted-foreground">素材不可用</div>
 
@@ -1036,7 +1194,7 @@ onBeforeUnmount(() => {
                 <SparklesIcon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">生图配置</TooltipContent>
+            <TooltipContent side="top">图片或视频生成</TooltipContent>
           </Tooltip>
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
@@ -1056,7 +1214,7 @@ onBeforeUnmount(() => {
           <Separator orientation="vertical" class="mx-0.5 h-5" />
           <Tooltip>
             <TooltipTrigger as-child>
-              <Button size="icon" variant="ghost" class="size-8" :disabled="!history.length" @click="undo"><RotateCcwIcon class="size-4" /></Button>
+              <Button size="icon" variant="ghost" class="size-8" :disabled="!history.length" @click="undo"><Undo2Icon class="size-4" /></Button>
             </TooltipTrigger>
             <TooltipContent side="top">撤销</TooltipContent>
           </Tooltip>
@@ -1093,10 +1251,10 @@ onBeforeUnmount(() => {
             </TooltipTrigger>
             <TooltipContent side="top">放大</TooltipContent>
           </Tooltip>
-          <LoaderCircleIcon v-if="saving" class="mx-1 size-3.5 animate-spin text-muted-foreground" />
+          <LoaderCircleIcon v-if="showSaving" class="mx-1 size-3.5 animate-spin text-muted-foreground" />
         </TooltipProvider>
       </div>
-      <p v-if="error" class="absolute bottom-3 left-3 max-w-[70%] rounded bg-destructive px-3 py-1.5 text-xs text-destructive-foreground">{{ error }}</p>
+      <p v-if="displayError" class="absolute bottom-3 left-3 max-w-[70%] rounded bg-destructive px-3 py-1.5 text-xs text-destructive-foreground">{{ displayError }}</p>
     </div>
   </section>
 </template>
@@ -1104,6 +1262,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .studio-canvas {
   touch-action: none;
+}
+.studio-world,
+article {
+  will-change: transform;
 }
 .studio-canvas.dots {
   background-image: radial-gradient(circle, color-mix(in oklab, var(--muted-foreground) 28%, transparent) 1px, transparent 1px);

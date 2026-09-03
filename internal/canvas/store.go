@@ -129,6 +129,13 @@ type GenerateImageInput struct {
 	ConnectionID     string
 }
 
+type GenerateVideoInput struct {
+	ExpectedRevision uint64
+	ConfigNodeID     string
+	OutputNodeID     string
+	ConnectionID     string
+}
+
 type Store struct {
 	mu        sync.RWMutex
 	root      string
@@ -157,7 +164,7 @@ func NewStore(dataDir string) (*Store, error) {
 				for index := range item.Nodes {
 					if item.Nodes[index].Status == "running" {
 						item.Nodes[index].Status = "error"
-						item.Nodes[index].Error = "应用重启前的生图任务已中断"
+						item.Nodes[index].Error = "应用重启前的生成任务已中断"
 						recovered = true
 					}
 				}
@@ -430,6 +437,9 @@ func validateNodes(nodes []Node, assets []Asset) error {
 			}
 			if node.Generation.Count < 0 || node.Generation.Count > 16 {
 				return errors.New("generation count is out of range")
+			}
+			if node.Generation.Duration < 0 || node.Generation.Duration > 15 {
+				return errors.New("video generation duration is out of range")
 			}
 		}
 	}

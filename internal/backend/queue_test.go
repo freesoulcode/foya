@@ -92,6 +92,7 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 	be.SetConnections([]config.Connection{{
 		ID:       "test-connection",
 		Name:     "Test",
+		Type:     config.ConnectionTypeLanguage,
 		Kind:     "openai",
 		AuthKind: "api_key",
 	}})
@@ -137,12 +138,12 @@ func TestImageInputRequiresConnectionDeclaration(t *testing.T) {
 	be.SetConnections([]config.Connection{{
 		ID:       "test-connection",
 		Name:     "Test",
+		Type:     config.ConnectionTypeLanguage,
 		Kind:     "openai",
 		AuthKind: "api_key",
 		ModelSettings: map[string]config.ModelSettings{
 			"test-model": {
-				CapabilitiesConfigured: true,
-				ImageInput:             false,
+				ImageInput: false,
 			},
 		},
 	}})

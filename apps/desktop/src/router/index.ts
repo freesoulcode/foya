@@ -43,6 +43,12 @@ export const router = createRouter({
               meta: { settingsSection: "connections" },
             },
             {
+              path: "default-models",
+              name: "settings-default-models",
+              component: () => import("@/views/settings/DefaultModelsView.vue"),
+              meta: { settingsSection: "default-models" },
+            },
+            {
               path: "rules",
               name: "settings-rules",
               component: () => import("@/views/settings/RulesView.vue"),

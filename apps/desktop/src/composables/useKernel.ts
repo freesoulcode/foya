@@ -22,6 +22,7 @@ import {
   type BackgroundCommand,
   type BrowserElementSelection,
   type BrowserActionRequest,
+  type DefaultModels,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -71,6 +72,12 @@ const draft = reactive<DraftConfig>({
 const connectionModels = ref<ConnectionModelGroup[]>([]);
 const modelsLoading = ref(false);
 const modelsError = ref("");
+const defaultModels = ref<DefaultModels>({
+  language: { connection_id: "", model: "" },
+  fast: { connection_id: "", model: "" },
+  image: { connection_id: "", model: "" },
+  video: { connection_id: "", model: "" },
+});
 
 // 每个会话的消息与订阅状态(按会话缓存,切换时不丢)。
 const messagesBySession = ref<Record<string, ChatMessage[]>>({});
@@ -585,7 +592,12 @@ async function refreshConnections() {
   modelsLoading.value = true;
   modelsError.value = "";
   try {
-    const connections = await api.listConnections();
+    const [allConnections, defaults] = await Promise.all([
+      api.listConnections(),
+      api.getDefaultModels(),
+    ]);
+    const connections = allConnections.filter((connection) => connection.type === "language");
+    defaultModels.value = defaults;
     connectionModels.value = await Promise.all(
       connections.map(async (connection) => {
         try {
@@ -602,10 +614,18 @@ async function refreshConnections() {
       })
     );
     if (isDraft.value && !draft.connectionID) {
-      const first = connectionModels.value.find((connection) => connection.models.length > 0);
+      const preferred = defaultModels.value.language;
+      const first = connectionModels.value.find(
+        (connection) => connection.id === preferred.connection_id &&
+          connection.models.includes(preferred.model)
+      ) ?? connectionModels.value.find(
+        (connection) => connection.type === "language" && connection.models.length > 0
+      );
       if (first) {
         draft.connectionID = first.id ?? "";
-        draft.model = first.models[0] || "";
+        draft.model = first.id === preferred.connection_id
+          ? preferred.model
+          : first.models[0] || "";
       }
     }
   } catch (e) {
@@ -685,9 +705,17 @@ function newSession(projectID = "") {
   activeId.value = "";
   ensureBucket("");
   streaming.value = false;
-  const first = connectionModels.value.find((connection) => connection.models.length > 0);
+  const preferred = defaultModels.value.language;
+  const first = connectionModels.value.find(
+    (connection) => connection.id === preferred.connection_id &&
+      connection.models.includes(preferred.model)
+  ) ?? connectionModels.value.find(
+    (connection) => connection.type === "language" && connection.models.length > 0
+  );
   draft.connectionID = first?.id ?? "";
-  draft.model = first?.models[0] || "";
+  draft.model = first?.id === preferred.connection_id
+    ? preferred.model
+    : first?.models[0] || "";
   draft.reasoningEffort = "";
   draft.projectID = projectID;
   draft.approvalMode = DEFAULT_APPROVAL;
@@ -1187,6 +1215,7 @@ export function useKernel() {
     isDraft,
     draft,
     connectionModels,
+    defaultModels,
     modelsLoading,
     modelsError,
     messages: activeMessages,

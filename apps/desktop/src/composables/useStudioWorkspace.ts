@@ -50,6 +50,24 @@ async function deleteProject(project: CanvasDocument) {
   }
 }
 
+async function renameProject(project: CanvasDocument, title: string) {
+  const nextTitle = title.trim();
+  if (!nextTitle || nextTitle === project.title) return true;
+  try {
+    const updated = await api.updateCanvas(project.id, {
+      expected_revision: project.revision,
+      title: nextTitle,
+    });
+    updateProject(updated);
+    error.value = "";
+    return true;
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason);
+    await loadProjects();
+    return false;
+  }
+}
+
 function updateProject(project: CanvasDocument) {
   const index = projects.value.findIndex((item) => item.id === project.id);
   if (index >= 0) projects.value[index] = project;
@@ -70,6 +88,7 @@ export function useStudioWorkspace() {
     activeProject,
     loadProjects,
     createProject,
+    renameProject,
     deleteProject,
     updateProject,
   };

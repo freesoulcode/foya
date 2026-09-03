@@ -82,7 +82,7 @@ func TestForegroundCommandCanBePromotedWithoutRestart(t *testing.T) {
 		done <- result
 	}()
 
-	concrete := manager.(*backgroundCommandManager)
+	concrete := manager
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		concrete.mu.RLock()

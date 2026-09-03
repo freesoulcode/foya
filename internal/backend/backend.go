@@ -44,6 +44,7 @@ import (
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
+	"github.com/freesoulcode/foya/internal/videogen"
 	"github.com/freesoulcode/foya/internal/websearch"
 	"github.com/freesoulcode/foya/internal/workflow"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -53,6 +54,7 @@ var (
 	ErrConnectionNotFound = fmt.Errorf("connection not found")
 	ErrConnectionInUse    = fmt.Errorf("connection is in use by a session")
 	ErrUnsupportedAuth    = fmt.Errorf("unsupported connection auth kind")
+	ErrGenerationProvider = fmt.Errorf("generation provider failed")
 )
 
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
@@ -93,7 +95,10 @@ type Backend struct {
 	memoryWake        func()
 }
 
-const canvasGenerationTimeout = 5 * time.Minute
+const (
+	canvasGenerationTimeout      = 5 * time.Minute
+	canvasVideoGenerationTimeout = 30 * time.Minute
+)
 
 // SetCapabilityManagers attaches optional capability services assembled by the
 // kernel composition root.
@@ -301,16 +306,26 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 	if connectionID == "" {
 		connectionID = configNode.Generation.ConnectionID
 	}
-	b.mu.RLock()
-	if connectionID == "" {
-		connectionID = b.firstConnectionID
+	model := strings.TrimSpace(configNode.Generation.Model)
+	if connectionID == "" || model == "" {
+		if defaults, loadErr := b.DefaultModels(); loadErr == nil {
+			if connectionID == "" {
+				connectionID = defaults.Image.ConnectionID
+			}
+			if model == "" {
+				model = defaults.Image.Model
+			}
+		}
 	}
+	b.mu.RLock()
 	connection, exists := b.connections[connectionID]
 	b.mu.RUnlock()
 	if !exists {
 		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID))
 	}
-	model := strings.TrimSpace(configNode.Generation.Model)
+	if connection.Type != config.ConnectionTypeImage {
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, errors.New("image generation requires an image connection"))
+	}
 	settings, configured := connection.ModelSettings[model]
 	if configured && !settings.ImageGenerationSupported() {
 		return b.failCanvasGeneration(
@@ -371,7 +386,7 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 		if errors.Is(generateErr, context.DeadlineExceeded) {
 			generateErr = fmt.Errorf("生图请求超时（超过 %s）", canvasGenerationTimeout)
 		}
-		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, generateErr)
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %v", ErrGenerationProvider, generateErr))
 	}
 
 	asset, err := store.PutAsset(ctx, doc.ID, "generated.png", result.MediaType, bytes.NewReader(result.Data))
@@ -392,6 +407,158 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 				current.Nodes[index].Width = 360
 				current.Nodes[index].Height = 360 * float64(asset.Height) / float64(asset.Width)
 			}
+		}
+	}
+	updated, err := store.Update(current.ID, canvas.UpdateInput{
+		ExpectedRevision: current.Revision,
+		Nodes:            &current.Nodes,
+	})
+	if err == nil {
+		b.publishCanvas(ctx, event.KindCanvasUpdated, updated)
+	}
+	return updated, err
+}
+
+func (b *Backend) GenerateCanvasVideo(ctx context.Context, id string, input canvas.GenerateVideoInput) (canvas.Document, error) {
+	store, err := b.canvasStore()
+	if err != nil {
+		return canvas.Document{}, err
+	}
+	doc, ok := store.Get(id)
+	if !ok {
+		return canvas.Document{}, canvas.ErrNotFound
+	}
+	if doc.Revision != input.ExpectedRevision {
+		return doc, canvas.ErrRevisionConflict
+	}
+
+	configIndex, outputIndex := -1, -1
+	for index := range doc.Nodes {
+		switch doc.Nodes[index].ID {
+		case input.ConfigNodeID:
+			configIndex = index
+		case input.OutputNodeID:
+			outputIndex = index
+		}
+	}
+	if configIndex < 0 || outputIndex < 0 {
+		return doc, errors.New("generation config and output nodes are required")
+	}
+	configNode := doc.Nodes[configIndex]
+	if configNode.Type != "generation" || configNode.Generation == nil || configNode.Generation.Mode != "video" {
+		return doc, errors.New("node is not a video generation configuration")
+	}
+	if doc.Nodes[outputIndex].Type != "video" {
+		return doc, errors.New("generation output node must be a video")
+	}
+
+	connectionID := input.ConnectionID
+	if connectionID == "" {
+		connectionID = configNode.Generation.ConnectionID
+	}
+	model := strings.TrimSpace(configNode.Generation.Model)
+	if connectionID == "" || model == "" {
+		if defaults, loadErr := b.DefaultModels(); loadErr == nil {
+			if connectionID == "" {
+				connectionID = defaults.Video.ConnectionID
+			}
+			if model == "" {
+				model = defaults.Video.Model
+			}
+		}
+	}
+	b.mu.RLock()
+	connection, exists := b.connections[connectionID]
+	b.mu.RUnlock()
+	if !exists {
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID))
+	}
+	if connection.Type != config.ConnectionTypeVideo {
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, errors.New("video generation requires a video connection"))
+	}
+	settings, configured := connection.ModelSettings[model]
+	if configured && !settings.VideoGenerationSupported() {
+		return b.failCanvasGeneration(
+			ctx,
+			store,
+			doc,
+			configIndex,
+			outputIndex,
+			fmt.Errorf("model %q does not support video generation", model),
+		)
+	}
+
+	promptParts := make([]string, 0, 4)
+	if value := strings.TrimSpace(configNode.Prompt); value != "" {
+		promptParts = append(promptParts, value)
+	}
+	var (
+		reference          []byte
+		referenceMediaType string
+	)
+	for _, edge := range doc.Edges {
+		if edge.ToNodeID != configNode.ID {
+			continue
+		}
+		for _, node := range doc.Nodes {
+			if node.ID != edge.FromNodeID {
+				continue
+			}
+			if node.Type == "text" {
+				if value := strings.TrimSpace(node.Text); value != "" {
+					promptParts = append(promptParts, value)
+				}
+			}
+			if node.Type == "image" && node.AssetID != "" && len(reference) == 0 {
+				data, asset, readErr := store.ReadAsset(ctx, doc.ID, node.AssetID)
+				if readErr != nil {
+					return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, readErr)
+				}
+				reference = data
+				referenceMediaType = asset.MediaType
+			}
+		}
+	}
+	prompt := strings.Join(promptParts, "\n\n")
+	if prompt == "" {
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, errors.New("connect a prompt node or enter a prompt in the generation node"))
+	}
+
+	generationCtx, cancelGeneration := context.WithTimeout(ctx, canvasVideoGenerationTimeout)
+	defer cancelGeneration()
+	result, generateErr := videogen.NewOpenAI(videogen.OpenAIConfig{
+		BaseURL:  connection.BaseURL,
+		APIKey:   connection.APIKey,
+		Protocol: connection.VideoProtocol,
+	}).Generate(generationCtx, videogen.Request{
+		Model:              model,
+		Prompt:             prompt,
+		AspectRatio:        configNode.Generation.AspectRatio,
+		Duration:           configNode.Generation.Duration,
+		Reference:          reference,
+		ReferenceMediaType: referenceMediaType,
+	})
+	if generateErr != nil {
+		if errors.Is(generateErr, context.DeadlineExceeded) {
+			generateErr = fmt.Errorf("视频生成请求超时（超过 %s）", canvasVideoGenerationTimeout)
+		}
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %v", ErrGenerationProvider, generateErr))
+	}
+
+	asset, err := store.PutAsset(ctx, doc.ID, "generated.mp4", result.MediaType, bytes.NewReader(result.Data))
+	if err != nil {
+		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, err)
+	}
+	current, _ := store.Get(doc.ID)
+	for index := range current.Nodes {
+		switch current.Nodes[index].ID {
+		case configNode.ID:
+			current.Nodes[index].Status = "success"
+			current.Nodes[index].Error = ""
+		case input.OutputNodeID:
+			current.Nodes[index].AssetID = asset.ID
+			current.Nodes[index].Status = "success"
+			current.Nodes[index].Error = ""
 		}
 	}
 	updated, err := store.Update(current.ID, canvas.UpdateInput{
@@ -1263,15 +1430,24 @@ func New(
 func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, error) {
 	b.projectMu.Lock()
 	defer b.projectMu.Unlock()
+	if opts.ConnectionID == "" && opts.Model == "" {
+		if defaults, err := b.DefaultModels(); err == nil && defaults.Language.ConnectionID != "" {
+			opts.ConnectionID = defaults.Language.ConnectionID
+			opts.Model = defaults.Language.Model
+		}
+	}
 	b.mu.RLock()
 	connectionID := opts.ConnectionID
 	if connectionID == "" {
 		connectionID = b.firstConnectionID
 	}
-	_, exists := b.connections[connectionID]
+	connection, exists := b.connections[connectionID]
 	b.mu.RUnlock()
 	if connectionID != "" && !exists {
 		return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID)
+	}
+	if connectionID != "" && connection.Type != config.ConnectionTypeLanguage {
+		return nil, errors.New("sessions require a language model connection")
 	}
 	opts.ConnectionID = connectionID
 	if err := b.resolveSessionProject(&opts); err != nil {
@@ -1696,18 +1872,77 @@ func (b *Backend) Connection(id string) (config.Connection, bool) {
 	return connection, ok
 }
 
+func (b *Backend) DefaultModels() (config.DefaultModels, error) {
+	return config.LoadDefaultModels(b.dataDir)
+}
+
+func (b *Backend) UpdateDefaultModels(defaults config.DefaultModels) (config.DefaultModels, error) {
+	refs := []struct {
+		name string
+		kind string
+		ref  config.ModelRef
+	}{
+		{"language", config.ConnectionTypeLanguage, defaults.Language},
+		{"fast", config.ConnectionTypeLanguage, defaults.Fast},
+		{"image", config.ConnectionTypeImage, defaults.Image},
+		{"video", config.ConnectionTypeVideo, defaults.Video},
+	}
+	for _, item := range refs {
+		if item.ref.ConnectionID == "" && item.ref.Model == "" {
+			continue
+		}
+		if item.ref.ConnectionID == "" || item.ref.Model == "" {
+			return config.DefaultModels{}, fmt.Errorf("default %s model requires connection_id and model", item.name)
+		}
+		connection, ok := b.Connection(item.ref.ConnectionID)
+		if !ok {
+			return config.DefaultModels{}, fmt.Errorf("%w: %q", ErrConnectionNotFound, item.ref.ConnectionID)
+		}
+		if connection.Type != item.kind {
+			return config.DefaultModels{}, fmt.Errorf("default %s model requires a %s connection", item.name, item.kind)
+		}
+		if item.kind == config.ConnectionTypeVideo {
+			if err := validateVideoProtocol(connection.Type, connection.VideoProtocol); err != nil {
+				return config.DefaultModels{}, fmt.Errorf("default video model connection: %w", err)
+			}
+		}
+		found := false
+		for _, model := range connection.Models {
+			if model == item.ref.Model {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return config.DefaultModels{}, fmt.Errorf("model %q is not imported by connection %q", item.ref.Model, item.ref.ConnectionID)
+		}
+	}
+	if err := config.SaveDefaultModels(b.dataDir, defaults); err != nil {
+		return config.DefaultModels{}, err
+	}
+	return defaults, nil
+}
+
 // ListModels lists the catalog from one Connection's provider.
 func (b *Backend) ListModels(ctx context.Context, connectionID string, refresh bool) ([]provider.ModelInfo, error) {
 	connection, exists := b.Connection(connectionID)
 	if !exists {
 		return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID)
 	}
-	if !refresh && connection.ModelsCached {
+	if !refresh {
 		models := make([]provider.ModelInfo, 0, len(connection.Models))
 		for _, id := range connection.Models {
-			models = append(models, provider.ModelInfo{ID: id})
+			settings := connection.ModelSettings[id]
+			models = append(models, provider.ModelInfo{ID: id, ContextWindow: settings.ContextWindow})
 		}
 		return models, nil
+	}
+	if connection.Type == config.ConnectionTypeVideo &&
+		connection.VideoProtocol == config.VideoProtocolMiniMaxH3 {
+		return []provider.ModelInfo{
+			{ID: "MiniMax-H3"},
+			{ID: "MiniMax-H3-Max"},
+		}, nil
 	}
 	b.mu.RLock()
 	prov, ok := b.providers[connectionID]
@@ -1723,19 +1958,6 @@ func (b *Backend) ListModels(ctx context.Context, connectionID string, refresh b
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(models))
-	for _, model := range models {
-		ids = append(ids, model.ID)
-	}
-	connections := b.Connections()
-	for index := range connections {
-		if connections[index].ID == connectionID {
-			connections[index].Models = ids
-			connections[index].ModelsCached = true
-			break
-		}
-	}
-	b.SetConnections(connections)
 	return models, nil
 }
 
@@ -1805,16 +2027,71 @@ func (b *Backend) SetConnections(connections []config.Connection) {
 	b.connections = nextConnections
 	b.providers = nextProviders
 	b.firstConnectionID = ""
-	if len(normalized) > 0 {
-		b.firstConnectionID = normalized[0].ID
+	for _, connection := range normalized {
+		if connection.Type == config.ConnectionTypeLanguage {
+			b.firstConnectionID = connection.ID
+			break
+		}
 	}
 	b.mu.Unlock()
 	b.engine.SetProviderResolver(b.resolveSessionProvider)
+	b.engine.SetTitleResolver(b.resolveDefaultFastModel)
 	b.engine.SetImageCapabilityResolver(b.resolveSessionImageCapability)
 	b.engine.SetContextWindowResolver(b.resolveSessionContextWindow)
 	b.engine.SetModelTokenLimitsResolver(b.resolveSessionModelTokenLimits)
 	if err := config.SaveConnections(b.dataDir, normalized); err != nil {
 		fmt.Fprintf(os.Stderr, "persist connections config failed: %v\n", err)
+	}
+	b.reconcileDefaultModels()
+}
+
+func (b *Backend) resolveDefaultFastModel() (provider.Provider, string) {
+	defaults, err := b.DefaultModels()
+	if err != nil || defaults.Fast.ConnectionID == "" || defaults.Fast.Model == "" {
+		return nil, ""
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.providers[defaults.Fast.ConnectionID], defaults.Fast.Model
+}
+
+func (b *Backend) reconcileDefaultModels() {
+	defaults, err := b.DefaultModels()
+	if err != nil {
+		return
+	}
+	changed := false
+	items := []struct {
+		ref  *config.ModelRef
+		kind string
+	}{
+		{&defaults.Language, config.ConnectionTypeLanguage},
+		{&defaults.Fast, config.ConnectionTypeLanguage},
+		{&defaults.Image, config.ConnectionTypeImage},
+		{&defaults.Video, config.ConnectionTypeVideo},
+	}
+	for _, item := range items {
+		if item.ref.ConnectionID == "" {
+			continue
+		}
+		connection, ok := b.Connection(item.ref.ConnectionID)
+		valid := ok && connection.Type == item.kind
+		if valid {
+			valid = false
+			for _, model := range connection.Models {
+				if model == item.ref.Model {
+					valid = true
+					break
+				}
+			}
+		}
+		if !valid {
+			*item.ref = config.ModelRef{}
+			changed = true
+		}
+	}
+	if changed {
+		_ = config.SaveDefaultModels(b.dataDir, defaults)
 	}
 }
 
@@ -1837,6 +2114,12 @@ func (b *Backend) CreateConnection(input config.Connection) (config.Connection, 
 	if input.AuthKind != "api_key" {
 		return config.Connection{}, fmt.Errorf("%w: %q", ErrUnsupportedAuth, input.AuthKind)
 	}
+	if err := validateConnectionType(input.Type); err != nil {
+		return config.Connection{}, err
+	}
+	if err := validateVideoProtocol(input.Type, input.VideoProtocol); err != nil {
+		return config.Connection{}, err
+	}
 	b.mu.Lock()
 	if _, exists := b.connections[input.ID]; exists {
 		b.mu.Unlock()
@@ -1857,6 +2140,15 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 		return config.Connection{}, fmt.Errorf("%w: %q", ErrConnectionNotFound, id)
 	}
 	if err := validateConnectionModelSettings(patch.ModelSettings); err != nil {
+		return config.Connection{}, err
+	}
+	if patch.Type == "" {
+		patch.Type = current.Type
+	}
+	if err := validateConnectionType(patch.Type); err != nil {
+		return config.Connection{}, err
+	}
+	if err := validateVideoProtocol(patch.Type, patch.VideoProtocol); err != nil {
 		return config.Connection{}, err
 	}
 	patch.ID = id
@@ -1904,6 +2196,30 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 	b.SetConnections(connections)
 	updated, _ = b.Connection(id)
 	return updated, nil
+}
+
+func validateConnectionType(value string) error {
+	switch value {
+	case config.ConnectionTypeLanguage, config.ConnectionTypeImage, config.ConnectionTypeVideo:
+		return nil
+	default:
+		return fmt.Errorf("unsupported connection type %q", value)
+	}
+}
+
+func validateVideoProtocol(connectionType, protocol string) error {
+	if connectionType != config.ConnectionTypeVideo {
+		if protocol != "" {
+			return errors.New("video protocol is only valid for video connections")
+		}
+		return nil
+	}
+	switch protocol {
+	case config.VideoProtocolSeedance, config.VideoProtocolMiniMaxH3:
+		return nil
+	default:
+		return fmt.Errorf("unsupported video protocol %q", protocol)
+	}
 }
 
 func validateConnectionModelSettings(settings map[string]config.ModelSettings) error {

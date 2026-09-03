@@ -7,6 +7,7 @@ import {
   BrainIcon,
   CommandIcon,
   FileJsonIcon,
+  GaugeIcon,
   GlobeIcon,
   PaletteIcon,
   PlugZapIcon,
@@ -26,6 +27,7 @@ import {
 
 export type SettingsSection =
   | "connections"
+  | "default-models"
   | "rules"
   | "memory"
   | "skills"
@@ -46,6 +48,7 @@ const { isMac } = usePlatform();
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZapIcon }> = [
   { id: "connections", label: "连接", icon: PlugZapIcon },
+  { id: "default-models", label: "默认模型", icon: GaugeIcon },
   { id: "rules", label: "规则", icon: ScrollTextIcon },
   { id: "memory", label: "记忆", icon: BrainIcon },
   { id: "skills", label: "技能", icon: BookOpenIcon },

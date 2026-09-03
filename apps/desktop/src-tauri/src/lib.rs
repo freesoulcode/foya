@@ -1501,6 +1501,20 @@ async fn generate_canvas_image(
 
 #[cfg(unix)]
 #[tauri::command]
+async fn generate_canvas_video(
+    canvas_id: String,
+    request: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!("/canvases/{canvas_id}/generate-video"),
+        Some(&request.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn subscribe_canvas_events(
     canvas_id: String,
     channel: Channel<String>,
@@ -1731,6 +1745,23 @@ async fn list_connection_models(connection_id: String, refresh: bool) -> Result<
         format!("/connections/{connection_id}/models")
     };
     kernel::request("GET", &path, None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn get_default_models() -> Result<String, String> {
+    kernel::request("GET", "/settings/default-models", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_default_models(defaults: serde_json::Value) -> Result<String, String> {
+    kernel::request(
+        "PUT",
+        "/settings/default-models",
+        Some(&defaults.to_string()),
+    )
+    .await
 }
 
 #[cfg(unix)]
@@ -2918,6 +2949,14 @@ fn generate_canvas_image(
 }
 #[cfg(not(unix))]
 #[tauri::command]
+fn generate_canvas_video(
+    _canvas_id: String,
+    _request: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+#[cfg(not(unix))]
+#[tauri::command]
 fn subscribe_canvas_events(_canvas_id: String, _channel: Channel<String>) -> Result<(), String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -3030,6 +3069,18 @@ fn delete_connection(_connection_id: String) -> Result<(), String> {
 #[cfg(not(unix))]
 #[tauri::command]
 fn list_connection_models(_connection_id: String, _refresh: bool) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn get_default_models() -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn update_default_models(_defaults: serde_json::Value) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
 
@@ -3491,6 +3542,7 @@ pub fn run() {
             upload_canvas_asset,
             read_canvas_asset,
             generate_canvas_image,
+            generate_canvas_video,
             subscribe_canvas_events,
             edit_turn,
             compact_session,
@@ -3512,6 +3564,8 @@ pub fn run() {
             update_connection,
             delete_connection,
             list_connection_models,
+            get_default_models,
+            update_default_models,
             list_skills,
             list_agents,
             get_agent_limits,

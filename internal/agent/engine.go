@@ -87,6 +87,7 @@ type Engine struct {
 	// providerResolver binds a Session to its configured Connection. It is
 	// optional so focused engine tests can continue using the configured provider.
 	providerResolver func(sessionID string) provider.Provider
+	titleResolver    func() (provider.Provider, string)
 	projectResolver  func(projectID string) (string, bool)
 	contextResolver  func(projectID, activity string) (
 		rules []string,
@@ -274,6 +275,12 @@ func (e *Engine) SetProviderResolver(resolve func(sessionID string) provider.Pro
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.providerResolver = resolve
+}
+
+func (e *Engine) SetTitleResolver(resolve func() (provider.Provider, string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.titleResolver = resolve
 }
 
 // SetImageCapabilityResolver supplies the explicit model image declaration.
@@ -1764,6 +1771,14 @@ func hasUserMessage(msgs []message.Message) bool {
 func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
 	prov := e.currentProvider(sessionID)
 	model := e.currentModel(sessionID)
+	e.mu.RLock()
+	titleResolver := e.titleResolver
+	e.mu.RUnlock()
+	if titleResolver != nil {
+		if fastProvider, fastModel := titleResolver(); fastProvider != nil && fastModel != "" {
+			prov, model = fastProvider, fastModel
+		}
+	}
 	var generated string
 	if c, ok := prov.(provider.Completer); ok {
 		generated = title.Generate(ctx, c, model, e.resolveReasoningEffort(sessionID), userText)

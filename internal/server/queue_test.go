@@ -69,6 +69,7 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 	be.SetConnections([]config.Connection{{
 		ID:       "test-connection",
 		Name:     "Test",
+		Type:     config.ConnectionTypeLanguage,
 		Kind:     "openai",
 		AuthKind: "api_key",
 		ModelSettings: map[string]config.ModelSettings{

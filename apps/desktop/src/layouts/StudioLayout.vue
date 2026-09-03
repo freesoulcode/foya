@@ -5,10 +5,19 @@ import {
   ArrowLeftIcon,
   ImageIcon,
   LoaderCircleIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
   PlusIcon,
   Trash2Icon,
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +49,8 @@ const router = useRouter();
 const { isMac, showCustomWindowControls } = usePlatform();
 const sidebarOpen = ref(true);
 const pendingDelete = ref<ReturnType<typeof useStudioWorkspace>["activeProject"]["value"]>(null);
+const pendingRename = ref<ReturnType<typeof useStudioWorkspace>["activeProject"]["value"]>(null);
+const renameValue = ref("");
 const {
   projects,
   activeId,
@@ -48,6 +59,7 @@ const {
   error,
   activeProject,
   createProject,
+  renameProject,
   deleteProject: removeProject,
 } = useStudioWorkspace();
 const isSidebarCollapsed = computed(() => !sidebarOpen.value);
@@ -57,6 +69,19 @@ async function deleteProject() {
   if (!project) return;
   await removeProject(project);
   pendingDelete.value = null;
+}
+
+function openRename(project: NonNullable<typeof pendingRename.value>) {
+  pendingRename.value = project;
+  renameValue.value = project.title;
+}
+
+async function submitRename() {
+  const project = pendingRename.value;
+  if (!project || !renameValue.value.trim()) return;
+  if (await renameProject(project, renameValue.value)) {
+    pendingRename.value = null;
+  }
 }
 
 function close() {
@@ -111,13 +136,23 @@ function close() {
                   <ImageIcon />
                   <span>{{ project.title }}</span>
                 </SidebarMenuButton>
-                <SidebarMenuAction
-                  show-on-hover
-                  title="删除项目"
-                  @click.stop="pendingDelete = project"
-                >
-                  <Trash2Icon />
-                </SidebarMenuAction>
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <SidebarMenuAction show-on-hover title="项目操作" @click.stop>
+                      <MoreHorizontalIcon />
+                    </SidebarMenuAction>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="right" align="start">
+                    <DropdownMenuItem @select="openRename(project)">
+                      <PencilIcon />
+                      重命名
+                    </DropdownMenuItem>
+                    <DropdownMenuItem class="text-destructive" @select="pendingDelete = project">
+                      <Trash2Icon />
+                      删除
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </SidebarMenuItem>
             </SidebarMenu>
 
@@ -183,6 +218,25 @@ function close() {
         <DialogFooter>
           <Button variant="outline" @click="pendingDelete = null">取消</Button>
           <Button variant="destructive" @click="deleteProject">删除</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog :open="Boolean(pendingRename)" @update:open="(open) => { if (!open) pendingRename = null }">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>重命名创作项目</DialogTitle>
+          <DialogDescription>修改项目在创作工作台中的显示名称。</DialogDescription>
+        </DialogHeader>
+        <Input
+          v-model="renameValue"
+          autofocus
+          placeholder="项目名称"
+          @keyup.enter="submitRename"
+        />
+        <DialogFooter>
+          <Button variant="outline" @click="pendingRename = null">取消</Button>
+          <Button :disabled="!renameValue.trim()" @click="submitRename">保存</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

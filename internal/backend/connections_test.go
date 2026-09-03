@@ -31,8 +31,8 @@ func TestSessionBindsConfiguredConnection(t *testing.T) {
 		config.Provider{}, t.TempDir(),
 	)
 	be.SetConnections([]config.Connection{
-		{ID: "openai", Name: "OpenAI", Kind: "openai", AuthKind: "api_key"},
-		{ID: "deepseek", Name: "DeepSeek", Kind: "openai", AuthKind: "api_key"},
+		{ID: "openai", Name: "OpenAI", Type: config.ConnectionTypeLanguage, Kind: "openai", AuthKind: "api_key"},
+		{ID: "deepseek", Name: "DeepSeek", Type: config.ConnectionTypeLanguage, Kind: "openai", AuthKind: "api_key"},
 	})
 
 	created, err := be.CreateSession(session.CreateOptions{
@@ -89,11 +89,11 @@ func TestConnectionOrderSelectsNewSessionConnection(t *testing.T) {
 		config.Provider{}, t.TempDir(),
 	)
 	be.SetConnections([]config.Connection{
-		{ID: "openai", Name: "OpenAI", AuthKind: "api_key"},
-		{ID: "deepseek", Name: "DeepSeek", AuthKind: "api_key"},
+		{ID: "openai", Name: "OpenAI", Type: config.ConnectionTypeLanguage, AuthKind: "api_key"},
+		{ID: "deepseek", Name: "DeepSeek", Type: config.ConnectionTypeLanguage, AuthKind: "api_key"},
 	})
 
-	if _, err := be.UpdateConnection("deepseek", config.Connection{SortOrder: 0}); err != nil {
+	if _, err := be.UpdateConnection("deepseek", config.Connection{Type: config.ConnectionTypeLanguage, SortOrder: 0}); err != nil {
 		t.Fatal(err)
 	}
 	ordered := be.Connections()

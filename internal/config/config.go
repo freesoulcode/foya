@@ -67,6 +67,8 @@ type Provider struct {
 type Connection struct {
 	ID            string                   `json:"id"`
 	Name          string                   `json:"name"`
+	Type          string                   `json:"type"`
+	VideoProtocol string                   `json:"video_protocol,omitempty"`
 	Kind          string                   `json:"kind"`
 	AuthKind      string                   `json:"auth_kind"`
 	BaseURL       string                   `json:"base_url"`
@@ -80,31 +82,54 @@ type Connection struct {
 	LegacyDefault bool `json:"is_default,omitempty"`
 }
 
-type ModelSettings struct {
-	ContextWindow          int64    `json:"context_window,omitempty"`
-	MaxInputTokens         int64    `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens        int64    `json:"max_output_tokens,omitempty"`
-	CapabilitiesConfigured bool     `json:"capabilities_configured,omitempty"`
-	ImageInput             bool     `json:"image_input"`
-	ImageGeneration        bool     `json:"image_generation"`
-	VideoGeneration        bool     `json:"video_generation"`
-	AudioGeneration        bool     `json:"audio_generation"`
-	ToolCalling            bool     `json:"tool_calling"`
-	WebSearch              bool     `json:"web_search"`
-	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+const (
+	ConnectionTypeLanguage = "language"
+	ConnectionTypeImage    = "image"
+	ConnectionTypeVideo    = "video"
+
+	VideoProtocolSeedance  = "seedance"
+	VideoProtocolMiniMaxH3 = "minimax_h3"
+)
+
+type ModelRef struct {
+	ConnectionID string `json:"connection_id"`
+	Model        string `json:"model"`
 }
 
-// Capability helpers retain the permissive default for models configured before
-// capability flags existed. Once a model's capabilities are edited, its
-// explicit flags become authoritative.
+type DefaultModels struct {
+	Language ModelRef `json:"language"`
+	Fast     ModelRef `json:"fast"`
+	Image    ModelRef `json:"image"`
+	Video    ModelRef `json:"video"`
+}
+
+type ModelSettings struct {
+	ContextWindow    int64    `json:"context_window,omitempty"`
+	MaxInputTokens   int64    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  int64    `json:"max_output_tokens,omitempty"`
+	ImageInput       bool     `json:"image_input"`
+	ImageGeneration  bool     `json:"image_generation"`
+	VideoGeneration  bool     `json:"video_generation"`
+	AudioGeneration  bool     `json:"audio_generation"`
+	ToolCalling      bool     `json:"tool_calling"`
+	WebSearch        bool     `json:"web_search"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+}
+
 func (s ModelSettings) ImageInputSupported() bool {
-	return !s.CapabilitiesConfigured || s.ImageInput
+	return s.ImageInput
 }
 
 // ImageGenerationSupported reports whether this model can be used by the
 // image-generation canvas adapter.
 func (s ModelSettings) ImageGenerationSupported() bool {
-	return !s.CapabilitiesConfigured || s.ImageGeneration
+	return s.ImageGeneration
+}
+
+// VideoGenerationSupported reports whether this model can be used by the
+// video-generation canvas adapter.
+func (s ModelSettings) VideoGenerationSupported() bool {
+	return s.VideoGeneration
 }
 
 func (c Connection) Provider() Provider {
@@ -177,6 +202,41 @@ func connectionsConfigPath(dataDir string) string {
 
 func agentLimitsConfigPath(dataDir string) string {
 	return filepath.Join(dataDir, "agent-limits.json")
+}
+
+func defaultModelsConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, "default-models.json")
+}
+
+func LoadDefaultModels(dataDir string) (DefaultModels, error) {
+	data, err := os.ReadFile(defaultModelsConfigPath(dataDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return DefaultModels{}, nil
+	}
+	if err != nil {
+		return DefaultModels{}, err
+	}
+	var defaults DefaultModels
+	if err := json.Unmarshal(data, &defaults); err != nil {
+		return DefaultModels{}, err
+	}
+	return defaults, nil
+}
+
+func SaveDefaultModels(dataDir string, defaults DefaultModels) error {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(defaults, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := defaultModelsConfigPath(dataDir)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // LoadAgentLimits reads the persisted scheduler limits. A missing file lets the

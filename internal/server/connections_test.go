@@ -44,6 +44,7 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	var connection connectionResponse
 	if code := requestJSON(t, handler, http.MethodPost, "/connections", map[string]any{
 		"name":      "DeepSeek",
+		"type":      "language",
 		"kind":      "openai",
 		"auth_kind": "api_key",
 		"base_url":  "https://api.deepseek.com/v1",

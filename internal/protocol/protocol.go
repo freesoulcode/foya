@@ -6,6 +6,7 @@
 package protocol
 
 import (
+	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
@@ -108,6 +109,8 @@ type UpdateQueuedMessageRequest struct {
 type ConnectionConfig struct {
 	ID            string                   `json:"id,omitempty"`
 	Name          string                   `json:"name"`
+	Type          string                   `json:"type"`
+	VideoProtocol string                   `json:"video_protocol,omitempty"`
 	Kind          string                   `json:"kind"`
 	AuthKind      string                   `json:"auth_kind"`
 	BaseURL       string                   `json:"base_url"`
@@ -119,18 +122,19 @@ type ConnectionConfig struct {
 	SortOrder     int                      `json:"sort_order"`
 }
 
+type DefaultModels = config.DefaultModels
+
 type ModelSettings struct {
-	ContextWindow          int64    `json:"context_window,omitempty"`
-	MaxInputTokens         int64    `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens        int64    `json:"max_output_tokens,omitempty"`
-	CapabilitiesConfigured bool     `json:"capabilities_configured,omitempty"`
-	ImageInput             bool     `json:"image_input"`
-	ImageGeneration        bool     `json:"image_generation"`
-	VideoGeneration        bool     `json:"video_generation"`
-	AudioGeneration        bool     `json:"audio_generation"`
-	ToolCalling            bool     `json:"tool_calling"`
-	WebSearch              bool     `json:"web_search"`
-	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+	ContextWindow    int64    `json:"context_window,omitempty"`
+	MaxInputTokens   int64    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  int64    `json:"max_output_tokens,omitempty"`
+	ImageInput       bool     `json:"image_input"`
+	ImageGeneration  bool     `json:"image_generation"`
+	VideoGeneration  bool     `json:"video_generation"`
+	AudioGeneration  bool     `json:"audio_generation"`
+	ToolCalling      bool     `json:"tool_calling"`
+	WebSearch        bool     `json:"web_search"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
 type ConnectionModelsResponse struct {

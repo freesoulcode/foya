@@ -58,5 +58,6 @@ make test    # 运行测试
 - `foya exec` 和 Agents、Skills、MCP、Web Search 管理命令。
 - Tauri + Vue 桌面端及对应设置界面。
 - 图片 Artifact、用户图片输入、工具图片回灌与 OpenAI 多模态请求。
+- 创作画布中的 OpenAI 兼容图片与视频生成，支持文字提示和参考图。
 
-完整 MCP OAuth、客户端归属 MCP 和图片之外的富媒体类型仍在开发中。
+完整 MCP OAuth、客户端归属 MCP 和更多富媒体类型仍在开发中。

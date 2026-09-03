@@ -62,6 +62,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /connections/{id}", s.handleUpdateConnection)
 	s.mux.HandleFunc("DELETE /connections/{id}", s.handleDeleteConnection)
 	s.mux.HandleFunc("GET /connections/{id}/models", s.handleListConnectionModels)
+	s.mux.HandleFunc("GET /settings/default-models", s.handleGetDefaultModels)
+	s.mux.HandleFunc("PUT /settings/default-models", s.handleUpdateDefaultModels)
 	s.mux.HandleFunc("GET /canvases", s.handleListCanvases)
 	s.mux.HandleFunc("POST /canvases", s.handleCreateCanvas)
 	s.mux.HandleFunc("GET /canvases/{id}", s.handleGetCanvas)
@@ -71,6 +73,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /canvases/{id}/assets", s.handleUploadCanvasAsset)
 	s.mux.HandleFunc("GET /canvases/{id}/assets/{asset_id}", s.handleReadCanvasAsset)
 	s.mux.HandleFunc("POST /canvases/{id}/generate-image", s.handleGenerateCanvasImage)
+	s.mux.HandleFunc("POST /canvases/{id}/generate-video", s.handleGenerateCanvasVideo)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
@@ -1161,22 +1164,23 @@ func publicConnection(connection config.Connection) protocol.ConnectionConfig {
 	modelSettings := make(map[string]protocol.ModelSettings, len(connection.ModelSettings))
 	for model, settings := range connection.ModelSettings {
 		modelSettings[model] = protocol.ModelSettings{
-			ContextWindow:          settings.ContextWindow,
-			MaxInputTokens:         settings.MaxInputTokens,
-			MaxOutputTokens:        settings.MaxOutputTokens,
-			CapabilitiesConfigured: settings.CapabilitiesConfigured,
-			ImageInput:             settings.ImageInput,
-			ImageGeneration:        settings.ImageGeneration,
-			VideoGeneration:        settings.VideoGeneration,
-			AudioGeneration:        settings.AudioGeneration,
-			ToolCalling:            settings.ToolCalling,
-			WebSearch:              settings.WebSearch,
-			ReasoningEfforts:       append([]string(nil), settings.ReasoningEfforts...),
+			ContextWindow:    settings.ContextWindow,
+			MaxInputTokens:   settings.MaxInputTokens,
+			MaxOutputTokens:  settings.MaxOutputTokens,
+			ImageInput:       settings.ImageInput,
+			ImageGeneration:  settings.ImageGeneration,
+			VideoGeneration:  settings.VideoGeneration,
+			AudioGeneration:  settings.AudioGeneration,
+			ToolCalling:      settings.ToolCalling,
+			WebSearch:        settings.WebSearch,
+			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
 		}
 	}
 	return protocol.ConnectionConfig{
 		ID:            connection.ID,
 		Name:          connection.Name,
+		Type:          connection.Type,
+		VideoProtocol: connection.VideoProtocol,
 		Kind:          connection.Kind,
 		AuthKind:      connection.AuthKind,
 		BaseURL:       connection.BaseURL,
@@ -1193,22 +1197,23 @@ func toConnection(input protocol.ConnectionConfig) config.Connection {
 	modelSettings := make(map[string]config.ModelSettings, len(input.ModelSettings))
 	for model, settings := range input.ModelSettings {
 		modelSettings[model] = config.ModelSettings{
-			ContextWindow:          settings.ContextWindow,
-			MaxInputTokens:         settings.MaxInputTokens,
-			MaxOutputTokens:        settings.MaxOutputTokens,
-			CapabilitiesConfigured: settings.CapabilitiesConfigured,
-			ImageInput:             settings.ImageInput,
-			ImageGeneration:        settings.ImageGeneration,
-			VideoGeneration:        settings.VideoGeneration,
-			AudioGeneration:        settings.AudioGeneration,
-			ToolCalling:            settings.ToolCalling,
-			WebSearch:              settings.WebSearch,
-			ReasoningEfforts:       append([]string(nil), settings.ReasoningEfforts...),
+			ContextWindow:    settings.ContextWindow,
+			MaxInputTokens:   settings.MaxInputTokens,
+			MaxOutputTokens:  settings.MaxOutputTokens,
+			ImageInput:       settings.ImageInput,
+			ImageGeneration:  settings.ImageGeneration,
+			VideoGeneration:  settings.VideoGeneration,
+			AudioGeneration:  settings.AudioGeneration,
+			ToolCalling:      settings.ToolCalling,
+			WebSearch:        settings.WebSearch,
+			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
 		}
 	}
 	return config.Connection{
 		ID:            input.ID,
 		Name:          input.Name,
+		Type:          input.Type,
+		VideoProtocol: input.VideoProtocol,
 		Kind:          input.Kind,
 		AuthKind:      input.AuthKind,
 		BaseURL:       input.BaseURL,
@@ -1314,6 +1319,31 @@ func (s *Server) handleListConnectionModels(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleGetDefaultModels(w http.ResponseWriter, _ *http.Request) {
+	defaults, err := s.backend.DefaultModels()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "default_models_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, defaults)
+}
+
+func (s *Server) handleUpdateDefaultModels(w http.ResponseWriter, r *http.Request) {
+	var defaults config.DefaultModels
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&defaults); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	updated, err := s.backend.UpdateDefaultModels(defaults)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "default_models_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 type canvasCreateRequest struct {
 	Title     string `json:"title,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
@@ -1330,6 +1360,13 @@ type canvasUpdateRequest struct {
 }
 
 type canvasGenerateImageRequest struct {
+	ExpectedRevision uint64 `json:"expected_revision"`
+	ConfigNodeID     string `json:"config_node_id"`
+	OutputNodeID     string `json:"output_node_id"`
+	ConnectionID     string `json:"connection_id,omitempty"`
+}
+
+type canvasGenerateVideoRequest struct {
 	ExpectedRevision uint64 `json:"expected_revision"`
 	ConfigNodeID     string `json:"config_node_id"`
 	OutputNodeID     string `json:"output_node_id"`
@@ -1465,6 +1502,31 @@ func (s *Server) handleGenerateCanvasImage(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, doc)
 }
 
+func (s *Server) handleGenerateCanvasVideo(w http.ResponseWriter, r *http.Request) {
+	var input canvasGenerateVideoRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	doc, err := s.backend.GenerateCanvasVideo(r.Context(), r.PathValue("id"), canvas.GenerateVideoInput{
+		ExpectedRevision: input.ExpectedRevision,
+		ConfigNodeID:     input.ConfigNodeID,
+		OutputNodeID:     input.OutputNodeID,
+		ConnectionID:     input.ConnectionID,
+	})
+	if err != nil {
+		if errors.Is(err, canvas.ErrRevisionConflict) {
+			writeJSON(w, http.StatusConflict, doc)
+			return
+		}
+		writeCanvasErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
 func (s *Server) handleCanvasEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1505,6 +1567,8 @@ func writeCanvasErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_canvas_media", err.Error())
 	case errors.Is(err, canvas.ErrAssetTooLarge):
 		writeErr(w, http.StatusRequestEntityTooLarge, "canvas_asset_too_large", err.Error())
+	case errors.Is(err, backend.ErrGenerationProvider):
+		writeErr(w, http.StatusBadGateway, "generation_provider_failed", err.Error())
 	default:
 		writeErr(w, http.StatusBadRequest, "canvas_failed", err.Error())
 	}
