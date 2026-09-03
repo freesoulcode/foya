@@ -2,7 +2,10 @@ package tool
 
 import (
 	"encoding/json"
+	"sort"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/freesoulcode/foya/internal/provider"
 )
@@ -64,7 +67,24 @@ func (r *memRegistry) List() []Tool {
 // Specs 把所有非隐藏工具的 JSON Schema 转为 provider.ToolDef,
 // 供 engine 组装模型请求时使用。
 func (r *memRegistry) Specs() []provider.ToolDef {
-	tools := r.List()
+	return r.SpecsFor(nil)
+}
+
+func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []provider.ToolDef {
+	r.mu.RLock()
+	tools := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		switch t.Exposure() {
+		case ExposureHidden:
+			continue
+		case ExposureDeferred:
+			if !activeDeferred[t.Name()] {
+				continue
+			}
+		}
+		tools = append(tools, t)
+	}
+	r.mu.RUnlock()
 	defs := make([]provider.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		spec := t.Spec()
@@ -85,4 +105,72 @@ func (r *memRegistry) Specs() []provider.ToolDef {
 		})
 	}
 	return defs
+}
+
+func (r *memRegistry) SearchDeferred(query string, limit int) []Tool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	queryTerms := searchTerms(query)
+	r.mu.RLock()
+	candidates := make([]Tool, 0)
+	scores := make(map[string]int)
+	for _, t := range r.tools {
+		if t.Exposure() != ExposureDeferred {
+			continue
+		}
+		haystack := strings.ToLower(t.Name() + "\n" + t.Description())
+		score := deferredSearchScore(haystack, query, queryTerms)
+		if query == "" || score > 0 {
+			candidates = append(candidates, t)
+			scores[t.Name()] = score
+		}
+	}
+	r.mu.RUnlock()
+	sort.Slice(candidates, func(i, j int) bool {
+		if scores[candidates[i].Name()] != scores[candidates[j].Name()] {
+			return scores[candidates[i].Name()] > scores[candidates[j].Name()]
+		}
+		return candidates[i].Name() < candidates[j].Name()
+	})
+	if len(candidates) > limit {
+		return candidates[:limit]
+	}
+	return candidates
+}
+
+func searchTerms(query string) []string {
+	fields := strings.FieldsFunc(query, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '_' || r == '-' || r == '/' || r == ':' || r == ',' ||
+			r == '.' || r == ';' || r == '(' || r == ')' || r == '[' ||
+			r == ']' || r == '{' || r == '}'
+	})
+	terms := make([]string, 0, len(fields))
+	seen := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if len(field) < 3 || seen[field] {
+			continue
+		}
+		seen[field] = true
+		terms = append(terms, field)
+	}
+	return terms
+}
+
+func deferredSearchScore(haystack, query string, terms []string) int {
+	if query != "" && strings.Contains(haystack, query) {
+		return 100
+	}
+	score := 0
+	for _, term := range terms {
+		if strings.Contains(haystack, term) {
+			score++
+		}
+	}
+	return score
 }

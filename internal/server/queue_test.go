@@ -66,7 +66,19 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 	be.SetArtifactStore(artifactStore)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
+	be.SetConnections([]config.Connection{{
+		ID:       "test-connection",
+		Name:     "Test",
+		Kind:     "openai",
+		AuthKind: "api_key",
+		ModelSettings: map[string]config.ModelSettings{
+			"test-model": {ImageInput: true},
+		},
+	}})
+	sess, err := be.CreateSession(session.CreateOptions{
+		ConnectionID: "test-connection",
+		Model:        "test-model",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

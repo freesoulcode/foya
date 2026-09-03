@@ -37,6 +37,9 @@ var (
 	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
 	// ErrAttachmentEditUnsupported avoids silently dropping attachments from an edited turn.
 	ErrAttachmentEditUnsupported = errors.New("messages with attachments cannot be edited")
+	// ErrImageInputUnsupported rejects image input unless the selected connection
+	// explicitly declares visual input support.
+	ErrImageInputUnsupported = errors.New("selected model does not support image input")
 	// ErrToolCallNotRunning means the requested tool has already completed or
 	// does not belong to the session.
 	ErrToolCallNotRunning = errors.New("tool call is not running")
@@ -113,6 +116,9 @@ func (b *Backend) SubmitInput(
 		return Submission{}, err
 	}
 	input.BrowserElements = browserElements
+	if err := b.validateImageInput(sessionID, input.Attachments); err != nil {
+		return Submission{}, err
+	}
 	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
 	if err != nil {
 		return Submission{}, err
@@ -260,6 +266,9 @@ func (b *Backend) EnqueueInput(
 		return queue.Message{}, err
 	}
 	input.BrowserElements = browserElements
+	if err := b.validateImageInput(sessionID, input.Attachments); err != nil {
+		return queue.Message{}, err
+	}
 	attachments, err := b.resolveAttachments(ctx, sessionID, input.Attachments)
 	if err != nil {
 		return queue.Message{}, err
@@ -276,6 +285,27 @@ func (b *Backend) EnqueueInput(
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
 	return item, nil
+}
+
+func (b *Backend) validateImageInput(
+	sessionID string,
+	refs []message.AttachmentRef,
+) error {
+	// Attachment IDs are client-provided references, so do not trust Kind
+	// before resolving them. The current upload surface only creates images.
+	if len(refs) > 0 {
+		item, ok := b.sessions.Get(sessionID)
+		if !ok {
+			return session.ErrNotFound
+		}
+		connection, ok := b.Connection(item.ConnectionID)
+		model := item.Model
+		settings, configured := connection.ModelSettings[model]
+		if !ok || configured && !settings.ImageInput {
+			return ErrImageInputUnsupported
+		}
+	}
+	return nil
 }
 
 // ListQueuedMessages returns an ordered copy of a session's queue.

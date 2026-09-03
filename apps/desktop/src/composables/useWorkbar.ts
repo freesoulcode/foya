@@ -96,6 +96,22 @@ function openBrowser(url: string) {
   setOpen(true);
 }
 
+function openAgentBrowser(sessionId: string, browserId: string) {
+  const existing = tabs.value.find(
+    (tab) => tab.id === browserId && tab.kind === "browser"
+  );
+  if (!existing) {
+    tabs.value.push({
+      id: browserId,
+      kind: "browser",
+      title: "Agent 浏览器",
+      sessionId,
+    });
+  }
+  activeTabId.value = browserId;
+  setOpen(true);
+}
+
 function openFiles(projectPath: string) {
   const id = `file:${projectPath}`;
   const existing = tabs.value.find((tab) => tab.id === id);
@@ -258,6 +274,7 @@ export function useWorkbar() {
     toggle,
     addTab,
     openBrowser,
+    openAgentBrowser,
     openFiles,
     openFile,
     openBackgroundCommand,

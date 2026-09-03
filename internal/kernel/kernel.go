@@ -13,6 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -42,6 +43,7 @@ type App struct {
 	cancel  context.CancelFunc
 	mcp     *mcpclient.Manager
 	memory  *memorymaint.Manager
+	browser *browseruse.Controller
 }
 
 // New 按配置装配内核。
@@ -73,6 +75,10 @@ func New(cfg config.Config) (*App, error) {
 	// 审批网关与工具注册表。
 	gw := approval.NewGateway(bus, log)
 	questions := question.NewGateway(bus, log)
+	browserController, err := browseruse.NewController(cfg.DataDir, bus, log)
+	if err != nil {
+		return nil, err
+	}
 	executionRunner := sandbox.NewRunner()
 	backgroundCommands := tool.NewBackgroundCommandManager(executionRunner)
 	tools := tool.NewRegistry()
@@ -85,7 +91,7 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewAskUserTool(questions))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
-	skills, err := skill.NewManager(cfg.DataDir, homeDir, nil)
+	skills, err := skill.NewManager(cfg.DataDir, homeDir, skill.BuiltinDefinitions())
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +101,12 @@ func New(cfg config.Config) (*App, error) {
 	}
 	tools.Register(tool.NewSkillSearchTool(skills))
 	tools.Register(tool.NewSkillLoadTool(skills))
+	tools.Register(tool.NewToolSearchTool(tools))
 	tools.Register(tool.NewWebSearchTool(web, gw))
 	tools.Register(tool.NewWebFetchTool(gw))
+	for _, browserTool := range tool.BrowserTools(browserController, gw) {
+		tools.Register(browserTool)
+	}
 	mcpManager, err := mcpclient.NewManager(cfg.DataDir, homeDir, tools, gw)
 	if err != nil {
 		return nil, err
@@ -118,6 +128,7 @@ func New(cfg config.Config) (*App, error) {
 	prov, model := buildProvider(cfg.Provider)
 	engine := agent.NewEngine(log, bus, sessions, prov, model, tools, gw)
 	engine.SetHookRuntime(hooks.NewRuntime(homeDir))
+	engine.SetSkillManager(skills)
 	engine.SetWorkflowPolicyResolver(workflows.Policy)
 	resolveProject := func(projectID string) (string, bool) {
 		item, ok := projects.Get(projectID)
@@ -213,6 +224,7 @@ func New(cfg config.Config) (*App, error) {
 	be.SetCommandManager(command.NewManager(homeDir))
 	be.SetWorkflowManager(workflows)
 	be.SetQuestionGateway(questions)
+	be.SetBrowserController(browserController)
 	be.SetBackgroundCommandManager(backgroundCommands)
 	engine.SetWorkflowCompletionHandler(be.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
@@ -231,7 +243,8 @@ func New(cfg config.Config) (*App, error) {
 	memoryManager.Start(appCtx)
 	go mcpManager.Start(appCtx)
 	return &App{
-		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager, memory: memoryManager,
+		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
+		memory: memoryManager, browser: browserController,
 	}, nil
 }
 
@@ -253,7 +266,6 @@ func loadConnections(cfg config.Config) []config.Connection {
 		AuthKind:      "api_key",
 		BaseURL:       legacy.BaseURL,
 		APIKey:        legacy.APIKey,
-		DefaultModel:  legacy.Model,
 		ContextWindow: legacy.ContextWindow,
 	}}
 }
@@ -278,5 +290,6 @@ func (a *App) Config() config.Config { return a.cfg }
 // Close 停止后台能力并释放 MCP 会话及其子进程。
 func (a *App) Close() {
 	a.cancel()
+	a.browser.Close()
 	a.mcp.Close()
 }

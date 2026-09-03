@@ -71,5 +71,7 @@ type Registry interface {
 	Unregister(name string)
 	Get(name string) (Tool, bool)
 	List() []Tool
-	Specs() []provider.ToolDef // 生成喂给模型的工具定义
+	Specs() []provider.ToolDef                    // 生成喂给模型的工具定义
+	SpecsFor(activeDeferred map[string]bool) []provider.ToolDef
+	SearchDeferred(query string, limit int) []Tool
 }

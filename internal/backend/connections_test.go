@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
@@ -32,11 +31,14 @@ func TestSessionBindsConfiguredConnection(t *testing.T) {
 		config.Provider{}, t.TempDir(),
 	)
 	be.SetConnections([]config.Connection{
-		{ID: "openai", Name: "OpenAI", Kind: "openai", AuthKind: "api_key", DefaultModel: "gpt-5"},
-		{ID: "deepseek", Name: "DeepSeek", Kind: "openai", AuthKind: "api_key", DefaultModel: "deepseek-chat"},
+		{ID: "openai", Name: "OpenAI", Kind: "openai", AuthKind: "api_key"},
+		{ID: "deepseek", Name: "DeepSeek", Kind: "openai", AuthKind: "api_key"},
 	})
 
-	created, err := be.CreateSession(session.CreateOptions{ConnectionID: "deepseek"})
+	created, err := be.CreateSession(session.CreateOptions{
+		ConnectionID: "deepseek",
+		Model:        "deepseek-chat",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +46,15 @@ func TestSessionBindsConfiguredConnection(t *testing.T) {
 		t.Fatalf("session target = %#v", created)
 	}
 
-	if err := be.DeleteConnection("deepseek"); !errors.Is(err, ErrConnectionInUse) {
-		t.Fatalf("delete active connection error = %v, want %v", err, ErrConnectionInUse)
+	if err := be.DeleteConnection("deepseek"); err != nil {
+		t.Fatal(err)
+	}
+	updated, ok := sessions.Get(created.ID)
+	if !ok {
+		t.Fatalf("session %q missing after deleting connection", created.ID)
+	}
+	if updated.ConnectionID != "" || updated.Model != "deepseek-chat" {
+		t.Fatalf("detached session target = %#v", updated)
 	}
 
 	if _, err := be.UpdateSession(
@@ -59,13 +68,9 @@ func TestSessionBindsConfiguredConnection(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	updated, ok := sessions.Get(created.ID)
+	updated, ok = sessions.Get(created.ID)
 	if !ok || updated.ConnectionID != "openai" || updated.Model != "gpt-5" {
 		t.Fatalf("updated session target = %#v", updated)
-	}
-
-	if err := be.DeleteConnection("deepseek"); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -84,8 +89,8 @@ func TestConnectionOrderSelectsNewSessionConnection(t *testing.T) {
 		config.Provider{}, t.TempDir(),
 	)
 	be.SetConnections([]config.Connection{
-		{ID: "openai", Name: "OpenAI", AuthKind: "api_key", DefaultModel: "gpt-5"},
-		{ID: "deepseek", Name: "DeepSeek", AuthKind: "api_key", DefaultModel: "deepseek-chat"},
+		{ID: "openai", Name: "OpenAI", AuthKind: "api_key"},
+		{ID: "deepseek", Name: "DeepSeek", AuthKind: "api_key"},
 	})
 
 	if _, err := be.UpdateConnection("deepseek", config.Connection{SortOrder: 0}); err != nil {
@@ -96,7 +101,10 @@ func TestConnectionOrderSelectsNewSessionConnection(t *testing.T) {
 		t.Fatalf("connection order = %#v", ordered)
 	}
 
-	created, err := be.CreateSession(session.CreateOptions{})
+	created, err := be.CreateSession(session.CreateOptions{
+		ConnectionID: "deepseek",
+		Model:        "deepseek-chat",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -89,7 +89,17 @@ func newQueueTestBackend(t *testing.T) (*Backend, string, *controlledProvider) {
 		t.Fatal(err)
 	}
 	be.SetArtifactStore(artifactStore)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model", ApprovalMode: "manual"})
+	be.SetConnections([]config.Connection{{
+		ID:       "test-connection",
+		Name:     "Test",
+		Kind:     "openai",
+		AuthKind: "api_key",
+	}})
+	sess, err := be.CreateSession(session.CreateOptions{
+		ConnectionID: "test-connection",
+		Model:        "test-model",
+		ApprovalMode: "manual",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +129,37 @@ func TestEnqueueInputPreservesCanonicalAttachment(t *testing.T) {
 	}
 	if err := be.DeleteArtifact(context.Background(), sessionID, ref.ID); !errors.Is(err, artifact.ErrCommitted) {
 		t.Fatalf("delete queued attachment error = %v", err)
+	}
+}
+
+func TestImageInputRequiresConnectionDeclaration(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	be.SetConnections([]config.Connection{{
+		ID:       "test-connection",
+		Name:     "Test",
+		Kind:     "openai",
+		AuthKind: "api_key",
+		ModelSettings: map[string]config.ModelSettings{
+			"test-model": {ImageInput: false},
+		},
+	}})
+	_, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		Attachments: []message.AttachmentRef{{
+			ID:   "image-attachment",
+			Kind: "image",
+		}},
+	})
+	if !errors.Is(err, ErrImageInputUnsupported) {
+		t.Fatalf("enqueue image error = %v, want %v", err, ErrImageInputUnsupported)
+	}
+	_, err = be.SubmitInput(context.Background(), sessionID, message.UserInput{
+		Attachments: []message.AttachmentRef{{
+			ID:   "image-attachment",
+			Kind: "image",
+		}},
+	})
+	if !errors.Is(err, ErrImageInputUnsupported) {
+		t.Fatalf("submit image error = %v, want %v", err, ErrImageInputUnsupported)
 	}
 }
 

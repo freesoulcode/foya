@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	approvalpkg "github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/backend"
+	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -129,6 +131,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /web-search", s.handleGetWebSearch)
 	s.mux.HandleFunc("PUT /web-search", s.handleUpdateWebSearch)
 	s.mux.HandleFunc("POST /web-search/test", s.handleTestWebSearch)
+	s.mux.HandleFunc("POST /sessions/{id}/browser-actions/{request_id}", s.handleResolveBrowserAction)
 	s.mux.HandleFunc("GET /mcp", s.handleGetMCP)
 	s.mux.HandleFunc("PUT /mcp", s.handleReplaceMCP)
 	s.mux.HandleFunc("GET /mcp/status", s.handleMCPStatus)
@@ -918,12 +921,68 @@ func (s *Server) handleTestWebSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, results)
 }
 
+func (s *Server) handleResolveBrowserAction(w http.ResponseWriter, r *http.Request) {
+	var input protocol.BrowserActionResultRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	requestID := r.PathValue("request_id")
+	if input.RequestID != "" && input.RequestID != requestID {
+		writeErr(w, http.StatusBadRequest, "bad_request", "browser action request ID mismatch")
+		return
+	}
+	var screenshot []byte
+	if input.ScreenshotBase64 != "" {
+		if input.MediaType != "image/png" {
+			writeErr(w, http.StatusBadRequest, "bad_request", "unsupported browser screenshot type")
+			return
+		}
+		const maxScreenshotBytes = 20 * 1024 * 1024
+		if base64.StdEncoding.DecodedLen(len(input.ScreenshotBase64)) > maxScreenshotBytes {
+			writeErr(w, http.StatusRequestEntityTooLarge, "browser_screenshot_too_large", "browser screenshot exceeds size limit")
+			return
+		}
+		var err error
+		screenshot, err = base64.StdEncoding.DecodeString(input.ScreenshotBase64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", "invalid browser screenshot")
+			return
+		}
+	}
+	err := s.backend.ResolveBrowserAction(
+		r.PathValue("id"),
+		requestID,
+		browseruse.ActionResult{
+			URL: input.URL, Title: input.Title, Revision: input.Revision,
+			ObservationID: input.ObservationID,
+			Snapshot:      input.Snapshot, Screenshot: screenshot,
+			MediaType: input.MediaType,
+			Code:      input.Code, Message: input.Message,
+			PreURL: input.PreURL, PostURL: input.PostURL,
+			Verified: input.Verified, ActualText: input.ActualText,
+			Trace: input.Trace, Error: input.Error,
+		},
+	)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, browseruse.ErrNotFound) || errors.Is(err, session.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, "browser_action_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleCreateSession 新建会话。未指定模型时回退到默认 Connection 的模型。
+// handleCreateSession 新建会话。模型由调用方显式指定。
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req protocol.CreateSessionRequest
 	decoder := json.NewDecoder(r.Body)
@@ -1046,20 +1105,41 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func publicConnection(connection config.Connection) protocol.ConnectionConfig {
+	modelSettings := make(map[string]protocol.ModelSettings, len(connection.ModelSettings))
+	for model, settings := range connection.ModelSettings {
+		modelSettings[model] = protocol.ModelSettings{
+			ContextWindow:    settings.ContextWindow,
+			ImageInput:       settings.ImageInput,
+			ToolCalling:      settings.ToolCalling,
+			WebSearch:        settings.WebSearch,
+			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
+		}
+	}
 	return protocol.ConnectionConfig{
 		ID:            connection.ID,
 		Name:          connection.Name,
 		Kind:          connection.Kind,
 		AuthKind:      connection.AuthKind,
 		BaseURL:       connection.BaseURL,
+		APIKey:        connection.APIKey,
 		HasAPIKey:     connection.APIKey != "",
-		DefaultModel:  connection.DefaultModel,
 		ContextWindow: connection.ContextWindow,
+		ModelSettings: modelSettings,
 		SortOrder:     connection.SortOrder,
 	}
 }
 
 func toConnection(input protocol.ConnectionConfig) config.Connection {
+	modelSettings := make(map[string]config.ModelSettings, len(input.ModelSettings))
+	for model, settings := range input.ModelSettings {
+		modelSettings[model] = config.ModelSettings{
+			ContextWindow:    settings.ContextWindow,
+			ImageInput:       settings.ImageInput,
+			ToolCalling:      settings.ToolCalling,
+			WebSearch:        settings.WebSearch,
+			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
+		}
+	}
 	return config.Connection{
 		ID:            input.ID,
 		Name:          input.Name,
@@ -1067,8 +1147,8 @@ func toConnection(input protocol.ConnectionConfig) config.Connection {
 		AuthKind:      input.AuthKind,
 		BaseURL:       input.BaseURL,
 		APIKey:        input.APIKey,
-		DefaultModel:  input.DefaultModel,
 		ContextWindow: input.ContextWindow,
+		ModelSettings: modelSettings,
 		SortOrder:     input.SortOrder,
 	}
 }
@@ -1803,6 +1883,8 @@ func writeQueueErr(w http.ResponseWriter, err error) {
 		errors.Is(err, artifact.ErrInvalidID),
 		errors.Is(err, artifact.ErrUnsupportedType):
 		writeErr(w, http.StatusBadRequest, "invalid_queue_message", err.Error())
+	case errors.Is(err, backend.ErrImageInputUnsupported):
+		writeErr(w, http.StatusBadRequest, "image_input_unsupported", err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, "queue_failed", err.Error())
 	}

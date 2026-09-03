@@ -16,6 +16,8 @@ const (
 	ctxKeyProjectID
 	ctxKeySessionID
 	ctxKeyRunID
+	ctxKeyDeferredTools
+	ctxKeyActiveTools
 )
 
 // WithCWD 把执行目录注入上下文(由 engine 设置)。
@@ -66,6 +68,31 @@ func RunIDFromContext(ctx context.Context) string {
 		return id
 	}
 	return ""
+}
+
+type DeferredToolActivator interface {
+	ActivateTool(name string)
+}
+
+func WithDeferredToolActivator(ctx context.Context, activator DeferredToolActivator) context.Context {
+	return context.WithValue(ctx, ctxKeyDeferredTools, activator)
+}
+
+func DeferredToolActivatorFromContext(ctx context.Context) (DeferredToolActivator, bool) {
+	activator, ok := ctx.Value(ctxKeyDeferredTools).(DeferredToolActivator)
+	return activator, ok
+}
+
+func WithActiveToolSnapshot(ctx context.Context, active map[string]bool) context.Context {
+	return context.WithValue(ctx, ctxKeyActiveTools, active)
+}
+
+func ActiveToolFromContext(ctx context.Context, name string) bool {
+	active, ok := ctx.Value(ctxKeyActiveTools).(map[string]bool)
+	if !ok {
+		return true
+	}
+	return active[name]
 }
 
 // ModelRuntime 是当前会话回合绑定的模型与 Provider。

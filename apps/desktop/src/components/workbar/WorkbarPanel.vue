@@ -12,7 +12,12 @@ import {
 } from "@lucide/vue";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
-import type { BrowserElementSelection, ChatMessage } from "@/lib/api";
+import type {
+  BrowserActionRequest,
+  BrowserActionResult,
+  BrowserElementSelection,
+  ChatMessage,
+} from "@/lib/api";
 import {
   useWorkbar,
   type WorkbarLaunchKind,
@@ -34,12 +39,18 @@ const props = defineProps<{
   sessionId?: string;
   projectPath?: string;
   messages: ChatMessage[];
+  browserActions?: BrowserActionRequest[];
   obscured?: boolean;
   ensureSession: () => Promise<string>;
 }>();
 
 const emit = defineEmits<{
   (event: "browser-element-selected", element: BrowserElementSelection): void;
+  (
+    event: "browser-action-result",
+    request: BrowserActionRequest,
+    result: BrowserActionResult
+  ): void;
 }>();
 
 const { showCustomWindowControls } = usePlatform();
@@ -407,8 +418,15 @@ watch(
             :initial-url="tab.url"
             :active="open && activeTabId === tab.id"
             :obscured="obscured || addMenuOpen"
+            :agent-action="
+              browserActions?.find((action) => action.browser_id === tab.id)
+            "
             @title-change="setTabTitle(tab.id, $event)"
             @element-selected="emit('browser-element-selected', $event)"
+            @agent-action-result="
+              (request, result) =>
+                emit('browser-action-result', request, result)
+            "
           />
         </template>
       </div>

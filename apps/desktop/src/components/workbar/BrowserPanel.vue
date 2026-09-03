@@ -13,6 +13,8 @@ import {
 } from "@lucide/vue";
 import {
   api,
+  type BrowserActionRequest,
+  type BrowserActionResult,
   type BrowserElementSelection,
   type BrowserViewport,
 } from "@/lib/api";
@@ -24,11 +26,17 @@ const props = defineProps<{
   active: boolean;
   obscured?: boolean;
   initialUrl?: string;
+  agentAction?: BrowserActionRequest;
 }>();
 
 const emit = defineEmits<{
   (event: "title-change", title: string): void;
   (event: "element-selected", element: BrowserElementSelection): void;
+  (
+    event: "agent-action-result",
+    request: BrowserActionRequest,
+    result: BrowserActionResult
+  ): void;
 }>();
 
 const viewport = ref<HTMLElement | null>(null);
@@ -44,6 +52,15 @@ let unlistenLoad: UnlistenFn | undefined;
 let unlistenTitle: UnlistenFn | undefined;
 let unlistenElement: UnlistenFn | undefined;
 let unlistenPickerState: UnlistenFn | undefined;
+const handledAgentActions = new Set<string>();
+let agentRuntimeReady = false;
+let pendingAgentLoad:
+  | {
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  | undefined;
 
 interface BrowserPageLoad {
   browser_id: string;
@@ -67,7 +84,11 @@ interface BrowserElementPickerState {
 }
 
 function normalizeAddress(value: string): string | null {
-  const raw = value.trim();
+  const trimmed = value.trim();
+  const raw =
+    trimmed.startsWith("`") && trimmed.endsWith("`")
+      ? trimmed.slice(1, -1).trim()
+      : trimmed;
   if (!raw) return null;
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
   try {
@@ -176,6 +197,63 @@ async function openInDefaultBrowser() {
   }
 }
 
+async function executeAgentAction(request: BrowserActionRequest) {
+  if (handledAgentActions.has(request.id)) return;
+  handledAgentActions.add(request.id);
+  let result: BrowserActionResult;
+  try {
+    if (request.action === "open" || request.action === "navigate") {
+      const url = normalizeAddress(request.url ?? "");
+      if (!url) throw new Error("浏览器地址无效");
+      await nextTick();
+      const bounds = measureViewport();
+      if (!bounds) throw new Error("浏览器预览区域尚未就绪");
+      address.value = url;
+      currentUrl.value = url;
+      loading.value = true;
+      armLoadTimer();
+      emit("title-change", titleForUrl(url));
+      const loaded = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendingAgentLoad = undefined;
+          resolve();
+        }, Math.min(request.timeout_ms || 1_500, 1_500));
+        pendingAgentLoad = { resolve, reject, timer };
+      });
+      await api.navigateBrowser(props.browserId, url, bounds);
+      await loaded;
+      syncViewport();
+      try {
+        result = await api.executeBrowserAction({
+          ...request,
+          action: "snapshot",
+          url: undefined,
+          timeout_ms: Math.min(request.timeout_ms || 5_000, 5_000),
+        });
+      } catch {
+        result = {
+          url: currentUrl.value || url,
+          title: titleForUrl(currentUrl.value || url),
+        };
+      }
+    } else {
+      result = await api.executeBrowserAction(request);
+      if (result.url) {
+        currentUrl.value = result.url;
+        address.value = result.url;
+      }
+      if (result.title) emit("title-change", result.title);
+    }
+  } catch (cause) {
+    if (pendingAgentLoad) {
+      clearTimeout(pendingAgentLoad.timer);
+      pendingAgentLoad = undefined;
+    }
+    result = { error: String(cause) };
+  }
+  emit("agent-action-result", request, result);
+}
+
 function syncViewport() {
   cancelAnimationFrame(frame);
   if (!props.active || props.obscured || !currentUrl.value || !viewport.value) {
@@ -213,6 +291,13 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => props.agentAction,
+  (action) => {
+    if (action && agentRuntimeReady) void executeAgentAction(action);
+  }
+);
+
 onMounted(async () => {
   try {
     unlistenLoad = await listen<BrowserPageLoad>(
@@ -231,6 +316,11 @@ onMounted(async () => {
         clearLoadTimer();
         loading.value = false;
         error.value = "";
+        if (pendingAgentLoad) {
+          clearTimeout(pendingAgentLoad.timer);
+          pendingAgentLoad.resolve();
+          pendingAgentLoad = undefined;
+        }
       }
     );
     unlistenTitle = await listen<BrowserTitleChanged>(
@@ -256,7 +346,10 @@ onMounted(async () => {
         selectingElement.value = payload.active;
       }
     );
-    if (props.initialUrl) {
+    agentRuntimeReady = true;
+    if (props.agentAction) {
+      await executeAgentAction(props.agentAction);
+    } else if (props.initialUrl) {
       address.value = props.initialUrl;
       await nextTick();
       await navigate();
@@ -267,12 +360,18 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  agentRuntimeReady = false;
   cancelAnimationFrame(frame);
   clearLoadTimer();
   unlistenLoad?.();
   unlistenTitle?.();
   unlistenElement?.();
   unlistenPickerState?.();
+  if (pendingAgentLoad) {
+    clearTimeout(pendingAgentLoad.timer);
+    pendingAgentLoad.reject(new Error("浏览器面板已关闭"));
+    pendingAgentLoad = undefined;
+  }
   void api.closeBrowser(props.browserId).catch(() => {});
 });
 </script>

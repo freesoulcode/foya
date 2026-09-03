@@ -21,6 +21,7 @@ import {
   type QuestionAnswer,
   type BackgroundCommand,
   type BrowserElementSelection,
+  type BrowserActionRequest,
 } from "@/lib/api";
 
 // 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
@@ -98,6 +99,7 @@ export interface PendingApproval {
 }
 const pendingApprovals = ref<Record<string, PendingApproval>>({});
 const pendingQuestions = ref<Record<string, PendingQuestionBatch>>({});
+const pendingBrowserActions = ref<Record<string, BrowserActionRequest>>({});
 
 export interface PendingHistoryEdit {
   sessionId: string;
@@ -442,6 +444,16 @@ function handleEvent(sessionId: string, data: string) {
     case "question_resolved": {
       const p = ev.payload as { id?: string };
       if (p?.id) delete pendingQuestions.value[p.id];
+      break;
+    }
+    case "browser_action_requested": {
+      const action = ev.payload as BrowserActionRequest;
+      if (action?.id) pendingBrowserActions.value[action.id] = action;
+      break;
+    }
+    case "browser_action_resolved": {
+      const result = ev.payload as { id?: string };
+      if (result?.id) delete pendingBrowserActions.value[result.id];
       break;
     }
     case "turn_started": {
@@ -1193,6 +1205,7 @@ export function useKernel() {
     workflowsBySession,
     pendingApprovals,
     pendingQuestions,
+    pendingBrowserActions,
     pendingHistoryEdit,
     connect,
     newSession,

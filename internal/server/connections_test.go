@@ -10,6 +10,7 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
@@ -47,15 +48,22 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 		"auth_kind":      "api_key",
 		"base_url":       "https://api.deepseek.com/v1",
 		"api_key":        "secret",
-		"default_model":  "deepseek-chat",
 		"context_window": 256000,
+		"model_settings": map[string]any{
+			"deepseek-chat": map[string]any{
+				"image_input":    true,
+				"context_window": 128000,
+			},
+		},
 	}, &connection); code != http.StatusCreated {
 		t.Fatalf("create connection status = %d", code)
 	}
-	if connection.APIKey != "" ||
+	if connection.APIKey != "secret" ||
 		!connection.HasAPIKey ||
 		connection.ID == "" ||
-		connection.ContextWindow != 256000 {
+		connection.ContextWindow != 256000 ||
+		!connection.ModelSettings["deepseek-chat"].ImageInput ||
+		connection.ModelSettings["deepseek-chat"].ContextWindow != 128000 {
 		t.Fatalf("public connection = %#v", connection)
 	}
 
@@ -63,13 +71,14 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	if code := requestJSON(t, handler, http.MethodGet, "/connections", nil, &listed); code != http.StatusOK {
 		t.Fatalf("list connection status = %d", code)
 	}
-	if len(listed) != 1 || listed[0].ID != connection.ID || listed[0].APIKey != "" {
+	if len(listed) != 1 || listed[0].ID != connection.ID || listed[0].APIKey != "secret" {
 		t.Fatalf("listed connections = %#v", listed)
 	}
 
 	var created session.Session
 	if code := requestJSON(t, handler, http.MethodPost, "/sessions", map[string]string{
 		"connection_id": connection.ID,
+		"model":         "deepseek-chat",
 	}, &created); code != http.StatusOK {
 		t.Fatalf("create session status = %d", code)
 	}
@@ -77,16 +86,30 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 		t.Fatalf("created session = %#v", created)
 	}
 
-	if code := requestJSON(t, handler, http.MethodDelete, "/connections/"+connection.ID, nil, nil); code != http.StatusConflict {
+	if code := requestJSON(t, handler, http.MethodDelete, "/connections/"+connection.ID, nil, nil); code != http.StatusNoContent {
 		t.Fatalf("delete bound connection status = %d", code)
+	}
+	got, ok := sessions.Get(created.ID)
+	if !ok {
+		t.Fatalf("session %q missing after deleting connection", created.ID)
+	}
+	if got.ConnectionID != "" || got.Model != "deepseek-chat" {
+		t.Fatalf("detached session = %#v", got)
+	}
+	var remaining []connectionResponse
+	if code := requestJSON(t, handler, http.MethodGet, "/connections", nil, &remaining); code != http.StatusOK {
+		t.Fatalf("list connections after deletion status = %d", code)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining connections = %#v", remaining)
 	}
 }
 
 type connectionResponse struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	APIKey        string `json:"api_key"`
-	HasAPIKey     bool   `json:"has_api_key"`
-	DefaultModel  string `json:"default_model"`
-	ContextWindow int64  `json:"context_window"`
+	ID            string                            `json:"id"`
+	Name          string                            `json:"name"`
+	APIKey        string                            `json:"api_key"`
+	HasAPIKey     bool                              `json:"has_api_key"`
+	ContextWindow int64                             `json:"context_window"`
+	ModelSettings map[string]protocol.ModelSettings `json:"model_settings"`
 }

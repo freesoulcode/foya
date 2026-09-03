@@ -13,6 +13,25 @@ import (
 	"github.com/freesoulcode/foya/internal/queue"
 )
 
+type BrowserActionResultRequest struct {
+	RequestID        string         `json:"request_id"`
+	URL              string         `json:"url,omitempty"`
+	Title            string         `json:"title,omitempty"`
+	Revision         uint64         `json:"revision,omitempty"`
+	ObservationID    string         `json:"observation_id,omitempty"`
+	Snapshot         string         `json:"snapshot,omitempty"`
+	ScreenshotBase64 string         `json:"screenshot_base64,omitempty"`
+	MediaType        string         `json:"media_type,omitempty"`
+	Code             string         `json:"code,omitempty"`
+	Message          string         `json:"message,omitempty"`
+	PreURL           string         `json:"pre_url,omitempty"`
+	PostURL          string         `json:"post_url,omitempty"`
+	Verified         *bool          `json:"verified,omitempty"`
+	ActualText       string         `json:"actual_text,omitempty"`
+	Trace            map[string]any `json:"trace,omitempty"`
+	Error            string         `json:"error,omitempty"`
+}
+
 // SubmitTurnRequest 发起一个回合。
 type SubmitTurnRequest struct {
 	Session         string                   `json:"session"`
@@ -87,16 +106,24 @@ type UpdateQueuedMessageRequest struct {
 // ConnectionConfig is the public, redacted Connection representation.
 // APIKey is accepted only on writes; reads expose HasAPIKey instead.
 type ConnectionConfig struct {
-	ID            string `json:"id,omitempty"`
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	AuthKind      string `json:"auth_kind"`
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"api_key,omitempty"`
-	HasAPIKey     bool   `json:"has_api_key,omitempty"`
-	DefaultModel  string `json:"default_model"`
-	ContextWindow int64  `json:"context_window,omitempty"`
-	SortOrder     int    `json:"sort_order"`
+	ID            string                   `json:"id,omitempty"`
+	Name          string                   `json:"name"`
+	Kind          string                   `json:"kind"`
+	AuthKind      string                   `json:"auth_kind"`
+	BaseURL       string                   `json:"base_url"`
+	APIKey        string                   `json:"api_key,omitempty"`
+	HasAPIKey     bool                     `json:"has_api_key,omitempty"`
+	ContextWindow int64                    `json:"context_window,omitempty"`
+	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
+	SortOrder     int                      `json:"sort_order"`
+}
+
+type ModelSettings struct {
+	ContextWindow    int64    `json:"context_window,omitempty"`
+	ImageInput       bool     `json:"image_input"`
+	ToolCalling      bool     `json:"tool_calling"`
+	WebSearch        bool     `json:"web_search"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
 type ConnectionModelsResponse struct {

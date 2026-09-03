@@ -52,3 +52,55 @@ func TestAssembleKeepsRulesAndMemoriesSeparate(t *testing.T) {
 		t.Fatal("rules must precede memories")
 	}
 }
+
+func TestAssembleIncludesBoundedSkillCatalogMetadata(t *testing.T) {
+	result := Assemble(Input{
+		ProjectPath:  t.TempDir(),
+		ApprovalMode: "manual",
+		HomeDir:      t.TempDir(),
+		Skills: []SkillCatalogEntry{
+			{
+				Ref:          "builtin:example-skill",
+				Name:         "example-skill",
+				Description:  "Use for example tasks.",
+				Scope:        "builtin",
+				AllowedTools: []string{"example_tool"},
+			},
+		},
+	})
+	for _, expected := range []string{
+		"<available_skills",
+		"skill_load",
+		"not a procedure",
+		"until the matching skill has been loaded",
+		"builtin:example-skill",
+		"Use for example tasks.",
+		"example_tool",
+	} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("prompt does not contain %q", expected)
+		}
+	}
+	if strings.Contains(result, "Take a snapshot before interacting.") {
+		t.Fatal("skill catalog should not include full skill bodies")
+	}
+}
+
+func TestSkillCatalogFragmentIsBounded(t *testing.T) {
+	skills := make([]SkillCatalogEntry, 0, 128)
+	for i := 0; i < 128; i++ {
+		skills = append(skills, SkillCatalogEntry{
+			Ref:         "global:skill",
+			Name:        "skill",
+			Scope:       "global",
+			Description: strings.Repeat("long description ", 256),
+		})
+	}
+	result := skillsCatalogFragment(skills)
+	if len(result) > maxSkillsCatalogChars {
+		t.Fatalf("catalog length = %d, want <= %d", len(result), maxSkillsCatalogChars)
+	}
+	if !strings.Contains(result, "omitted due to prompt budget") {
+		t.Fatal("catalog should report omitted skills")
+	}
+}

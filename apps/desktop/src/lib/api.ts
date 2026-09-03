@@ -117,6 +117,14 @@ export interface ConnectionModelCatalog {
   capabilities?: Record<string, { image_input?: boolean }>;
 }
 
+export interface ModelSettings {
+  context_window?: number;
+  image_input: boolean;
+  tool_calling: boolean;
+  web_search: boolean;
+  reasoning_efforts?: ReasoningEffort[];
+}
+
 export interface ConnectionModelGroup extends ConnectionConfig {
   models: string[];
   context_windows: Record<string, number>;
@@ -169,6 +177,55 @@ export interface BrowserElementSelection {
   selector: string;
   text: string;
   html: string;
+}
+
+export interface BrowserActionRequest {
+  id: string;
+  session_id: string;
+  tool_call_id?: string;
+  browser_id: string;
+  action:
+    | "open"
+    | "navigate"
+    | "snapshot"
+    | "click"
+    | "type"
+    | "press_key"
+    | "scroll"
+    | "wait"
+    | "extract"
+    | "back"
+    | "reload"
+    | "screenshot";
+  url?: string;
+  ref?: string;
+  observation_id?: string;
+  text?: string;
+  key?: string;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  timeout_ms?: number;
+  clear?: boolean;
+  full_page?: boolean;
+  created_at: string;
+}
+
+export interface BrowserActionResult {
+  url?: string;
+  title?: string;
+  revision?: number;
+  observation_id?: string;
+  snapshot?: string;
+  screenshot_base64?: string;
+  media_type?: string;
+  code?: string;
+  message?: string;
+  pre_url?: string;
+  post_url?: string;
+  verified?: boolean;
+  actual_text?: string;
+  trace?: Record<string, unknown>;
+  error?: string;
 }
 
 export interface ProjectEntry {
@@ -264,8 +321,8 @@ export interface ConnectionConfig {
   kind: string;
   auth_kind: "api_key";
   base_url: string;
-  default_model: string;
   context_window?: number;
+  model_settings: Record<string, ModelSettings>;
   api_key?: string;
   has_api_key?: boolean;
   sort_order: number;
@@ -744,6 +801,7 @@ export const api = {
         return {
           models: result.models ?? [],
           context_windows: result.context_windows ?? {},
+          capabilities: result.capabilities ?? {},
         } satisfies ConnectionModelCatalog;
       }
     ),
@@ -1039,6 +1097,15 @@ export const api = {
 
   setBrowserElementPicker: (browserId: string, enabled: boolean) =>
     invoke("set_browser_element_picker", { browserId, enabled }),
+
+  executeBrowserAction: (request: BrowserActionRequest) =>
+    invoke<BrowserActionResult>("execute_browser_action", { request }),
+
+  resolveBrowserAction: (
+    sessionId: string,
+    requestId: string,
+    result: BrowserActionResult
+  ) => invoke("resolve_browser_action", { sessionId, requestId, result }),
 
   hideBrowser: (browserId: string) =>
     invoke("hide_browser", { browserId }),

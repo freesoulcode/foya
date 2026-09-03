@@ -10,6 +10,8 @@ import {
   api,
   type ApprovalMode,
   type BackgroundCommand,
+  type BrowserActionRequest,
+  type BrowserActionResult,
   type BrowserElementSelection,
   type ReasoningEffort,
   type UpdateSessionPatch,
@@ -34,6 +36,7 @@ const {
   open: workbarOpen,
   openFile: openWorkbarFile,
   openBrowser: openWorkbarBrowser,
+  openAgentBrowser,
   openBackgroundCommand: openWorkbarBackgroundCommand,
 } = useWorkbar();
 const { linkOpenMode } = useLinkPreference();
@@ -59,6 +62,7 @@ const {
   contextUsage,
   pendingApprovals,
   pendingQuestions,
+  pendingBrowserActions,
   pendingHistoryEdit,
   connect,
   newSession,
@@ -94,6 +98,7 @@ const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
 const questionPanelExpanded = ref(false);
 const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
+const sessionDeleteDialogOpen = ref(false);
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -172,8 +177,18 @@ const composerApproval = computed<ApprovalMode>(
 const composerContextWindow = computed(
   () =>
     connectionModels.value.find((connection) => connection.id === composerConnectionID.value)
-      ?.context_windows[composerModel.value] ?? 0
+      ?.model_settings?.[composerModel.value]?.context_window ??
+    connectionModels.value.find((connection) => connection.id === composerConnectionID.value)
+      ?.context_windows[composerModel.value] ??
+    0
 );
+const composerSupportsImage = computed(() => {
+  const connection = connectionModels.value.find(
+    (item) => item.id === composerConnectionID.value
+  );
+  if (!connection || !composerModel.value) return false;
+  return connection.model_settings?.[composerModel.value]?.image_input ?? true;
+});
 const composerContextUsage = computed(() =>
   contextUsage.value?.model === composerModel.value ? contextUsage.value : undefined
 );
@@ -199,6 +214,7 @@ const sessionsWaitingForAnswer = computed<Record<string, boolean>>(() => {
 const workbarObscured = computed(
   () =>
     settingsActive.value ||
+    sessionDeleteDialogOpen.value ||
     Object.keys(pendingApprovals.value).length > 0 ||
     pendingHistoryEdit.value !== null
 );
@@ -256,6 +272,29 @@ function clearBrowserElements() {
 
 function restoreBrowserElements(elements: BrowserElementSelection[]) {
   pendingBrowserElements.value = elements;
+}
+
+const openedBrowserRequests = new Set<string>();
+watch(
+  () => Object.values(pendingBrowserActions.value),
+  (actions) => {
+    for (const action of actions) {
+      if (openedBrowserRequests.has(action.id)) continue;
+      openedBrowserRequests.add(action.id);
+      openAgentBrowser(action.session_id, action.browser_id);
+    }
+  }
+);
+
+async function onBrowserActionResult(
+  request: BrowserActionRequest,
+  result: BrowserActionResult
+) {
+  try {
+    await api.resolveBrowserAction(request.session_id, request.id, result);
+  } catch (cause) {
+    console.error("浏览器动作回执失败:", cause);
+  }
 }
 
 // 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
@@ -394,6 +433,7 @@ onBeforeUnmount(() => {
       @rename="onRename"
       @pin="onPin"
       @delete="onDelete"
+      @delete-dialog-change="sessionDeleteDialogOpen = $event"
       @delete-project="onDeleteProject"
       @rename-project="onRenameProject"
       @pin-project="onPinProject"
@@ -471,6 +511,7 @@ onBeforeUnmount(() => {
             :queued-messages="queuedMessages"
             :context-usage="composerContextUsage"
             :context-window="composerContextWindow"
+            :supports-image="composerSupportsImage"
             :has-session="!isDraft"
             :session-id="activeId"
             :browser-elements="pendingBrowserElements"
@@ -498,9 +539,11 @@ onBeforeUnmount(() => {
         :session-id="activeId || undefined"
         :project-path="projectPath"
         :messages="messages"
+        :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
         :ensure-session="ensureSession"
         @browser-element-selected="onBrowserElementSelected"
+        @browser-action-result="onBrowserActionResult"
       />
     </SidebarInset>
   </SidebarProvider>

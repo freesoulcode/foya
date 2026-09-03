@@ -67,6 +67,7 @@ const props = withDefaults(
     sessionId?: string;
     projectLocked?: boolean;
     browserElements?: BrowserElementSelection[];
+    supportsImage?: boolean;
   }>(),
   {
     disabled: false,
@@ -87,6 +88,7 @@ const props = withDefaults(
     sessionId: "",
     projectLocked: false,
     browserElements: () => [],
+    supportsImage: false,
   }
 );
 
@@ -126,6 +128,10 @@ const pendingImages = ref<Array<{ file: File; url: string }>>([]);
 
 function addImages(files: File[]) {
   attachmentError.value = "";
+  if (!props.supportsImage) {
+    attachmentError.value = "当前模型未声明支持视觉输入";
+    return;
+  }
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     if (file.size > 20 * 1024 * 1024) {
@@ -420,6 +426,10 @@ function createProjectFromPicker(event: Event) {
 // ---- 发送 ----
 async function submit() {
   const text = input.value.trim();
+  if (pendingImages.value.length > 0 && !props.supportsImage) {
+    attachmentError.value = "当前模型未声明支持视觉输入，请移除图片或切换模型";
+    return;
+  }
   if (
     (!text &&
       pendingImages.value.length === 0 &&
@@ -624,9 +634,9 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex shrink-0 items-center gap-0.5">
             <button
               type="button"
-              :disabled="disabled"
+              :disabled="disabled || !supportsImage"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              title="添加图片"
+              :title="supportsImage ? '添加图片' : '当前模型不支持视觉输入'"
               @click="fileInputRef?.click()"
             >
               <PaperclipIcon class="size-4" />

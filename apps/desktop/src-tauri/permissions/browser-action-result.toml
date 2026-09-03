@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-browser-action-result"
+description = "Allows browser child webviews to return pending automation action results."
+commands.allow = ["browser_action_result"]

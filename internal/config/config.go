@@ -65,18 +65,26 @@ type Provider struct {
 // 本阶段 AuthKind 固定为 api_key；后续可扩展 oauth_subscription 而不影响
 // Session 的 connection_id + model 绑定关系。
 type Connection struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Kind          string `json:"kind"`
-	AuthKind      string `json:"auth_kind"`
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"api_key,omitempty"`
-	DefaultModel  string `json:"default_model"`
-	ContextWindow int64  `json:"context_window,omitempty"`
-	SortOrder     int    `json:"sort_order"`
+	ID            string                   `json:"id"`
+	Name          string                   `json:"name"`
+	Kind          string                   `json:"kind"`
+	AuthKind      string                   `json:"auth_kind"`
+	BaseURL       string                   `json:"base_url"`
+	APIKey        string                   `json:"api_key,omitempty"`
+	ContextWindow int64                    `json:"context_window,omitempty"`
+	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
+	SortOrder     int                      `json:"sort_order"`
 	// LegacyDefault is read only to migrate older connection catalogs. The
 	// first connection by SortOrder is now the new-session preference.
 	LegacyDefault bool `json:"is_default,omitempty"`
+}
+
+type ModelSettings struct {
+	ContextWindow    int64    `json:"context_window,omitempty"`
+	ImageInput       bool     `json:"image_input"`
+	ToolCalling      bool     `json:"tool_calling"`
+	WebSearch        bool     `json:"web_search"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
 func (c Connection) Provider() Provider {
@@ -84,7 +92,6 @@ func (c Connection) Provider() Provider {
 		Kind:          c.Kind,
 		BaseURL:       c.BaseURL,
 		APIKey:        c.APIKey,
-		Model:         c.DefaultModel,
 		ContextWindow: c.ContextWindow,
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
@@ -73,6 +74,7 @@ type Backend struct {
 	workflows          *workflow.Manager
 	questions          question.Gateway
 	backgroundCommands tool.BackgroundCommandManager
+	browser            *browseruse.Controller
 
 	buildProvider     ProviderBuilder
 	dataDir           string
@@ -94,6 +96,28 @@ func (b *Backend) SetCapabilityManagers(skills *skill.Manager, web *websearch.Ma
 	b.skills = skills
 	b.web = web
 	b.mcp = mcp
+}
+
+func (b *Backend) SetBrowserController(controller *browseruse.Controller) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.browser = controller
+}
+
+func (b *Backend) ResolveBrowserAction(
+	sessionID, requestID string,
+	result browseruse.ActionResult,
+) error {
+	if _, ok := b.sessions.Get(sessionID); !ok {
+		return session.ErrNotFound
+	}
+	b.mu.RLock()
+	controller := b.browser
+	b.mu.RUnlock()
+	if controller == nil {
+		return errors.New("browser use is unavailable")
+	}
+	return controller.Resolve(sessionID, requestID, result)
 }
 
 func (b *Backend) SetProjectManager(projects *project.Manager) {
@@ -921,13 +945,10 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 	if connectionID == "" {
 		connectionID = b.firstConnectionID
 	}
-	connection, exists := b.connections[connectionID]
+	_, exists := b.connections[connectionID]
 	b.mu.RUnlock()
 	if connectionID != "" && !exists {
 		return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID)
-	}
-	if opts.Model == "" && exists {
-		opts.Model = connection.DefaultModel
 	}
 	opts.ConnectionID = connectionID
 	if err := b.resolveSessionProject(&opts); err != nil {
@@ -1061,6 +1082,12 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		b.mu.RUnlock()
 		if backgroundCommands != nil {
 			backgroundCommands.ClearSession(sessionID)
+		}
+		b.mu.RLock()
+		browserController := b.browser
+		b.mu.RUnlock()
+		if browserController != nil {
+			browserController.ClearSession(sessionID)
 		}
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
@@ -1432,6 +1459,8 @@ func (b *Backend) SetConnections(connections []config.Connection) {
 	}
 	b.mu.Unlock()
 	b.engine.SetProviderResolver(b.resolveSessionProvider)
+	b.engine.SetImageCapabilityResolver(b.resolveSessionImageCapability)
+	b.engine.SetContextWindowResolver(b.resolveSessionContextWindow)
 	if err := config.SaveConnections(b.dataDir, normalized); err != nil {
 		fmt.Fprintf(os.Stderr, "persist connections config failed: %v\n", err)
 	}
@@ -1497,9 +1526,6 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 	if patch.APIKey == "" {
 		patch.APIKey = current.APIKey
 	}
-	if patch.DefaultModel == "" {
-		patch.DefaultModel = current.DefaultModel
-	}
 	connections := b.Connections()
 	targetIndex := patch.SortOrder
 	if targetIndex < 0 {
@@ -1529,10 +1555,18 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 }
 
 func (b *Backend) DeleteConnection(id string) error {
+	ctx := context.Background()
+	var updated []*session.Session
 	for _, sess := range b.sessions.List() {
-		if sess.ConnectionID == id {
-			return fmt.Errorf("%w: %q", ErrConnectionInUse, id)
+		if sess.ConnectionID != id {
+			continue
 		}
+		empty := ""
+		next, err := b.sessions.Update(sess.ID, &empty, nil, nil, nil, nil)
+		if err != nil {
+			return fmt.Errorf("detach session %s connection %q: %w", sess.ID, id, err)
+		}
+		updated = append(updated, next)
 	}
 	connections := b.Connections()
 	next := make([]config.Connection, 0, len(connections))
@@ -1548,39 +1582,68 @@ func (b *Backend) DeleteConnection(id string) error {
 		return fmt.Errorf("%w: %q", ErrConnectionNotFound, id)
 	}
 	b.SetConnections(next)
+	for _, s := range updated {
+		b.broadcastSession(ctx, s)
+	}
 	return nil
 }
 
-func (b *Backend) resolveSessionProvider(sessionID string) (provider.Provider, string) {
+func (b *Backend) resolveSessionProvider(sessionID string) provider.Provider {
 	session, ok := b.sessions.Get(sessionID)
 	if !ok || session.ConnectionID == "" {
-		return nil, ""
+		return nil
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.providers[session.ConnectionID], b.connections[session.ConnectionID].DefaultModel
+	return b.providers[session.ConnectionID]
+}
+
+func (b *Backend) resolveSessionImageCapability(sessionID, model string) *bool {
+	item, ok := b.sessions.Get(sessionID)
+	if !ok || item.ConnectionID == "" {
+		return nil
+	}
+	connection, ok := b.Connection(item.ConnectionID)
+	if !ok {
+		return nil
+	}
+	settings, configured := connection.ModelSettings[model]
+	supported := !configured || settings.ImageInput
+	return &supported
+}
+
+func (b *Backend) resolveSessionContextWindow(sessionID, model string) *int64 {
+	item, ok := b.sessions.Get(sessionID)
+	if !ok || item.ConnectionID == "" {
+		return nil
+	}
+	connection, ok := b.Connection(item.ConnectionID)
+	if !ok {
+		return nil
+	}
+	window := connection.ModelSettings[model].ContextWindow
+	if window <= 0 {
+		return nil
+	}
+	return &window
 }
 
 // MemoryCompleter returns the source session's configured model for the
-// background memory worker. It never falls back across connections.
+// background memory worker.
 func (b *Backend) MemoryCompleter(sessionID string) (provider.Completer, string, string, bool) {
 	item, ok := b.sessions.Get(sessionID)
 	if !ok {
 		return nil, "", "", false
 	}
-	prov, fallbackModel := b.resolveSessionProvider(sessionID)
+	prov := b.resolveSessionProvider(sessionID)
 	completer, ok := prov.(provider.Completer)
 	if !ok {
 		return nil, "", "", false
 	}
-	model := item.Model
-	if model == "" {
-		model = fallbackModel
-	}
-	if model == "" {
+	if item.Model == "" {
 		return nil, "", "", false
 	}
-	return completer, model, string(item.ReasoningEffort), true
+	return completer, item.Model, string(item.ReasoningEffort), true
 }
 
 func newConnectionID() string {

@@ -22,6 +22,7 @@ import (
 	"github.com/freesoulcode/foya/internal/prompt"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/title"
 	"github.com/freesoulcode/foya/internal/tool"
@@ -78,24 +79,27 @@ type Engine struct {
 	approval  approval.Gateway
 	artifacts artifact.Store
 	hooks     *hooks.Runtime
+	skills    *skill.Manager
 
 	mu       sync.RWMutex
 	provider provider.Provider
 	model    string
 	// providerResolver binds a Session to its configured Connection. It is
-	// optional so focused engine tests can continue using the default provider.
-	providerResolver func(sessionID string) (provider.Provider, string)
+	// optional so focused engine tests can continue using the configured provider.
+	providerResolver func(sessionID string) provider.Provider
 	projectResolver  func(projectID string) (string, bool)
 	contextResolver  func(projectID, activity string) (
 		rules []string,
 		ruleIndex []string,
 		memories []string,
 	)
-	usageObserver    func(sessionID string, usage provider.Usage)
-	workflowPolicy   func(sessionID string) (workflow.Policy, bool)
-	workflowComplete func(sessionID, content string) error
-	modelWindows     map[string]int64
-	catalogLoaded    bool
+	usageObserver         func(sessionID string, usage provider.Usage)
+	workflowPolicy        func(sessionID string) (workflow.Policy, bool)
+	workflowComplete      func(sessionID, content string) error
+	imageCapability       func(sessionID, model string) *bool
+	contextWindowResolver func(sessionID, model string) *int64
+	modelWindows          map[string]int64
+	catalogLoaded         bool
 
 	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
@@ -139,6 +143,14 @@ func (e *Engine) SetPersistentContextResolver(
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.contextResolver = resolve
+}
+
+// SetSkillManager provides the local skill catalog advertised to the model as
+// bounded metadata. Full Skill bodies still load only through skill_load.
+func (e *Engine) SetSkillManager(manager *skill.Manager) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skills = manager
 }
 
 // SetUsageObserver reports completed model-request usage to an external
@@ -238,7 +250,7 @@ func (e *Engine) SetHookRuntime(runtime *hooks.Runtime) {
 	e.hooks = runtime
 }
 
-// SwitchProvider 运行时热替换 provider 与默认模型。
+// SwitchProvider 运行时热替换 provider 与模型。
 func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -249,11 +261,29 @@ func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 }
 
 // SetProviderResolver installs the Connection-aware provider lookup owned by
-// Backend. Each running Session resolves its own provider and default model.
-func (e *Engine) SetProviderResolver(resolve func(sessionID string) (provider.Provider, string)) {
+// Backend. Each running Session resolves its own provider.
+func (e *Engine) SetProviderResolver(resolve func(sessionID string) provider.Provider) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.providerResolver = resolve
+}
+
+// SetImageCapabilityResolver supplies the explicit model image declaration.
+func (e *Engine) SetImageCapabilityResolver(
+	resolve func(sessionID, model string) *bool,
+) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.imageCapability = resolve
+}
+
+// SetContextWindowResolver supplies the explicit per-model context window.
+func (e *Engine) SetContextWindowResolver(
+	resolve func(sessionID, model string) *int64,
+) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.contextWindowResolver = resolve
 }
 
 // SetMaxSteps 设置工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
@@ -264,17 +294,17 @@ func (e *Engine) SetMaxSteps(n int) {
 	e.maxSteps = n
 }
 
-func (e *Engine) currentProvider(sessionID string) (provider.Provider, string) {
+func (e *Engine) currentProvider(sessionID string) provider.Provider {
 	e.mu.RLock()
 	resolve := e.providerResolver
-	p, model := e.provider, e.model
+	p := e.provider
 	e.mu.RUnlock()
 	if resolve != nil {
-		if resolved, defaultModel := resolve(sessionID); resolved != nil {
-			return resolved, defaultModel
+		if resolved := resolve(sessionID); resolved != nil {
+			return resolved
 		}
 	}
-	return p, model
+	return p
 }
 
 func (e *Engine) currentModel(sessionID string) string {
@@ -283,11 +313,18 @@ func (e *Engine) currentModel(sessionID string) string {
 			return s.Model
 		}
 	}
-	_, model := e.currentProvider(sessionID)
-	return model
+	return e.model
 }
 
-func (e *Engine) contextWindow(ctx context.Context, model string) int64 {
+func (e *Engine) contextWindow(ctx context.Context, sessionID, model string) int64 {
+	e.mu.RLock()
+	resolve := e.contextWindowResolver
+	e.mu.RUnlock()
+	if resolve != nil {
+		if window := resolve(sessionID, model); window != nil && *window > 0 {
+			return *window
+		}
+	}
 	e.mu.RLock()
 	window, known := e.modelWindows[model]
 	loaded := e.catalogLoaded
@@ -309,7 +346,7 @@ func (e *Engine) contextWindow(ctx context.Context, model string) int64 {
 
 // ListModels 列出当前 provider 可用的模型。
 func (e *Engine) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
-	prov, _ := e.currentProvider("")
+	prov := e.currentProvider("")
 	lister, ok := prov.(provider.ModelLister)
 	if !ok {
 		return nil, fmt.Errorf("当前 provider 不支持列出模型")
@@ -363,7 +400,7 @@ func (e *Engine) prepareModelRequest(
 	if err != nil {
 		return nil, 0, err
 	}
-	budget := compaction.DeriveBudget(e.contextWindow(ctx, model))
+	budget := compaction.DeriveBudget(e.contextWindow(ctx, sessionID, model))
 	if estimate > budget.HighWater {
 		if _, compactErr := e.compactHistory(ctx, sessionID, model, true); compactErr == nil {
 			messages, units, estimate, err = build()
@@ -403,9 +440,14 @@ func (e *Engine) materializeProviderMessages(
 	e.mu.RLock()
 	store := e.artifacts
 	e.mu.RUnlock()
-	prov, _ := e.currentProvider(sessionID)
+	prov := e.currentProvider(sessionID)
 	imageInput := (*bool)(nil)
-	if resolver, ok := prov.(provider.CapabilityResolver); ok {
+	e.mu.RLock()
+	imageCapability := e.imageCapability
+	e.mu.RUnlock()
+	if imageCapability != nil {
+		imageInput = imageCapability(sessionID, model)
+	} else if resolver, ok := prov.(provider.CapabilityResolver); ok {
 		imageInput = resolver.ModelCapabilities(model).ImageInput
 	}
 
@@ -491,7 +533,7 @@ func (e *Engine) compactHistory(
 	if !ok {
 		return nil, ErrNothingToCompact
 	}
-	prov, _ := e.currentProvider(sessionID)
+	prov := e.currentProvider(sessionID)
 	completer, ok := prov.(provider.Completer)
 	if !ok {
 		return nil, ErrCompactionUnavailable
@@ -629,6 +671,31 @@ type executedToolCall struct {
 	terminate   bool
 }
 
+type deferredToolState struct {
+	mu     sync.Mutex
+	active map[string]bool
+}
+
+func newDeferredToolState() *deferredToolState {
+	return &deferredToolState{active: make(map[string]bool)}
+}
+
+func (s *deferredToolState) ActivateTool(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active[name] = true
+}
+
+func (s *deferredToolState) Snapshot() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]bool, len(s.active))
+	for name, active := range s.active {
+		out[name] = active
+	}
+	return out
+}
+
 // RunTurn executes a regular user turn.
 func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error {
 	return e.RunInput(ctx, sessionID, message.UserInput{Text: userText})
@@ -695,7 +762,7 @@ func (e *Engine) runTurn(
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
 
 	model := e.currentModel(sessionID)
-	prov, _ := e.currentProvider(sessionID)
+	prov := e.currentProvider(sessionID)
 	userText := input.Text
 	reasoningEffort := e.resolveReasoningEffort(sessionID)
 	projectPath := e.resolveProjectPath(sessionID)
@@ -806,10 +873,12 @@ func (e *Engine) runTurn(
 	overflowRecoveryUsed := false
 	ruleActivity := userText
 	stopHookBlocked := false
+	deferredTools := newDeferredToolState()
 
 	// 多步循环:模型 → 工具 → 模型 ...
 	for step := 0; maxSteps == maxToolStepsUnlimited || step < maxSteps; step++ {
-		toolDefs := e.toolDefsForSession(sessionID)
+		toolDefs := e.toolDefsForSession(sessionID, deferredTools.Snapshot())
+		activeToolSnapshot := activeToolDefNames(toolDefs)
 
 		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
 		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
@@ -820,6 +889,7 @@ func (e *Engine) runTurn(
 			Rules:        rules,
 			RuleIndex:    ruleIndex,
 			Memories:     memories,
+			Skills:       e.skillCatalog(ctx, sessionID),
 		})
 		if instructions := e.agentInstructions(sessionID); instructions != "" {
 			sysPrompt += `
@@ -1037,7 +1107,11 @@ Inspect the current project tree before modifying files; do not assume it matche
 			}, true)
 		}
 
-		executed := e.executeToolCalls(ctx, sessionID, toolCalls, guard)
+		toolCtx := tool.WithActiveToolSnapshot(
+			tool.WithDeferredToolActivator(ctx, deferredTools),
+			activeToolSnapshot,
+		)
+		executed := e.executeToolCalls(toolCtx, sessionID, toolCalls, guard)
 		var interactions []stepInteraction
 		for _, item := range executed {
 			tc := item.call
@@ -1288,6 +1362,12 @@ func (e *Engine) executeTool(ctx context.Context, sessionID string, tc message.T
 	if !ok {
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{Type: "text", Text: "unknown tool: " + tc.Name}}}
 	}
+	if t.Exposure() == tool.ExposureDeferred && !tool.ActiveToolFromContext(ctx, tc.Name) {
+		return tool.Result{IsError: true, Content: []tool.ContentPart{{
+			Type: "text",
+			Text: "tool is deferred and has not been activated for this model step: " + tc.Name + ". Call tool_search first, then use the tool on the next step.",
+		}}}
+	}
 	call := tool.Call{ID: tc.ID, Name: tc.Name, Input: tc.Input}
 	toolCtx, cancel := context.WithCancelCause(ctx)
 	key := toolCancelKey(sessionID, tc.ID)
@@ -1310,8 +1390,11 @@ func toolCancelKey(sessionID, toolCallID string) string {
 	return sessionID + "\x00" + toolCallID
 }
 
-func (e *Engine) toolDefsForSession(sessionID string) []provider.ToolDef {
-	defs := e.tools.Specs()
+func (e *Engine) toolDefsForSession(
+	sessionID string,
+	activeDeferred map[string]bool,
+) []provider.ToolDef {
+	defs := e.tools.SpecsFor(activeDeferred)
 	if e.sessions != nil {
 		s, ok := e.sessions.Get(sessionID)
 		if ok && s.AllowedTools != nil {
@@ -1332,6 +1415,14 @@ func (e *Engine) toolDefsForSession(sessionID string) []provider.ToolDef {
 		return filterToolDefs(defs, policy.AllowedTools)
 	}
 	return defs
+}
+
+func activeToolDefNames(defs []provider.ToolDef) map[string]bool {
+	out := make(map[string]bool, len(defs))
+	for _, def := range defs {
+		out[def.Function.Name] = true
+	}
+	return out
 }
 
 func (e *Engine) toolAllowed(sessionID, name string) bool {
@@ -1424,6 +1515,33 @@ func (e *Engine) persistentContext(
 		return nil, nil, nil
 	}
 	return resolve(e.resolveProjectID(sessionID), activity)
+}
+
+func (e *Engine) skillCatalog(ctx context.Context, sessionID string) []prompt.SkillCatalogEntry {
+	e.mu.RLock()
+	manager := e.skills
+	e.mu.RUnlock()
+	if manager == nil {
+		return nil
+	}
+	items, err := manager.List(ctx, e.resolveProjectID(sessionID), e.resolveProjectPath(sessionID))
+	if err != nil {
+		return nil
+	}
+	out := make([]prompt.SkillCatalogEntry, 0, len(items))
+	for _, item := range items {
+		if !item.Enabled {
+			continue
+		}
+		out = append(out, prompt.SkillCatalogEntry{
+			Ref:          item.Ref,
+			Name:         item.Name,
+			Description:  item.Description,
+			Scope:        string(item.Scope),
+			AllowedTools: append([]string(nil), item.AllowedTools...),
+		})
+	}
+	return out
 }
 
 // resultText 把工具结果拼成文本,用于回灌模型和事件负载。
@@ -1588,7 +1706,7 @@ func hasUserMessage(msgs []message.Message) bool {
 
 // generateTitle 在后台生成会话标题。
 func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
-	prov, _ := e.currentProvider(sessionID)
+	prov := e.currentProvider(sessionID)
 	model := e.currentModel(sessionID)
 	var generated string
 	if c, ok := prov.(provider.Completer); ok {

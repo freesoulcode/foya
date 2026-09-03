@@ -9,11 +9,12 @@ import {
   BrainIcon,
   CommandIcon,
   DownloadIcon,
+  EyeIcon,
+  EyeOffIcon,
   ExternalLinkIcon,
   FileJsonIcon,
   GlobeIcon,
   GripVerticalIcon,
-  KeyRoundIcon,
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
@@ -21,9 +22,11 @@ import {
   PlugZapIcon,
   RefreshCwIcon,
   SearchIcon,
+  Settings2Icon,
   ScrollTextIcon,
   SunIcon,
   Trash2Icon,
+  WrenchIcon,
 } from "@lucide/vue";
 import {
   api,
@@ -33,7 +36,9 @@ import {
   type McpRegistryServer,
   type McpServerConfig,
   type McpStatus,
+  type ModelSettings,
   type ProjectInfo,
+  type ReasoningEffort,
   type SearchProviderConfig,
   type SkillInfo,
   type WebSearchResult,
@@ -59,6 +64,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -69,6 +75,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import ContextItemsSettings from "@/components/settings/ContextItemsSettings.vue";
 import CommandsSettings from "@/components/settings/CommandsSettings.vue";
@@ -111,10 +122,13 @@ const connections = ref<ConnectionConfig[]>([]);
 const selectedID = ref<string | null>(null);
 const name = ref("");
 const baseURL = ref("");
-const contextWindowValue = ref("");
-const contextWindowUnit = ref<"K" | "M">("K");
+const modelSettings = ref<Record<string, ModelSettings>>({});
+const modelContextWindowValue = ref("");
+const modelContextWindowUnit = ref<"K" | "M">("K");
+const connectionModels = ref<Record<string, string[]>>({});
+const modelEditor = ref<string | null>(null);
+const showApiKey = ref(false);
 const apiKey = ref("");
-const hasKey = ref(false);
 const connectionErrors = ref<Record<string, string>>({});
 const connectionEditorOpen = ref(false);
 const loading = ref(false);
@@ -208,6 +222,17 @@ const themeOptions: Array<{ value: Theme; label: string; icon: typeof SunIcon }>
   { value: "light", label: "浅色", icon: SunIcon },
   { value: "dark", label: "深色", icon: MoonIcon },
 ];
+const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high"];
+const defaultModelSettings = (): ModelSettings => ({
+  image_input: true,
+  tool_calling: true,
+  web_search: true,
+  reasoning_efforts: [...reasoningEfforts],
+});
+
+function modelCapabilities(model: string): ModelSettings {
+  return modelSettings.value[model] ?? defaultModelSettings();
+}
 const linkOpenOptions: Array<{
   value: LinkOpenMode;
   label: string;
@@ -223,41 +248,106 @@ const selectedConnectionError = computed(
   () => connectionErrors.value[selectedID.value ?? ""] ?? ""
 );
 const isNewConnection = computed(() => selectedID.value === null);
+const selectedConnectionModels = computed(() =>
+  selectedID.value ? connectionModels.value[selectedID.value] ?? [] : []
+);
+const connectionQuery = ref("");
+const filteredConnections = computed(() => {
+  const query = connectionQuery.value.trim().toLowerCase();
+  if (!query) return connections.value;
+  return connections.value.filter((connection) =>
+    `${connection.name} ${connection.base_url}`.toLowerCase().includes(query)
+  );
+});
 
 function resetForm(connection?: ConnectionConfig) {
   selectedID.value = connection?.id ?? null;
+  modelEditor.value = null;
+  showApiKey.value = false;
   name.value = connection?.name ?? "";
   baseURL.value = connection?.base_url ?? "";
-  setContextWindow(connection?.context_window);
-  hasKey.value = Boolean(connection?.has_api_key);
-  apiKey.value = "";
+  modelSettings.value = { ...(connection?.model_settings ?? {}) };
+  apiKey.value = connection?.api_key ?? "";
   error.value = "";
 }
 
-function setContextWindow(value?: number) {
+function setModelCapability(
+  model: string,
+  checked: boolean | "indeterminate",
+) {
+  if (checked === "indeterminate") return;
+  modelSettings.value = {
+    ...modelSettings.value,
+    [model]: {
+      ...(modelSettings.value[model] ?? {}),
+      image_input: checked,
+    },
+  };
+}
+
+function setModelBoolean(
+  model: string,
+  key: "tool_calling" | "web_search",
+  checked: boolean | "indeterminate",
+) {
+  if (checked === "indeterminate") return;
+  modelSettings.value = {
+    ...modelSettings.value,
+    [model]: {
+      ...(modelSettings.value[model] ?? {}),
+      [key]: checked,
+    },
+  };
+}
+
+function setReasoningEffort(
+  model: string,
+  effort: ReasoningEffort,
+  checked: boolean | "indeterminate",
+) {
+  if (checked === "indeterminate") return;
+  const current = modelSettings.value[model]?.reasoning_efforts ?? [];
+  modelSettings.value = {
+    ...modelSettings.value,
+    [model]: {
+      ...(modelSettings.value[model] ?? {}),
+      reasoning_efforts: checked
+        ? [...new Set([...current, effort])]
+        : current.filter((item) => item !== effort),
+    },
+  };
+}
+
+function setModelContextWindow(value?: number) {
   if (!value || value <= 0) {
-    contextWindowValue.value = "";
-    contextWindowUnit.value = "K";
+    modelContextWindowValue.value = "";
+    modelContextWindowUnit.value = "K";
     return;
   }
-  contextWindowUnit.value = value >= 1_000_000 ? "M" : "K";
-  const divisor = contextWindowUnit.value === "M" ? 1_000_000 : 1_000;
-  contextWindowValue.value = String(value / divisor);
+  modelContextWindowUnit.value = value >= 1_000_000 ? "M" : "K";
+  const divisor = modelContextWindowUnit.value === "M" ? 1_000_000 : 1_000;
+  modelContextWindowValue.value = String(value / divisor);
 }
 
-function parseContextWindow(): number {
-  const normalized = String(contextWindowValue.value ?? "").trim();
-  if (!normalized) return 0;
-  const multiplier = contextWindowUnit.value === "M" ? 1_000_000 : 1_000;
-  const parsed = Math.round(Number(normalized) * multiplier);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error("上下文窗口必须是正数");
+function updateModelContextWindow() {
+  if (!modelEditor.value) return;
+  const raw = modelContextWindowValue.value.trim();
+  const multiplier = modelContextWindowUnit.value === "M" ? 1_000_000 : 1_000;
+  const parsed = raw ? Math.round(Number(raw) * multiplier) : 0;
+  modelSettings.value = {
+    ...modelSettings.value,
+    [modelEditor.value]: {
+      ...(modelSettings.value[modelEditor.value] ?? {}),
+      context_window: Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined,
+    },
+  };
+}
+
+function selectModelContextWindowUnit(value: unknown) {
+  if (value === "K" || value === "M") {
+    modelContextWindowUnit.value = value;
+    updateModelContextWindow();
   }
-  return parsed;
-}
-
-function selectContextWindowUnit(value: unknown) {
-  if (value === "K" || value === "M") contextWindowUnit.value = value;
 }
 
 async function checkConnection(connection: ConnectionConfig) {
@@ -265,6 +355,10 @@ async function checkConnection(connection: ConnectionConfig) {
   if (!id) return;
   try {
     const catalog = await api.listConnectionModels(id);
+    connectionModels.value = {
+      ...connectionModels.value,
+      [id]: catalog.models,
+    };
     const message = catalog.models.length === 0 ? "未发现可用模型" : "";
     connectionErrors.value = { ...connectionErrors.value, [id]: message };
   } catch (cause) {
@@ -721,14 +815,29 @@ function selectConnection(connection: ConnectionConfig) {
   connectionEditorOpen.value = true;
 }
 
+function openModelEditor(model: string) {
+  modelEditor.value = model;
+  const defaults = defaultModelSettings();
+  const current = modelSettings.value[model];
+  modelSettings.value = {
+    ...modelSettings.value,
+    [model]: {
+      ...defaults,
+      ...current,
+      reasoning_efforts:
+        current?.reasoning_efforts ?? defaults.reasoning_efforts,
+    },
+  };
+  setModelContextWindow(modelSettings.value[model]?.context_window);
+}
+
+function closeModelEditor() {
+  modelEditor.value = null;
+}
+
 function startNewConnection() {
   resetForm();
   connectionEditorOpen.value = true;
-}
-
-function backToConnectionList() {
-  connectionEditorOpen.value = false;
-  resetForm();
 }
 
 function formPayload(): ConnectionConfig {
@@ -738,8 +847,8 @@ function formPayload(): ConnectionConfig {
     kind: "openai",
     auth_kind: "api_key",
     base_url: baseURL.value.trim(),
-    default_model: selectedConnection.value?.default_model ?? "",
-    context_window: parseContextWindow(),
+    context_window: selectedConnection.value?.context_window ?? 0,
+    model_settings: modelSettings.value,
     sort_order: selectedConnection.value?.sort_order ?? connections.value.length,
     ...(apiKey.value.trim() ? { api_key: apiKey.value.trim() } : {}),
   };
@@ -917,30 +1026,85 @@ async function remove() {
 
     <SidebarInset class="relative min-w-0 overflow-hidden">
       <section class="min-w-0 flex-1 overflow-y-auto">
-        <div v-if="section === 'connections'" class="mx-auto flex min-h-full max-w-5xl flex-col px-6 pb-6">
-          <div
-            data-tauri-drag-region
-            class="mb-6 flex min-h-11 flex-wrap items-center justify-between gap-3 pt-4"
-          >
-            <div>
-              <h2 class="text-base font-medium">模型连接</h2>
-              <p class="mt-1 text-xs text-muted-foreground">
-                配置 Agent 使用的模型服务与 API Key。
-              </p>
-            </div>
-            <div class="no-drag flex items-center gap-2">
+        <div v-if="section === 'connections'" class="mx-auto flex min-h-full max-w-7xl flex-col px-5 pb-6 pt-5 lg:px-8">
+          <div class="grid min-h-0 flex-1 gap-8 lg:grid-cols-[248px_minmax(0,1fr)]">
+            <section class="flex min-h-[300px] flex-col">
+              <div class="flex items-center gap-2">
+                <div class="relative min-w-0 flex-1">
+                  <SearchIcon class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    v-model="connectionQuery"
+                    class="h-9 pl-8 text-sm"
+                    placeholder="搜索连接"
+                    aria-label="搜索连接"
+                  />
+                </div>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  :disabled="loading || saving || deleting"
+                  title="刷新模型连接"
+                  aria-label="刷新模型连接"
+                  @click="loadConnections"
+                >
+                  <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
+                </Button>
+              </div>
+              <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto pt-3">
+                <template v-for="(connection, index) in filteredConnections" :key="connection.id">
+                  <div
+                    v-if="!connectionQuery && dropPosition === index"
+                    class="pointer-events-none flex h-2 items-center px-3"
+                  >
+                    <span class="h-px w-full bg-primary/50" />
+                  </div>
+                  <button
+                    type="button"
+                    :class="[
+                      'flex w-full cursor-grab touch-none select-none items-center gap-2 rounded-lg px-2.5 py-2.5 text-left transition-colors hover:bg-muted/50 active:cursor-grabbing',
+                      connection.id === selectedID ? 'border border-border bg-muted/60' : 'border border-transparent',
+                      connection.id === draggingID ? 'opacity-55' : 'opacity-100',
+                    ]"
+                    data-connection-row
+                    :data-connection-id="connection.id"
+                    :data-connection-index="connections.indexOf(connection)"
+                    @pointerdown="beginPointerDrag($event, connection)"
+                    @pointermove="updatePointerDropPosition"
+                    @pointerup="finishPointerDrag"
+                    @pointercancel="endDrag"
+                  >
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate text-[13px] font-medium">{{ connection.name }}</span>
+                      <span class="block truncate text-[11px] text-muted-foreground">
+                        {{ connection.base_url }}
+                      </span>
+                    </span>
+                    <span
+                      class="size-2 shrink-0 rounded-full"
+                      :class="connectionErrors[connection.id ?? ''] ? 'bg-destructive' : 'bg-emerald-500'"
+                      :title="connectionErrors[connection.id ?? ''] ? '连接失败' : '连接可用'"
+                    />
+                  </button>
+                </template>
+                <div
+                  v-if="!connectionQuery && dropPosition === connections.length"
+                  class="pointer-events-none flex h-2 items-center px-3"
+                >
+                  <span class="h-px w-full bg-primary/50" />
+                </div>
+                <div
+                  v-if="!loading && filteredConnections.length === 0"
+                  class="flex min-h-48 flex-col items-center justify-center gap-3 px-4 text-center"
+                >
+                  <PlugZapIcon class="size-8 text-muted-foreground/50" />
+                  <p class="text-xs text-muted-foreground">
+                    {{ connectionQuery ? "没有匹配的连接" : "暂无模型连接" }}
+                  </p>
+                </div>
+              </div>
               <Button
-                size="icon-sm"
-                variant="ghost"
-                :disabled="loading || saving || deleting"
-                title="刷新模型连接"
-                aria-label="刷新模型连接"
-                @click="loadConnections"
-              >
-                <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
-              </Button>
-              <Button
-                v-if="!connectionEditorOpen"
+                class="mt-3 w-full shrink-0"
+                variant="outline"
                 size="sm"
                 :disabled="loading || saving"
                 @click="startNewConnection"
@@ -948,107 +1112,27 @@ async function remove() {
                 <PlusIcon class="size-4" />
                 添加连接
               </Button>
-            </div>
-          </div>
+            </section>
 
           <section
-            v-if="!connectionEditorOpen"
-            class="flex min-h-[420px] flex-1 flex-col border-y border-border bg-background"
+            v-if="connectionEditorOpen"
+            class="flex min-h-[520px] min-w-0 flex-col overflow-hidden"
           >
-            <div class="grid h-11 shrink-0 grid-cols-[36px_minmax(160px,0.8fr)_minmax(220px,1.4fr)_minmax(100px,0.45fr)_132px] items-center gap-3 border-b border-border px-4 text-xs font-medium text-muted-foreground">
-              <span />
-              <span>名称</span>
-              <span>Base URL</span>
-              <span>状态</span>
-              <span class="text-right">上下文窗口</span>
-            </div>
-            <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
-              <template v-for="(connection, index) in connections" :key="connection.id">
-                <div
-                  v-if="dropPosition === index"
-                  class="pointer-events-none flex h-2 items-center px-4"
-                >
-                  <span class="h-px w-full bg-primary/50" />
-                </div>
-                <button
-                  type="button"
-                  :class="[
-                    'grid w-full cursor-grab touch-none select-none grid-cols-[36px_minmax(160px,0.8fr)_minmax(220px,1.4fr)_minmax(100px,0.45fr)_132px] items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 active:cursor-grabbing',
-                    connection.id === draggingID ? 'opacity-55' : 'opacity-100',
-                  ]"
-                  data-connection-row
-                  :data-connection-id="connection.id"
-                  :data-connection-index="index"
-                  @pointerdown="beginPointerDrag($event, connection)"
-                  @pointermove="updatePointerDropPosition"
-                  @pointerup="finishPointerDrag"
-                  @pointercancel="endDrag"
-                >
-                  <GripVerticalIcon class="size-4 text-muted-foreground" aria-hidden="true" />
-                  <span class="truncate text-sm font-medium">{{ connection.name }}</span>
-                  <span class="truncate font-mono text-xs text-muted-foreground">
-                    {{ connection.base_url }}
-                  </span>
-                  <span
-                    class="inline-flex w-fit items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs"
-                    :class="connectionErrors[connection.id ?? ''] ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'"
-                  >
-                    <span
-                      class="size-1.5 rounded-full"
-                      :class="connectionErrors[connection.id ?? ''] ? 'bg-destructive' : 'bg-emerald-500'"
-                    />
-                    {{ connectionErrors[connection.id ?? ""] ? "失败" : "可用" }}
-                  </span>
-                  <span class="truncate text-right text-xs text-muted-foreground">
-                    {{ connection.context_window ? connection.context_window.toLocaleString() : "默认" }}
-                  </span>
-                </button>
-              </template>
-              <div
-                v-if="dropPosition === connections.length"
-                class="pointer-events-none flex h-2 items-center px-4"
-              >
-                <span class="h-px w-full bg-primary/50" />
-              </div>
-              <div
-                v-if="!loading && connections.length === 0"
-                class="flex min-h-72 flex-col items-center justify-center gap-3 px-4 text-center"
-              >
-                <PlugZapIcon class="size-8 text-muted-foreground/50" />
-                <div>
-                  <p class="text-sm font-medium">暂无模型连接</p>
-                  <p class="mt-1 text-xs text-muted-foreground">
-                    添加连接后即可在会话中选择模型
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div class="flex min-h-11 shrink-0 items-center justify-between gap-3 border-t border-border px-4">
-              <p class="truncate text-sm text-destructive">{{ error }}</p>
-              <p v-if="!error" class="text-xs text-muted-foreground">
-                {{ connections.length }} 个连接
-              </p>
-            </div>
-          </section>
-
-          <section
-            v-else
-            class="flex min-h-[420px] flex-1 flex-col border-y border-border bg-background"
-          >
-            <div class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+            <div class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-1 pb-3">
               <div class="flex min-w-0 items-center gap-3">
                 <Button
+                  v-if="modelEditor"
                   size="icon-sm"
                   variant="ghost"
-                  title="返回连接列表"
-                  aria-label="返回连接列表"
-                  @click="backToConnectionList"
+                  title="返回连接设置"
+                  aria-label="返回连接设置"
+                  @click="closeModelEditor"
                 >
                   <ArrowLeftIcon class="size-4" />
                 </Button>
                 <div class="min-w-0">
-                  <h3 class="truncate text-sm font-medium">
-                    {{ isNewConnection ? "添加 API 连接" : "编辑 API 连接" }}
+                  <h3 class="truncate text-lg font-semibold tracking-normal">
+                    {{ modelEditor ?? (isNewConnection ? "新建连接" : selectedConnection?.name) }}
                   </h3>
                   <p v-if="!isNewConnection" class="truncate text-xs text-muted-foreground">
                     {{ selectedConnection?.base_url }}
@@ -1069,15 +1153,14 @@ async function remove() {
                   <Trash2Icon class="size-4" />
                 </Button>
                 <Button :disabled="saving || deleting || loading" @click="save">
-                  <KeyRoundIcon class="size-4" />
-                  {{ saving ? "保存中…" : isNewConnection ? "添加连接" : "保存连接" }}
+                  {{ saving ? "保存中…" : isNewConnection ? "添加连接" : "保存" }}
                 </Button>
               </div>
             </div>
-            <div class="grid gap-4 p-4 lg:grid-cols-2">
+            <div v-if="!modelEditor" class="grid max-w-4xl grid-cols-1 gap-5 py-6">
               <div class="space-y-1.5">
                 <Label for="connection-name">名称</Label>
-                <Input id="connection-name" v-model="name" placeholder="例如：OpenAI 个人" :disabled="loading" />
+                <Input id="connection-name" v-model="name" class="h-9 text-sm" placeholder="例如：OpenAI 个人" :disabled="loading" />
               </div>
               <div class="space-y-1.5">
                 <Label for="connection-url">Base URL</Label>
@@ -1085,26 +1168,176 @@ async function remove() {
                   id="connection-url"
                   v-model="baseURL"
                   placeholder="https://api.openai.com/v1"
+                  class="h-9 text-sm"
                   :disabled="loading"
                 />
               </div>
               <div class="space-y-1.5">
-                <Label for="connection-context-window">上下文窗口（可选）</Label>
-                <div class="flex gap-2">
+                <Label for="connection-key">API Key</Label>
+                <div class="relative">
                   <Input
-                    id="connection-context-window"
-                    v-model="contextWindowValue"
+                    id="connection-key"
+                    v-model="apiKey"
+                    :type="showApiKey ? 'text' : 'password'"
+                    placeholder="输入 API Key"
+                    class="h-9 pr-10 text-sm"
+                    :disabled="loading"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    class="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
+                    :title="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                    :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                    @click="showApiKey = !showApiKey"
+                  >
+                    <EyeOffIcon v-if="showApiKey" class="size-4" />
+                    <EyeIcon v-else class="size-4" />
+                  </Button>
+                </div>
+              </div>
+              <div class="space-y-2">
+                <div>
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="text-sm font-medium">模型</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      :disabled="loading || saving"
+                      @click="selectedConnection && checkConnection(selectedConnection)"
+                    >
+                      <RefreshCwIcon class="size-4" />
+                      获取模型列表
+                    </Button>
+                  </div>
+                </div>
+                <div
+                  v-if="selectedConnectionModels.length"
+                  class="overflow-hidden rounded-md border border-border"
+                >
+                  <div
+                    v-for="model in selectedConnectionModels"
+                    :key="model"
+                    class="flex min-h-11 items-center gap-3 border-b border-border px-3 last:border-b-0"
+                  >
+                    <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
+                    <div class="flex shrink-0 items-center gap-1 text-muted-foreground">
+                      <Tooltip v-if="modelCapabilities(model).image_input">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <EyeIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持图片输入</TooltipContent>
+                      </Tooltip>
+                      <Tooltip v-if="modelCapabilities(model).tool_calling">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <WrenchIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持工具调用</TooltipContent>
+                      </Tooltip>
+                      <Tooltip v-if="modelCapabilities(model).web_search">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <GlobeIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持联网</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      title="模型设置"
+                      :aria-label="`${model} 模型设置`"
+                      @click="openModelEditor(model)"
+                    >
+                      <Settings2Icon class="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="max-w-4xl space-y-7 py-6">
+              <div>
+                <h4 class="text-base font-semibold">模型设置</h4>
+              </div>
+
+              <section class="space-y-3">
+                <div>
+                  <h5 class="text-sm font-medium">模型能力</h5>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).image_input"
+                      :disabled="loading"
+                      @update:model-value="setModelCapability(modelEditor, $event)"
+                    />
+                    <span class="text-sm">支持图片输入</span>
+                  </label>
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).tool_calling"
+                      :disabled="loading"
+                      @update:model-value="setModelBoolean(modelEditor, 'tool_calling', $event)"
+                    />
+                    <span class="text-sm">支持工具调用</span>
+                  </label>
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).web_search"
+                      :disabled="loading"
+                      @update:model-value="setModelBoolean(modelEditor, 'web_search', $event)"
+                    />
+                    <span class="text-sm">支持联网</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="space-y-3">
+                <div>
+                  <h5 class="text-sm font-medium">思考强度</h5>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <label
+                    v-for="effort in reasoningEfforts"
+                    :key="effort"
+                    class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground"
+                  >
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).reasoning_efforts?.includes(effort)"
+                      :disabled="loading"
+                      @update:model-value="setReasoningEffort(modelEditor, effort, $event)"
+                    />
+                    <span class="text-sm">{{ effort }}</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="space-y-3">
+                <div>
+                  <Label for="model-context-window">上下文长度</Label>
+                </div>
+                <div class="flex max-w-md gap-2">
+                  <Input
+                    id="model-context-window"
+                    v-model="modelContextWindowValue"
                     type="number"
                     min="0"
                     step="0.1"
-                    placeholder="默认 200"
+                    placeholder="使用服务默认值"
                     :disabled="loading"
+                    @change="updateModelContextWindow"
                   />
                   <Select
-                    :model-value="contextWindowUnit"
-                    @update:model-value="selectContextWindowUnit"
+                    :model-value="modelContextWindowUnit"
+                    @update:model-value="selectModelContextWindowUnit"
                   >
-                    <SelectTrigger class="w-24 shrink-0">
+                    <SelectTrigger class="w-20 shrink-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1113,19 +1346,9 @@ async function remove() {
                     </SelectContent>
                   </Select>
                 </div>
-              </div>
-              <div class="space-y-1.5">
-                <Label for="connection-key">API Key</Label>
-                <Input
-                  id="connection-key"
-                  v-model="apiKey"
-                  type="password"
-                  :placeholder="hasKey ? '已配置，留空则保持不变' : 'sk-...'"
-                  :disabled="loading"
-                />
-              </div>
+              </section>
             </div>
-            <div class="mt-auto flex min-h-12 shrink-0 items-center justify-between gap-3 border-t border-border px-4">
+            <div class="mt-auto flex min-h-10 shrink-0 items-center justify-between gap-3 px-1">
               <div class="min-w-0">
                 <p class="truncate text-sm text-destructive">{{ error }}</p>
                 <div
@@ -1138,6 +1361,17 @@ async function remove() {
               </div>
             </div>
           </section>
+          <section
+            v-else
+            class="flex min-h-[520px] flex-col items-center justify-center rounded-xl border border-dashed border-border bg-background px-6 text-center"
+          >
+            <PlugZapIcon class="size-10 text-muted-foreground/40" />
+            <p class="mt-3 text-sm font-medium">选择一个模型连接</p>
+            <p class="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+              在左侧选择连接，配置 API 地址、密钥和具体模型的视觉能力。
+            </p>
+          </section>
+          </div>
         </div>
 
         <ContextItemsSettings
@@ -1239,13 +1473,11 @@ async function remove() {
                       {{ item.description || item.path }}
                     </p>
                   </div>
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     :checked="item.enabled"
                     :disabled="capabilitySaving"
                     :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
-                    class="size-4 accent-primary"
-                    @change="toggleSkill(item)"
+                    @update:checked="toggleSkill(item)"
                   />
                 </div>
                 <p
@@ -1316,13 +1548,11 @@ async function remove() {
                     </span>
                   </span>
                   <label class="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      class="size-4 accent-primary"
+                    <Checkbox
                       :checked="server.enabled"
                       :disabled="capabilitySaving"
                       :aria-label="`${server.enabled ? '停用' : '启用'} ${server.name}`"
-                      @change="toggleMcpServer(server)"
+                      @update:checked="toggleMcpServer(server)"
                     />
                   </label>
                   <Button
@@ -1354,7 +1584,11 @@ async function remove() {
           <div class="space-y-5">
             <label class="flex items-center justify-between border-b border-border py-3">
               <span class="text-sm font-medium">启用联网搜索</span>
-              <input v-model="webSettings.enabled" type="checkbox" class="size-4 accent-primary" />
+              <Checkbox
+                :checked="webSettings.enabled"
+                aria-label="启用联网搜索"
+                @update:checked="webSettings.enabled = $event === true"
+              />
             </label>
             <div class="space-y-1.5">
               <Label for="search-provider">搜索引擎</Label>

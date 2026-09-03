@@ -72,6 +72,7 @@ const emit = defineEmits<{
   (e: "rename", id: string, title: string): void;
   (e: "pin", id: string, pinned: boolean): void;
   (e: "delete", id: string): void;
+  (e: "delete-dialog-change", open: boolean): void;
   (e: "delete-project", id: string): void;
   (e: "rename-project", id: string, name: string): void;
   (e: "pin-project", id: string, pinned: boolean): void;
@@ -90,11 +91,18 @@ const projectRename = ref("");
 
 function onDelete(s: Session) {
   pendingDelete.value = s;
+  emit("delete-dialog-change", true);
 }
 
 function confirmDelete() {
   if (pendingDelete.value) emit("delete", pendingDelete.value.id);
   pendingDelete.value = null;
+  emit("delete-dialog-change", false);
+}
+
+function closeDeleteDialog() {
+  pendingDelete.value = null;
+  emit("delete-dialog-change", false);
 }
 
 function confirmProjectDelete() {
@@ -392,7 +400,10 @@ const projectGroups = computed<ProjectGroup[]>(() => {
     </SidebarFooter>
   </Sidebar>
 
-  <Dialog :open="pendingDelete !== null" @update:open="(v) => !v && (pendingDelete = null)">
+  <Dialog
+    :open="pendingDelete !== null"
+    @update:open="(v) => !v && closeDeleteDialog()"
+  >
     <DialogContent class="max-w-md">
       <DialogHeader>
         <div class="flex items-center gap-2">
@@ -404,7 +415,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
         </DialogDescription>
       </DialogHeader>
       <DialogFooter class="gap-2">
-        <Button variant="outline" @click="pendingDelete = null">取消</Button>
+        <Button variant="outline" @click="closeDeleteDialog">取消</Button>
         <Button variant="destructive" @click="confirmDelete">删除</Button>
       </DialogFooter>
     </DialogContent>

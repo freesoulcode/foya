@@ -13,11 +13,12 @@ import (
 // 时间取 now、home 取 os.UserHomeDir),调用方只需关心 project path
 // 和 approvalMode 等会话级信息。
 type Input struct {
-	ProjectPath  string    // 当前项目目录
-	ApprovalMode string    // 审批档位:manual / auto / full_access
-	Rules        []string  // Foya 托管的全局与项目规则
-	RuleIndex    []string  // 可由模型按需加载的规则名称与描述
-	Memories     []string  // Foya 托管的全局与项目记忆
+	ProjectPath  string   // 当前项目目录
+	ApprovalMode string   // 审批档位:manual / auto / full_access
+	Rules        []string // Foya 托管的全局与项目规则
+	RuleIndex    []string // 可由模型按需加载的规则名称与描述
+	Memories     []string // Foya 托管的全局与项目记忆
+	Skills       []SkillCatalogEntry
 	Platform     string    // 留空则自动推断
 	Shell        string    // 留空则自动推断
 	Now          time.Time // 留空则取 time.Now()
@@ -43,6 +44,7 @@ func Assemble(in Input) string {
 	fragments := []string{
 		staticPrefix,
 		loadProjectInstructions(home, in.ProjectPath),
+		skillsCatalogFragment(in.Skills),
 		managedRulesFragment(in.Rules),
 		managedRuleIndexFragment(in.RuleIndex),
 		permissionFragment(in.ApprovalMode),

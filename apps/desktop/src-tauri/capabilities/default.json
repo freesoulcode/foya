@@ -4,6 +4,7 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
+    "default",
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",

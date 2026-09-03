@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser-action",
+  "description": "Capability for browser child webviews to return automation results.",
+  "local": false,
+  "remote": {
+    "urls": ["http://*", "https://*"]
+  },
+  "webviews": ["foya-workbar-browser-*"],
+  "permissions": ["allow-browser-action-result"]
+}
