@@ -32,6 +32,17 @@ export const router = createRouter({
           ],
         },
         {
+          path: "automations",
+          component: () => import("@/layouts/ChatLayout.vue"),
+          children: [
+            {
+              path: "",
+              name: "automations",
+              component: () => import("@/views/AutomationsView.vue"),
+            },
+          ],
+        },
+        {
           path: "settings",
           component: () => import("@/layouts/SettingsLayout.vue"),
           children: [

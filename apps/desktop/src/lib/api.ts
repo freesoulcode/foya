@@ -559,6 +559,45 @@ export interface FeishuBotUpdate {
 
 export type ChannelCreate = FeishuBotUpdate & { kind: "feishu" };
 
+export type AutomationRunStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AutomationTask {
+  id: string;
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  connection_id?: string;
+  model?: string;
+  project_id?: string;
+  approval_mode: "auto" | "full_access";
+  last_status: AutomationRunStatus;
+  last_error?: string;
+  last_session_id?: string;
+  last_run_at?: string;
+  next_run_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationInput {
+  name: string;
+  prompt: string;
+  cron: string;
+  timezone?: string;
+  enabled: boolean;
+  connection_id?: string;
+  model?: string;
+  project_id?: string;
+  approval_mode: "auto" | "full_access";
+}
+
 export type HookEvent =
   | "SessionStart"
   | "UserPromptSubmit"
@@ -1206,6 +1245,29 @@ export const api = {
 
   deleteChannel: (channelId: string) =>
     invoke("delete_channel", { channelId }),
+
+  listAutomations: () =>
+    invoke<string>("list_automations").then(
+      (r) => (JSON.parse(r) as AutomationTask[]) ?? []
+    ),
+
+  createAutomation: (input: AutomationInput) =>
+    invoke<string>("create_automation", { input }).then(
+      (r) => JSON.parse(r) as AutomationTask
+    ),
+
+  updateAutomation: (automationId: string, input: AutomationInput) =>
+    invoke<string>("update_automation", { automationId, input }).then(
+      (r) => JSON.parse(r) as AutomationTask
+    ),
+
+  deleteAutomation: (automationId: string) =>
+    invoke("delete_automation", { automationId }),
+
+  runAutomation: (automationId: string) =>
+    invoke<string>("run_automation", { automationId }).then(
+      (r) => JSON.parse(r) as AutomationTask
+    ),
 
   getHooks: (scope: "global" | "project", projectId?: string) =>
     invoke<string>("get_hooks", { scope, projectId: projectId ?? "" }).then(

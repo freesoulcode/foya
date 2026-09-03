@@ -1841,6 +1841,46 @@ async fn delete_channel(channel_id: String) -> Result<(), String> {
 
 #[cfg(unix)]
 #[tauri::command]
+async fn list_automations() -> Result<String, String> {
+    kernel::request("GET", "/automations", None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn create_automation(input: serde_json::Value) -> Result<String, String> {
+    kernel::request("POST", "/automations", Some(&input.to_string())).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn update_automation(
+    automation_id: String,
+    input: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "PUT",
+        &format!("/automations/{automation_id}"),
+        Some(&input.to_string()),
+    )
+    .await
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn delete_automation(automation_id: String) -> Result<(), String> {
+    kernel::request("DELETE", &format!("/automations/{automation_id}"), None)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(unix)]
+#[tauri::command]
+async fn run_automation(automation_id: String) -> Result<String, String> {
+    kernel::request("POST", &format!("/automations/{automation_id}/run"), None).await
+}
+
+#[cfg(unix)]
+#[tauri::command]
 async fn get_memory_settings() -> Result<String, String> {
     kernel::request("GET", "/settings/memory", None).await
 }
@@ -3336,6 +3376,39 @@ async fn delete_channel(_channel_id: String) -> Result<(), String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+async fn list_automations() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn create_automation(_input: serde_json::Value) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn update_automation(
+    _automation_id: String,
+    _input: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn delete_automation(_automation_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+async fn run_automation(_automation_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 async fn get_memory_settings() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
@@ -3666,6 +3739,11 @@ pub fn run() {
             create_channel,
             update_channel,
             delete_channel,
+            list_automations,
+            create_automation,
+            update_automation,
+            delete_automation,
+            run_automation,
             get_memory_settings,
             update_memory_settings,
             get_hooks,

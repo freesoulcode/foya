@@ -30,6 +30,7 @@ internal/
   skill/           内置、全局和项目级 Skills 发现与启停
   mcpclient/       MCP tools/resources/prompts 与传输适配
   channel/         外部消息渠道公共契约与平台适配器
+  automation/      定时任务持久化、cron 调度与执行状态
   websearch/       原生搜索、Google CSE 与 DuckDuckGo 路由
   approval/        审批网关与策略
   sandbox/         工具执行隔离
@@ -88,7 +89,8 @@ make build
 ## 已实现
 
 - Go 常驻内核、本地 Unix socket、REST + SSE。
-- 飞书 Bot 长连接、访问白名单、会话续接、流式回复与图片输入。
+- 飞书 Bot 长连接、访问白名单、会话续接、Markdown 回复与图片输入。
+- 自动化定时任务、周期调度、立即运行与独立会话留档。
 - 多会话 Agent Loop、并发子 Agent、工具调用、审批、取消、队列与上下文压缩。
 - OpenAI 兼容模型连接和 BYOK 配置。
 - `bash`、`read`、`write`、`edit`、Skills、Web Search 与 WebFetch。

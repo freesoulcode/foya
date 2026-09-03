@@ -80,6 +80,7 @@ func runDaemon() {
 	defer app.Close()
 	srv := server.New(cfg, app.Backend())
 	srv.SetChannelManager(app.Channels())
+	srv.SetAutomationManager(app.Automations())
 
 	ln, desc, err := listen(cfg)
 	if err != nil {
@@ -323,6 +324,7 @@ func runBot(args []string) {
 	defer stop()
 	srv := server.New(cfg, app.Backend())
 	srv.SetChannelManager(app.Channels())
+	srv.SetAutomationManager(app.Automations())
 	httpServer := &http.Server{Handler: srv.Handler()}
 	httpResult := make(chan error, 1)
 	go func() {

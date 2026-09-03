@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  Clock3Icon,
   EllipsisIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -54,6 +55,7 @@ const props = defineProps<{
   projects: ProjectInfo[];
   activeId: string;
   isDraft?: boolean;
+  automationsActive?: boolean;
   // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
   running?: Record<string, boolean>;
   waitingForAnswer?: Record<string, boolean>;
@@ -79,6 +81,7 @@ const emit = defineEmits<{
   (e: "pin-project", id: string, pinned: boolean): void;
   (e: "open-settings"): void;
   (e: "open-studio"): void;
+  (e: "open-automations"): void;
 }>();
 
 function title(s: Session) {
@@ -241,7 +244,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
             <SidebarMenuItem>
               <SidebarMenuButton
                 class="no-drag"
-                :is-active="isDraft"
+                :is-active="isDraft && !automationsActive"
                 tooltip="新建对话"
                 @click="emit('new')"
               >
@@ -259,6 +262,27 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                 <span>创作工作台</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                class="no-drag"
+                :is-active="automationsActive"
+                tooltip="自动化"
+                @click="emit('open-automations')"
+              >
+                <Clock3Icon />
+                <span>自动化</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+
+      <SidebarGroup v-if="ungroupedSessions.length" class="gap-1 p-2 pt-3">
+        <SidebarGroupLabel class="h-6 px-2 text-[11px]">
+          对话
+        </SidebarGroupLabel>
+        <SidebarGroupContent>
+          <SidebarMenu>
             <SessionSidebarItem
               v-for="session in ungroupedSessions"
               :key="session.id"

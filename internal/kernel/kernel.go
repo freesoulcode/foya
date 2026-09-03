@@ -12,6 +12,7 @@ import (
 	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
+	"github.com/freesoulcode/foya/internal/automation"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
@@ -41,13 +42,14 @@ import (
 
 // App 是内核组合根。
 type App struct {
-	cfg      config.Config
-	backend  *backend.Backend
-	cancel   context.CancelFunc
-	mcp      *mcpclient.Manager
-	memory   *memorymaint.Manager
-	browser  *browseruse.Controller
-	channels *feishu.Manager
+	cfg         config.Config
+	backend     *backend.Backend
+	cancel      context.CancelFunc
+	mcp         *mcpclient.Manager
+	memory      *memorymaint.Manager
+	browser     *browseruse.Controller
+	channels    *feishu.Manager
+	automations *automation.Manager
 }
 
 // New 按配置装配内核。
@@ -278,6 +280,17 @@ func New(cfg config.Config) (*App, error) {
 		cancel()
 		return nil, err
 	}
+	automationManager, err := automation.NewManager(
+		appCtx,
+		cfg.DataDir,
+		be,
+		!cfg.DisableExternalIntegrations,
+	)
+	if err != nil {
+		feishuManager.Close()
+		cancel()
+		return nil, err
+	}
 	memoryManager, err := memorymaint.New(
 		cfg.DataDir,
 		sessions,
@@ -286,6 +299,7 @@ func New(cfg config.Config) (*App, error) {
 		be.MemoryCompleter,
 	)
 	if err != nil {
+		automationManager.Close()
 		feishuManager.Close()
 		cancel()
 		return nil, err
@@ -295,7 +309,8 @@ func New(cfg config.Config) (*App, error) {
 	go mcpManager.Start(appCtx)
 	return &App{
 		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
-		memory: memoryManager, browser: browserController, channels: feishuManager,
+		memory: memoryManager, browser: browserController,
+		channels: feishuManager, automations: automationManager,
 	}, nil
 }
 
@@ -339,8 +354,11 @@ func (a *App) Config() config.Config { return a.cfg }
 
 func (a *App) Channels() *feishu.Manager { return a.channels }
 
+func (a *App) Automations() *automation.Manager { return a.automations }
+
 // Close 停止后台能力并释放 MCP 会话及其子进程。
 func (a *App) Close() {
+	a.automations.Close()
 	a.channels.Close()
 	a.cancel()
 	a.browser.Close()

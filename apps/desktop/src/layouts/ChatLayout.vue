@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { RouterView, useRouter } from "vue-router";
+import { RouterView, useRoute, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useKernel } from "@/composables/useKernel";
 import { useLinkPreference } from "@/composables/useLinkPreference";
@@ -26,6 +26,7 @@ import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
 import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
 
 const router = useRouter();
+const route = useRoute();
 const { isMac } = usePlatform();
 const {
   open: workbarOpen,
@@ -91,6 +92,7 @@ const activeTurn = ref(0);
 const questionPanelExpanded = ref(false);
 const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
 const sessionDeleteDialogOpen = ref(false);
+const automationsActive = computed(() => route.name === "automations");
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -324,7 +326,13 @@ async function onCreateProject(input: { name: string; path: string }) {
 }
 
 function onNewSession(projectID?: string) {
+  if (automationsActive.value) void router.push("/chat");
   newSession(projectID);
+}
+
+function onSelectSession(id: string) {
+  if (automationsActive.value) void router.push("/chat");
+  select(id);
 }
 
 function onApprovalChange(value: ApprovalMode) {
@@ -384,6 +392,10 @@ function openSettings() {
 
 function openStudio() {
   void router.push("/studio");
+}
+
+function openAutomations() {
+  void router.push("/automations");
 }
 
 const viewContext: ChatWorkspaceContext = {
@@ -456,8 +468,9 @@ const viewContext: ChatWorkspaceContext = {
       :waiting-for-answer="sessionsWaitingForAnswer"
       :active-id="activeId"
       :is-draft="isDraft"
+      :automations-active="automationsActive"
       @new="onNewSession"
-      @select="select"
+      @select="onSelectSession"
       @rename="onRename"
       @pin="onPin"
       @delete="onDelete"
@@ -467,17 +480,23 @@ const viewContext: ChatWorkspaceContext = {
       @pin-project="onPinProject"
       @open-settings="openSettings"
       @open-studio="openStudio"
+      @open-automations="openAutomations"
     />
 
     <SidebarInset class="relative min-w-0 flex-row overflow-hidden">
       <div class="flex min-h-0 min-w-[350px] flex-1 flex-col">
-        <ChatTitleBar :session="activeSession" @rename="onRename" />
+        <ChatTitleBar
+          v-if="!automationsActive"
+          :session="activeSession"
+          @rename="onRename"
+        />
         <RouterView v-slot="{ Component }">
           <component :is="Component" :workspace="viewContext" />
         </RouterView>
       </div>
 
       <WorkbarPanel
+        v-if="!automationsActive"
         v-show="workbarOpen"
         :session-id="activeId || undefined"
         :project-path="projectPath"

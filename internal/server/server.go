@@ -19,6 +19,7 @@ import (
 	"github.com/freesoulcode/foya/internal/agent"
 	approvalpkg "github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
+	"github.com/freesoulcode/foya/internal/automation"
 	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/canvas"
@@ -44,10 +45,11 @@ import (
 
 // Server 承载 REST + SSE 路由。
 type Server struct {
-	cfg      config.Config
-	backend  *backend.Backend
-	channels ChannelManager
-	mux      *http.ServeMux
+	cfg         config.Config
+	backend     *backend.Backend
+	channels    ChannelManager
+	automations AutomationManager
+	mux         *http.ServeMux
 }
 
 type ChannelManager interface {
@@ -56,6 +58,15 @@ type ChannelManager interface {
 	Create(feishu.UpdateInput) (feishu.State, error)
 	Update(string, feishu.UpdateInput) (feishu.State, error)
 	Delete(string) error
+}
+
+type AutomationManager interface {
+	List() []automation.Task
+	Get(string) (automation.Task, bool)
+	Create(automation.Input) (automation.Task, error)
+	Update(string, automation.Input) (automation.Task, error)
+	Delete(string) error
+	RunNow(string) (automation.Task, error)
 }
 
 // New 组装一个 Server。
@@ -133,6 +144,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /channels/{id}", s.handleGetChannel)
 	s.mux.HandleFunc("PUT /channels/{id}", s.handleUpdateChannel)
 	s.mux.HandleFunc("DELETE /channels/{id}", s.handleDeleteChannel)
+	s.mux.HandleFunc("GET /automations", s.handleListAutomations)
+	s.mux.HandleFunc("POST /automations", s.handleCreateAutomation)
+	s.mux.HandleFunc("GET /automations/{id}", s.handleGetAutomation)
+	s.mux.HandleFunc("PUT /automations/{id}", s.handleUpdateAutomation)
+	s.mux.HandleFunc("DELETE /automations/{id}", s.handleDeleteAutomation)
+	s.mux.HandleFunc("POST /automations/{id}/run", s.handleRunAutomation)
 	s.mux.HandleFunc("GET /settings/feishu-bot", s.handleGetFeishuBot)
 	s.mux.HandleFunc("PUT /settings/feishu-bot", s.handleUpdateFeishuBot)
 	s.mux.HandleFunc("GET /hooks", s.handleGetHooks)
@@ -183,6 +200,10 @@ func (s *Server) routes() {
 
 func (s *Server) SetChannelManager(manager ChannelManager) {
 	s.channels = manager
+}
+
+func (s *Server) SetAutomationManager(manager AutomationManager) {
+	s.automations = manager
 }
 
 type contextCreateRequest struct {
@@ -500,6 +521,107 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListAutomations(w http.ResponseWriter, _ *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.automations.List())
+}
+
+func (s *Server) handleCreateAutomation(w http.ResponseWriter, r *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	var input automation.Input
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	task, err := s.automations.Create(input)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "automation_create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (s *Server) handleGetAutomation(w http.ResponseWriter, r *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	task, ok := s.automations.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "automation_not_found", "automation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleUpdateAutomation(w http.ResponseWriter, r *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	var input automation.Input
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	task, err := s.automations.Update(r.PathValue("id"), input)
+	if err != nil {
+		if errors.Is(err, automation.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "automation_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadRequest, "automation_update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+func (s *Server) handleDeleteAutomation(w http.ResponseWriter, r *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	if err := s.automations.Delete(r.PathValue("id")); err != nil {
+		if errors.Is(err, automation.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "automation_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "automation_delete_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRunAutomation(w http.ResponseWriter, r *http.Request) {
+	if s.automations == nil {
+		writeErr(w, http.StatusServiceUnavailable, "automations_unavailable", "automations are unavailable")
+		return
+	}
+	task, err := s.automations.RunNow(r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, automation.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "automation_not_found", err.Error())
+		case errors.Is(err, automation.ErrAlreadyRunning):
+			writeErr(w, http.StatusConflict, "automation_running", err.Error())
+		default:
+			writeErr(w, http.StatusBadRequest, "automation_run_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, task)
 }
 
 func (s *Server) handleGetFeishuBot(w http.ResponseWriter, _ *http.Request) {
