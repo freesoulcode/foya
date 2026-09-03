@@ -43,16 +43,18 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 
 	var connection connectionResponse
 	if code := requestJSON(t, handler, http.MethodPost, "/connections", map[string]any{
-		"name":           "DeepSeek",
-		"kind":           "openai",
-		"auth_kind":      "api_key",
-		"base_url":       "https://api.deepseek.com/v1",
-		"api_key":        "secret",
-		"context_window": 256000,
+		"name":      "DeepSeek",
+		"kind":      "openai",
+		"auth_kind": "api_key",
+		"base_url":  "https://api.deepseek.com/v1",
+		"api_key":   "secret",
 		"model_settings": map[string]any{
 			"deepseek-chat": map[string]any{
-				"image_input":    true,
-				"context_window": 128000,
+				"image_input":       true,
+				"image_generation":  true,
+				"context_window":    131072,
+				"max_input_tokens":  130048,
+				"max_output_tokens": 16384,
 			},
 		},
 	}, &connection); code != http.StatusCreated {
@@ -61,9 +63,11 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	if connection.APIKey != "secret" ||
 		!connection.HasAPIKey ||
 		connection.ID == "" ||
-		connection.ContextWindow != 256000 ||
 		!connection.ModelSettings["deepseek-chat"].ImageInput ||
-		connection.ModelSettings["deepseek-chat"].ContextWindow != 128000 {
+		!connection.ModelSettings["deepseek-chat"].ImageGeneration ||
+		connection.ModelSettings["deepseek-chat"].ContextWindow != 131072 ||
+		connection.ModelSettings["deepseek-chat"].MaxInputTokens != 130048 ||
+		connection.ModelSettings["deepseek-chat"].MaxOutputTokens != 16384 {
 		t.Fatalf("public connection = %#v", connection)
 	}
 
@@ -110,6 +114,5 @@ type connectionResponse struct {
 	Name          string                            `json:"name"`
 	APIKey        string                            `json:"api_key"`
 	HasAPIKey     bool                              `json:"has_api_key"`
-	ContextWindow int64                             `json:"context_window"`
 	ModelSettings map[string]protocol.ModelSettings `json:"model_settings"`
 }

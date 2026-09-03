@@ -8,6 +8,7 @@ import (
 
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
+	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
@@ -23,6 +24,7 @@ type compactionProvider struct {
 	streamCalls   int
 	captured      [][]provider.InputMessage
 	efforts       []string
+	outputLimits  []int64
 }
 
 func (p *compactionProvider) Name() string { return "test" }
@@ -56,6 +58,7 @@ func (p *compactionProvider) Stream(
 	call := p.streamCalls
 	p.captured = append(p.captured, append([]provider.InputMessage(nil), req.Messages...))
 	p.efforts = append(p.efforts, req.ReasoningEffort)
+	p.outputLimits = append(p.outputLimits, req.MaxOutputTokens)
 	p.mu.Unlock()
 
 	ch := make(chan provider.StreamEvent, 2)
@@ -105,6 +108,35 @@ func TestRunTurnCompactsBeforeOversizedRequest(t *testing.T) {
 	}
 }
 
+func TestRunTurnUsesConfiguredInputLimitForCompaction(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 100_000)
+	engine.SetModelTokenLimitsResolver(func(string, string) *ModelTokenLimits {
+		return &ModelTokenLimits{MaxInputTokens: 4_096}
+	})
+	appendMessage(t, log, sessionID, message.RoleUser, "old question")
+	appendMessage(t, log, sessionID, message.RoleAssistant, strings.Repeat("old detail ", 2_000))
+
+	if err := engine.RunTurn(context.Background(), sessionID, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := log.Checkpoint(sessionID); !ok {
+		t.Fatal("expected configured max input tokens to trigger compaction")
+	}
+}
+
+func TestConfiguredInputLimitDoesNotExpandContextBudget(t *testing.T) {
+	limit := inputTokenLimit(
+		compaction.DeriveBudget(131_072),
+		ModelTokenLimits{
+			MaxInputTokens:  130_048,
+			MaxOutputTokens: 16_384,
+		},
+	)
+	if limit != 114_688 {
+		t.Fatalf("input limit = %d, want 114688", limit)
+	}
+}
+
 func TestRunTurnForwardsSessionReasoningEffort(t *testing.T) {
 	sessions := session.NewMemManager()
 	sess, err := sessions.Create(session.CreateOptions{
@@ -127,6 +159,22 @@ func TestRunTurnForwardsSessionReasoningEffort(t *testing.T) {
 	defer prov.mu.Unlock()
 	if len(prov.efforts) != 1 || prov.efforts[0] != "high" {
 		t.Fatalf("reasoning efforts = %#v, want one high value", prov.efforts)
+	}
+}
+
+func TestRunTurnForwardsConfiguredOutputLimit(t *testing.T) {
+	engine, _, sessionID, prov := newCompactionTestEngine(t, 100_000)
+	engine.SetModelTokenLimitsResolver(func(string, string) *ModelTokenLimits {
+		return &ModelTokenLimits{MaxOutputTokens: 1_024}
+	})
+
+	if err := engine.RunTurn(context.Background(), sessionID, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.outputLimits) != 1 || prov.outputLimits[0] != 1_024 {
+		t.Fatalf("output limits = %#v, want one 1024 value", prov.outputLimits)
 	}
 }
 

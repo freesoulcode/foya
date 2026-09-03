@@ -98,6 +98,7 @@ type Engine struct {
 	workflowComplete      func(sessionID, content string) error
 	imageCapability       func(sessionID, model string) *bool
 	contextWindowResolver func(sessionID, model string) *int64
+	tokenLimitsResolver   func(sessionID, model string) *ModelTokenLimits
 	modelWindows          map[string]int64
 	catalogLoaded         bool
 
@@ -194,6 +195,13 @@ type requestBudgetState struct {
 	payloadUnits int64
 }
 
+// ModelTokenLimits are explicit per-model limits from the active connection.
+// A zero value means the provider default remains in effect.
+type ModelTokenLimits struct {
+	MaxInputTokens  int64
+	MaxOutputTokens int64
+}
+
 var (
 	ErrContextBudgetExhausted = fmt.Errorf("context budget exhausted")
 	ErrCompactionUnavailable  = fmt.Errorf("context compaction unavailable")
@@ -286,6 +294,15 @@ func (e *Engine) SetContextWindowResolver(
 	e.contextWindowResolver = resolve
 }
 
+// SetModelTokenLimitsResolver supplies explicit per-model request limits.
+func (e *Engine) SetModelTokenLimitsResolver(
+	resolve func(sessionID, model string) *ModelTokenLimits,
+) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.tokenLimitsResolver = resolve
+}
+
 // SetMaxSteps 设置工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
 // 供 CLI / eval 等非交互场景显式限制;交互式桌面不应调用。
 func (e *Engine) SetMaxSteps(n int) {
@@ -342,6 +359,27 @@ func (e *Engine) contextWindow(ctx context.Context, sessionID, model string) int
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.modelWindows[model]
+}
+
+func (e *Engine) modelTokenLimits(sessionID, model string) ModelTokenLimits {
+	e.mu.RLock()
+	resolve := e.tokenLimitsResolver
+	e.mu.RUnlock()
+	if resolve == nil {
+		return ModelTokenLimits{}
+	}
+	if limits := resolve(sessionID, model); limits != nil {
+		return *limits
+	}
+	return ModelTokenLimits{}
+}
+
+func inputTokenLimit(budget compaction.Budget, limits ModelTokenLimits) int64 {
+	limit := budget.HighWater
+	if limits.MaxInputTokens > 0 && limits.MaxInputTokens < limit {
+		limit = limits.MaxInputTokens
+	}
+	return limit
 }
 
 // ListModels 列出当前 provider 可用的模型。
@@ -401,7 +439,9 @@ func (e *Engine) prepareModelRequest(
 		return nil, 0, err
 	}
 	budget := compaction.DeriveBudget(e.contextWindow(ctx, sessionID, model))
-	if estimate > budget.HighWater {
+	limits := e.modelTokenLimits(sessionID, model)
+	inputLimit := inputTokenLimit(budget, limits)
+	if estimate > inputLimit {
 		if _, compactErr := e.compactHistory(ctx, sessionID, model, true); compactErr == nil {
 			messages, units, estimate, err = build()
 			if err != nil {
@@ -412,7 +452,7 @@ func (e *Engine) prepareModelRequest(
 
 	// A single active turn can exceed the window even after older turns have
 	// been summarized. Bound large tool results in the provider projection only.
-	if estimate > budget.HighWater {
+	if estimate > inputLimit {
 		bounded, rewritten := compaction.BoundToolResults(messages, compaction.MaxToolResultTokens)
 		if rewritten > 0 {
 			messages = bounded
@@ -420,12 +460,12 @@ func (e *Engine) prepareModelRequest(
 			estimate = compaction.EstimateNextRequestTokens(0, 0, units)
 		}
 	}
-	if estimate > budget.ContextWindow {
+	if estimate > inputLimit {
 		return nil, 0, fmt.Errorf(
-			"%w: estimated input %d exceeds model window %d",
+			"%w: estimated input %d exceeds configured input budget %d",
 			ErrContextBudgetExhausted,
 			estimate,
-			budget.ContextWindow,
+			inputLimit,
 		)
 	}
 	return messages, units, nil
@@ -560,6 +600,7 @@ func (e *Engine) compactHistory(
 	summary, err := completer.Complete(ctx, provider.Request{
 		Model:           model,
 		ReasoningEffort: e.resolveReasoningEffort(sessionID),
+		MaxOutputTokens: e.modelTokenLimits(sessionID, model).MaxOutputTokens,
 		Messages:        provider.TextMessages(input),
 	})
 	if err != nil {
@@ -935,6 +976,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		stream, err := prov.Stream(ctx, provider.Request{
 			Model:           model,
 			ReasoningEffort: reasoningEffort,
+			MaxOutputTokens: e.modelTokenLimits(sessionID, model).MaxOutputTokens,
 			Messages:        providerMessages,
 			Tools:           toolDefs,
 		})

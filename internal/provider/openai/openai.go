@@ -311,6 +311,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 		Messages:      toChatMsgs(req.Messages),
 		StreamOptions: oai.ChatCompletionStreamOptionsParam{IncludeUsage: oai.Bool(true)},
 	}
+	if req.MaxOutputTokens > 0 {
+		params.MaxCompletionTokens = oai.Int(req.MaxOutputTokens)
+	}
 	if req.ReasoningEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
 	}
@@ -423,6 +426,9 @@ func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, 
 	params := oai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(model),
 		Messages: toChatMsgs(req.Messages),
+	}
+	if req.MaxOutputTokens > 0 {
+		params.MaxCompletionTokens = oai.Int(req.MaxOutputTokens)
 	}
 	if req.ReasoningEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)

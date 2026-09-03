@@ -301,7 +301,7 @@ func (b *Backend) validateImageInput(
 		connection, ok := b.Connection(item.ConnectionID)
 		model := item.Model
 		settings, configured := connection.ModelSettings[model]
-		if !ok || configured && !settings.ImageInput {
+		if !ok || configured && !settings.ImageInputSupported() {
 			return ErrImageInputUnsupported
 		}
 	}

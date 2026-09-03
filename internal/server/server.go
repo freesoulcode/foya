@@ -1161,11 +1161,17 @@ func publicConnection(connection config.Connection) protocol.ConnectionConfig {
 	modelSettings := make(map[string]protocol.ModelSettings, len(connection.ModelSettings))
 	for model, settings := range connection.ModelSettings {
 		modelSettings[model] = protocol.ModelSettings{
-			ContextWindow:    settings.ContextWindow,
-			ImageInput:       settings.ImageInput,
-			ToolCalling:      settings.ToolCalling,
-			WebSearch:        settings.WebSearch,
-			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
+			ContextWindow:          settings.ContextWindow,
+			MaxInputTokens:         settings.MaxInputTokens,
+			MaxOutputTokens:        settings.MaxOutputTokens,
+			CapabilitiesConfigured: settings.CapabilitiesConfigured,
+			ImageInput:             settings.ImageInput,
+			ImageGeneration:        settings.ImageGeneration,
+			VideoGeneration:        settings.VideoGeneration,
+			AudioGeneration:        settings.AudioGeneration,
+			ToolCalling:            settings.ToolCalling,
+			WebSearch:              settings.WebSearch,
+			ReasoningEfforts:       append([]string(nil), settings.ReasoningEfforts...),
 		}
 	}
 	return protocol.ConnectionConfig{
@@ -1176,7 +1182,6 @@ func publicConnection(connection config.Connection) protocol.ConnectionConfig {
 		BaseURL:       connection.BaseURL,
 		APIKey:        connection.APIKey,
 		HasAPIKey:     connection.APIKey != "",
-		ContextWindow: connection.ContextWindow,
 		ModelSettings: modelSettings,
 		Models:        append([]string(nil), connection.Models...),
 		ModelsCached:  connection.ModelsCached,
@@ -1188,11 +1193,17 @@ func toConnection(input protocol.ConnectionConfig) config.Connection {
 	modelSettings := make(map[string]config.ModelSettings, len(input.ModelSettings))
 	for model, settings := range input.ModelSettings {
 		modelSettings[model] = config.ModelSettings{
-			ContextWindow:    settings.ContextWindow,
-			ImageInput:       settings.ImageInput,
-			ToolCalling:      settings.ToolCalling,
-			WebSearch:        settings.WebSearch,
-			ReasoningEfforts: append([]string(nil), settings.ReasoningEfforts...),
+			ContextWindow:          settings.ContextWindow,
+			MaxInputTokens:         settings.MaxInputTokens,
+			MaxOutputTokens:        settings.MaxOutputTokens,
+			CapabilitiesConfigured: settings.CapabilitiesConfigured,
+			ImageInput:             settings.ImageInput,
+			ImageGeneration:        settings.ImageGeneration,
+			VideoGeneration:        settings.VideoGeneration,
+			AudioGeneration:        settings.AudioGeneration,
+			ToolCalling:            settings.ToolCalling,
+			WebSearch:              settings.WebSearch,
+			ReasoningEfforts:       append([]string(nil), settings.ReasoningEfforts...),
 		}
 	}
 	return config.Connection{
@@ -1202,7 +1213,6 @@ func toConnection(input protocol.ConnectionConfig) config.Connection {
 		AuthKind:      input.AuthKind,
 		BaseURL:       input.BaseURL,
 		APIKey:        input.APIKey,
-		ContextWindow: input.ContextWindow,
 		ModelSettings: modelSettings,
 		Models:        append([]string(nil), input.Models...),
 		ModelsCached:  input.ModelsCached,

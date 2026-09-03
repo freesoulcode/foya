@@ -310,6 +310,18 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 	if !exists {
 		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %q", ErrConnectionNotFound, connectionID))
 	}
+	model := strings.TrimSpace(configNode.Generation.Model)
+	settings, configured := connection.ModelSettings[model]
+	if configured && !settings.ImageGenerationSupported() {
+		return b.failCanvasGeneration(
+			ctx,
+			store,
+			doc,
+			configIndex,
+			outputIndex,
+			fmt.Errorf("model %q does not support image generation", model),
+		)
+	}
 
 	promptParts := make([]string, 0, 4)
 	if value := strings.TrimSpace(configNode.Prompt); value != "" {
@@ -349,7 +361,7 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 		BaseURL: connection.BaseURL,
 		APIKey:  connection.APIKey,
 	}).Generate(generationCtx, imagegen.Request{
-		Model:       configNode.Generation.Model,
+		Model:       model,
 		Prompt:      prompt,
 		AspectRatio: configNode.Generation.AspectRatio,
 		Quality:     configNode.Generation.Quality,
@@ -1800,14 +1812,15 @@ func (b *Backend) SetConnections(connections []config.Connection) {
 	b.engine.SetProviderResolver(b.resolveSessionProvider)
 	b.engine.SetImageCapabilityResolver(b.resolveSessionImageCapability)
 	b.engine.SetContextWindowResolver(b.resolveSessionContextWindow)
+	b.engine.SetModelTokenLimitsResolver(b.resolveSessionModelTokenLimits)
 	if err := config.SaveConnections(b.dataDir, normalized); err != nil {
 		fmt.Fprintf(os.Stderr, "persist connections config failed: %v\n", err)
 	}
 }
 
 func (b *Backend) CreateConnection(input config.Connection) (config.Connection, error) {
-	if input.ContextWindow < 0 {
-		return config.Connection{}, fmt.Errorf("context_window must be zero or greater")
+	if err := validateConnectionModelSettings(input.ModelSettings); err != nil {
+		return config.Connection{}, err
 	}
 	if input.ID == "" {
 		input.ID = newConnectionID()
@@ -1843,8 +1856,8 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 	if !exists {
 		return config.Connection{}, fmt.Errorf("%w: %q", ErrConnectionNotFound, id)
 	}
-	if patch.ContextWindow < 0 {
-		return config.Connection{}, fmt.Errorf("context_window must be zero or greater")
+	if err := validateConnectionModelSettings(patch.ModelSettings); err != nil {
+		return config.Connection{}, err
 	}
 	patch.ID = id
 	if patch.Name == "" {
@@ -1891,6 +1904,21 @@ func (b *Backend) UpdateConnection(id string, patch config.Connection) (config.C
 	b.SetConnections(connections)
 	updated, _ = b.Connection(id)
 	return updated, nil
+}
+
+func validateConnectionModelSettings(settings map[string]config.ModelSettings) error {
+	for model, setting := range settings {
+		if setting.ContextWindow < 0 || setting.MaxInputTokens < 0 || setting.MaxOutputTokens < 0 {
+			return fmt.Errorf("model %q token limits must be zero or greater", model)
+		}
+		if setting.ContextWindow > 0 && setting.MaxInputTokens > setting.ContextWindow {
+			return fmt.Errorf("model %q max_input_tokens cannot exceed context_window", model)
+		}
+		if setting.ContextWindow > 0 && setting.MaxOutputTokens > setting.ContextWindow {
+			return fmt.Errorf("model %q max_output_tokens cannot exceed context_window", model)
+		}
+	}
+	return nil
 }
 
 func (b *Backend) DeleteConnection(id string) error {
@@ -1947,7 +1975,7 @@ func (b *Backend) resolveSessionImageCapability(sessionID, model string) *bool {
 		return nil
 	}
 	settings, configured := connection.ModelSettings[model]
-	supported := !configured || settings.ImageInput
+	supported := !configured || settings.ImageInputSupported()
 	return &supported
 }
 
@@ -1965,6 +1993,25 @@ func (b *Backend) resolveSessionContextWindow(sessionID, model string) *int64 {
 		return nil
 	}
 	return &window
+}
+
+func (b *Backend) resolveSessionModelTokenLimits(sessionID, model string) *agent.ModelTokenLimits {
+	item, ok := b.sessions.Get(sessionID)
+	if !ok || item.ConnectionID == "" {
+		return nil
+	}
+	connection, ok := b.Connection(item.ConnectionID)
+	if !ok {
+		return nil
+	}
+	settings, configured := connection.ModelSettings[model]
+	if !configured || (settings.MaxInputTokens <= 0 && settings.MaxOutputTokens <= 0) {
+		return nil
+	}
+	return &agent.ModelTokenLimits{
+		MaxInputTokens:  settings.MaxInputTokens,
+		MaxOutputTokens: settings.MaxOutputTokens,
+	}
 }
 
 // MemoryCompleter returns the source session's configured model for the

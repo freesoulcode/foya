@@ -113,7 +113,6 @@ type ConnectionConfig struct {
 	BaseURL       string                   `json:"base_url"`
 	APIKey        string                   `json:"api_key,omitempty"`
 	HasAPIKey     bool                     `json:"has_api_key,omitempty"`
-	ContextWindow int64                    `json:"context_window,omitempty"`
 	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
 	Models        []string                 `json:"models,omitempty"`
 	ModelsCached  bool                     `json:"models_cached,omitempty"`
@@ -121,11 +120,17 @@ type ConnectionConfig struct {
 }
 
 type ModelSettings struct {
-	ContextWindow    int64    `json:"context_window,omitempty"`
-	ImageInput       bool     `json:"image_input"`
-	ToolCalling      bool     `json:"tool_calling"`
-	WebSearch        bool     `json:"web_search"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ContextWindow          int64    `json:"context_window,omitempty"`
+	MaxInputTokens         int64    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens        int64    `json:"max_output_tokens,omitempty"`
+	CapabilitiesConfigured bool     `json:"capabilities_configured,omitempty"`
+	ImageInput             bool     `json:"image_input"`
+	ImageGeneration        bool     `json:"image_generation"`
+	VideoGeneration        bool     `json:"video_generation"`
+	AudioGeneration        bool     `json:"audio_generation"`
+	ToolCalling            bool     `json:"tool_calling"`
+	WebSearch              bool     `json:"web_search"`
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
 }
 
 type ConnectionModelsResponse struct {

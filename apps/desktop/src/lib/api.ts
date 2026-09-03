@@ -202,7 +202,13 @@ export interface ConnectionModelCatalog {
 
 export interface ModelSettings {
   context_window?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  capabilities_configured?: boolean;
   image_input: boolean;
+  image_generation: boolean;
+  video_generation: boolean;
+  audio_generation: boolean;
   tool_calling: boolean;
   web_search: boolean;
   reasoning_efforts?: ReasoningEffort[];
@@ -404,7 +410,6 @@ export interface ConnectionConfig {
   kind: string;
   auth_kind: "api_key";
   base_url: string;
-  context_window?: number;
   model_settings: Record<string, ModelSettings>;
   models?: string[];
   models_cached?: boolean;

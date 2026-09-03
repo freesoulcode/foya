@@ -131,6 +131,7 @@ type StreamEvent struct {
 type Request struct {
 	Model           string
 	ReasoningEffort string
+	MaxOutputTokens int64
 	Messages        []InputMessage
 	Tools           []ToolDef
 }

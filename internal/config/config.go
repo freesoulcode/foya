@@ -71,7 +71,6 @@ type Connection struct {
 	AuthKind      string                   `json:"auth_kind"`
 	BaseURL       string                   `json:"base_url"`
 	APIKey        string                   `json:"api_key,omitempty"`
-	ContextWindow int64                    `json:"context_window,omitempty"`
 	ModelSettings map[string]ModelSettings `json:"model_settings,omitempty"`
 	Models        []string                 `json:"models,omitempty"`
 	ModelsCached  bool                     `json:"models_cached,omitempty"`
@@ -82,19 +81,37 @@ type Connection struct {
 }
 
 type ModelSettings struct {
-	ContextWindow    int64    `json:"context_window,omitempty"`
-	ImageInput       bool     `json:"image_input"`
-	ToolCalling      bool     `json:"tool_calling"`
-	WebSearch        bool     `json:"web_search"`
-	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	ContextWindow          int64    `json:"context_window,omitempty"`
+	MaxInputTokens         int64    `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens        int64    `json:"max_output_tokens,omitempty"`
+	CapabilitiesConfigured bool     `json:"capabilities_configured,omitempty"`
+	ImageInput             bool     `json:"image_input"`
+	ImageGeneration        bool     `json:"image_generation"`
+	VideoGeneration        bool     `json:"video_generation"`
+	AudioGeneration        bool     `json:"audio_generation"`
+	ToolCalling            bool     `json:"tool_calling"`
+	WebSearch              bool     `json:"web_search"`
+	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
+}
+
+// Capability helpers retain the permissive default for models configured before
+// capability flags existed. Once a model's capabilities are edited, its
+// explicit flags become authoritative.
+func (s ModelSettings) ImageInputSupported() bool {
+	return !s.CapabilitiesConfigured || s.ImageInput
+}
+
+// ImageGenerationSupported reports whether this model can be used by the
+// image-generation canvas adapter.
+func (s ModelSettings) ImageGenerationSupported() bool {
+	return !s.CapabilitiesConfigured || s.ImageGeneration
 }
 
 func (c Connection) Provider() Provider {
 	return Provider{
-		Kind:          c.Kind,
-		BaseURL:       c.BaseURL,
-		APIKey:        c.APIKey,
-		ContextWindow: c.ContextWindow,
+		Kind:    c.Kind,
+		BaseURL: c.BaseURL,
+		APIKey:  c.APIKey,
 	}
 }
 

@@ -3,10 +3,13 @@ import { computed, ref, watch } from "vue";
 import {
   AlertCircleIcon,
   ArrowLeftIcon,
+  AudioLinesIcon,
   EyeIcon,
   EyeOffIcon,
+  FilmIcon,
   GlobeIcon,
   GripVerticalIcon,
+  ImagePlusIcon,
   PlusIcon,
   PlugZapIcon,
   RefreshCwIcon,
@@ -26,13 +29,6 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Tooltip,
   TooltipContent,
@@ -54,7 +50,8 @@ const name = ref("");
 const baseURL = ref("");
 const modelSettings = ref<Record<string, ModelSettings>>({});
 const modelContextWindowValue = ref("");
-const modelContextWindowUnit = ref<"K" | "M">("K");
+const modelMaxInputTokensValue = ref("");
+const modelMaxOutputTokensValue = ref("");
 const connectionModels = ref<Record<string, string[]>>({});
 const modelEditor = ref<string | null>(null);
 const showApiKey = ref(false);
@@ -119,13 +116,23 @@ const visibleConnectionModels = computed(() =>
 
 const defaultModelSettings = (): ModelSettings => ({
   image_input: true,
+  image_generation: true,
+  video_generation: true,
+  audio_generation: true,
   tool_calling: true,
   web_search: true,
   reasoning_efforts: [...reasoningEfforts],
 });
 
 function modelCapabilities(model: string): ModelSettings {
-  return modelSettings.value[model] ?? defaultModelSettings();
+  const settings = modelSettings.value[model];
+  if (!settings || !settings.capabilities_configured) {
+    return {
+      ...settings,
+      ...defaultModelSettings(),
+    };
+  }
+  return settings;
 }
 
 function onModelListScroll(event: Event) {
@@ -180,14 +187,20 @@ function setModelCapability(model: string, checked: boolean | "indeterminate") {
     ...modelSettings.value,
     [model]: {
       ...(modelSettings.value[model] ?? {}),
+      capabilities_configured: true,
       image_input: checked,
     },
   };
 }
 
-function setModelBoolean(
+function setModelCapabilityFlag(
   model: string,
-  key: "tool_calling" | "web_search",
+  key:
+    | "image_generation"
+    | "video_generation"
+    | "audio_generation"
+    | "tool_calling"
+    | "web_search",
   checked: boolean | "indeterminate",
 ) {
   if (checked === "indeterminate") return;
@@ -195,6 +208,7 @@ function setModelBoolean(
     ...modelSettings.value,
     [model]: {
       ...(modelSettings.value[model] ?? {}),
+      capabilities_configured: true,
       [key]: checked,
     },
   };
@@ -218,36 +232,26 @@ function setReasoningEffort(
   };
 }
 
-function setModelContextWindow(value?: number) {
-  if (!value || value <= 0) {
-    modelContextWindowValue.value = "";
-    modelContextWindowUnit.value = "K";
-    return;
-  }
-  modelContextWindowUnit.value = value >= 1_000_000 ? "M" : "K";
-  const divisor = modelContextWindowUnit.value === "M" ? 1_000_000 : 1_000;
-  modelContextWindowValue.value = String(value / divisor);
+function setTokenValue(value?: number): string {
+  return value && value > 0 ? String(value) : "";
 }
 
-function updateModelContextWindow() {
+function updateModelTokenLimits() {
   if (!modelEditor.value) return;
-  const raw = modelContextWindowValue.value.trim();
-  const multiplier = modelContextWindowUnit.value === "M" ? 1_000_000 : 1_000;
-  const parsed = raw ? Math.round(Number(raw) * multiplier) : 0;
   modelSettings.value = {
     ...modelSettings.value,
     [modelEditor.value]: {
       ...(modelSettings.value[modelEditor.value] ?? {}),
-      context_window: Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined,
+      context_window: parseTokenValue(modelContextWindowValue.value),
+      max_input_tokens: parseTokenValue(modelMaxInputTokensValue.value),
+      max_output_tokens: parseTokenValue(modelMaxOutputTokensValue.value),
     },
   };
 }
 
-function selectModelContextWindowUnit(value: unknown) {
-  if (value === "K" || value === "M") {
-    modelContextWindowUnit.value = value;
-    updateModelContextWindow();
-  }
+function parseTokenValue(value: string): number | undefined {
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 async function checkConnection(connection: ConnectionConfig, force = false) {
@@ -332,7 +336,10 @@ function openModelEditor(model: string) {
         current?.reasoning_efforts ?? defaults.reasoning_efforts,
     },
   };
-  setModelContextWindow(modelSettings.value[model]?.context_window);
+  const settings = modelSettings.value[model];
+  modelContextWindowValue.value = setTokenValue(settings?.context_window);
+  modelMaxInputTokensValue.value = setTokenValue(settings?.max_input_tokens);
+  modelMaxOutputTokensValue.value = setTokenValue(settings?.max_output_tokens);
 }
 
 function closeModelEditor() {
@@ -351,7 +358,6 @@ function formPayload(): ConnectionConfig {
     kind: "openai",
     auth_kind: "api_key",
     base_url: baseURL.value.trim(),
-    context_window: selectedConnection.value?.context_window ?? 0,
     model_settings: modelSettings.value,
     models: selectedConnection.value?.models ?? [],
     models_cached: selectedConnection.value?.models_cached ?? false,
@@ -722,6 +728,30 @@ void loadConnections();
                         </TooltipTrigger>
                         <TooltipContent>支持图片输入</TooltipContent>
                       </Tooltip>
+                      <Tooltip v-if="modelCapabilities(model).image_generation">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <ImagePlusIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持生成图片</TooltipContent>
+                      </Tooltip>
+                      <Tooltip v-if="modelCapabilities(model).video_generation">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <FilmIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持生成视频</TooltipContent>
+                      </Tooltip>
+                      <Tooltip v-if="modelCapabilities(model).audio_generation">
+                        <TooltipTrigger as-child>
+                          <span class="flex size-6 items-center justify-center">
+                            <AudioLinesIcon class="size-3.5" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>支持生成音频</TooltipContent>
+                      </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).tool_calling">
                         <TooltipTrigger as-child>
                           <span class="flex size-6 items-center justify-center">
@@ -773,11 +803,38 @@ void loadConnections();
                 />
                 <span class="text-sm">支持图片输入</span>
               </label>
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).image_generation"
+                      :disabled="loading"
+                      @update:model-value="setModelCapabilityFlag(modelEditor, 'image_generation', $event)"
+                    />
+                    <ImagePlusIcon class="size-4 text-muted-foreground" />
+                    <span class="text-sm">生成图片</span>
+                  </label>
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).video_generation"
+                      :disabled="loading"
+                      @update:model-value="setModelCapabilityFlag(modelEditor, 'video_generation', $event)"
+                    />
+                    <FilmIcon class="size-4 text-muted-foreground" />
+                    <span class="text-sm">生成视频</span>
+                  </label>
+                  <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
+                    <Checkbox
+                      :model-value="modelCapabilities(modelEditor).audio_generation"
+                      :disabled="loading"
+                      @update:model-value="setModelCapabilityFlag(modelEditor, 'audio_generation', $event)"
+                    />
+                    <AudioLinesIcon class="size-4 text-muted-foreground" />
+                    <span class="text-sm">生成音频</span>
+                  </label>
               <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
                   :model-value="modelCapabilities(modelEditor).tool_calling"
                   :disabled="loading"
-                  @update:model-value="setModelBoolean(modelEditor, 'tool_calling', $event)"
+                      @update:model-value="setModelCapabilityFlag(modelEditor, 'tool_calling', $event)"
                 />
                 <span class="text-sm">支持工具调用</span>
               </label>
@@ -785,7 +842,7 @@ void loadConnections();
                 <Checkbox
                   :model-value="modelCapabilities(modelEditor).web_search"
                   :disabled="loading"
-                  @update:model-value="setModelBoolean(modelEditor, 'web_search', $event)"
+                      @update:model-value="setModelCapabilityFlag(modelEditor, 'web_search', $event)"
                 />
                 <span class="text-sm">支持联网</span>
               </label>
@@ -810,31 +867,45 @@ void loadConnections();
             </div>
           </section>
 
-          <section class="space-y-3">
-            <Label for="model-context-window">上下文长度</Label>
-            <div class="flex max-w-md gap-2">
+          <section class="grid max-w-4xl gap-4 sm:grid-cols-3">
+            <div class="space-y-1.5">
+              <Label for="model-context-window">上下文长度</Label>
               <Input
                 id="model-context-window"
                 v-model="modelContextWindowValue"
                 type="number"
                 min="0"
-                step="0.1"
+                step="1"
                 placeholder="使用服务默认值"
                 :disabled="loading"
-                @change="updateModelContextWindow"
+                @change="updateModelTokenLimits"
               />
-              <Select
-                :model-value="modelContextWindowUnit"
-                @update:model-value="selectModelContextWindowUnit"
-              >
-                <SelectTrigger class="w-20 shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="K">K</SelectItem>
-                  <SelectItem value="M">M</SelectItem>
-                </SelectContent>
-              </Select>
+            </div>
+            <div class="space-y-1.5">
+              <Label for="model-max-input-tokens">最大输入 Token</Label>
+              <Input
+                id="model-max-input-tokens"
+                v-model="modelMaxInputTokensValue"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="使用服务默认值"
+                :disabled="loading"
+                @change="updateModelTokenLimits"
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label for="model-max-output-tokens">最大输出 Token</Label>
+              <Input
+                id="model-max-output-tokens"
+                v-model="modelMaxOutputTokensValue"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="使用服务默认值"
+                :disabled="loading"
+                @change="updateModelTokenLimits"
+              />
             </div>
           </section>
         </div>

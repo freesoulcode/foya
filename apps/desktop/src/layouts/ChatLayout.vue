@@ -161,10 +161,7 @@ const composerApproval = computed<ApprovalMode>(
 const composerContextWindow = computed(
   () =>
     connectionModels.value.find((connection) => connection.id === composerConnectionID.value)
-      ?.model_settings?.[composerModel.value]?.context_window ??
-    connectionModels.value.find((connection) => connection.id === composerConnectionID.value)
-      ?.context_windows[composerModel.value] ??
-    0
+      ?.model_settings?.[composerModel.value]?.context_window ?? 0
 );
 const composerSupportsImage = computed(() => {
   const connection = connectionModels.value.find(

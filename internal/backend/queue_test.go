@@ -140,7 +140,10 @@ func TestImageInputRequiresConnectionDeclaration(t *testing.T) {
 		Kind:     "openai",
 		AuthKind: "api_key",
 		ModelSettings: map[string]config.ModelSettings{
-			"test-model": {ImageInput: false},
+			"test-model": {
+				CapabilitiesConfigured: true,
+				ImageInput:             false,
+			},
 		},
 	}})
 	_, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{

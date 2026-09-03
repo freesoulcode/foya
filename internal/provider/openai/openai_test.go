@@ -124,7 +124,8 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 			StreamOptions struct {
 				IncludeUsage bool `json:"include_usage"`
 			} `json:"stream_options"`
-			ReasoningEffort string `json:"reasoning_effort"`
+			ReasoningEffort     string `json:"reasoning_effort"`
+			MaxCompletionTokens int64  `json:"max_completion_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -134,6 +135,9 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 		}
 		if body.ReasoningEffort != "high" {
 			t.Fatalf("reasoning_effort = %q, want high", body.ReasoningEffort)
+		}
+		if body.MaxCompletionTokens != 512 {
+			t.Fatalf("max_completion_tokens = %d, want 512", body.MaxCompletionTokens)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -148,6 +152,7 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 	p := New(Config{BaseURL: server.URL + "/v1", APIKey: "test", Model: "test-model"})
 	stream, err := p.Stream(context.Background(), provider.Request{
 		ReasoningEffort: "high",
+		MaxOutputTokens: 512,
 		Messages: []provider.InputMessage{
 			provider.TextMessage(message.Message{Role: message.RoleUser, Content: "hello"}),
 		},

@@ -297,13 +297,12 @@ func loadConnections(cfg config.Config) []config.Connection {
 		return nil
 	}
 	return []config.Connection{{
-		ID:            "default",
-		Name:          "已导入连接",
-		Kind:          legacy.Kind,
-		AuthKind:      "api_key",
-		BaseURL:       legacy.BaseURL,
-		APIKey:        legacy.APIKey,
-		ContextWindow: legacy.ContextWindow,
+		ID:       "default",
+		Name:     "已导入连接",
+		Kind:     legacy.Kind,
+		AuthKind: "api_key",
+		BaseURL:  legacy.BaseURL,
+		APIKey:   legacy.APIKey,
 	}}
 }
 

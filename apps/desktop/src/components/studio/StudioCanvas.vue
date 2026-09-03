@@ -24,7 +24,6 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -87,6 +86,25 @@ const configuredConnections = computed(() =>
       Boolean(connection.id)
   )
 );
+const imageGenerationConnections = computed(() =>
+  configuredConnections.value.filter((connection) =>
+    (connection.models ?? []).some(
+      (model) => {
+        const settings = connection.model_settings?.[model];
+        return !settings?.capabilities_configured || settings.image_generation;
+      }
+    )
+  )
+);
+function imageGenerationModels(connectionID?: string) {
+  const connection = configuredConnections.value.find((item) => item.id === connectionID);
+  return (connection?.models ?? []).filter(
+    (model) => {
+      const settings = connection?.model_settings?.[model];
+      return !settings?.capabilities_configured || settings.image_generation;
+    }
+  );
+}
 const worldStyle = computed(() => ({
   transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom.value})`,
 }));
@@ -455,6 +473,8 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
     height: 180,
     z_index: nodes.value.length + 1,
   };
+  const firstConnection = imageGenerationConnections.value[0];
+  const firstModel = imageGenerationModels(firstConnection?.id)[0] ?? "";
   const node: CanvasNode = type === "text"
     ? { ...common, title: "提示词", text: "", height: 160 }
     : {
@@ -465,8 +485,8 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
         height: 310,
         generation: {
           mode: "image",
-          connection_id: connections.value[0]?.id,
-          model: "gpt-image-1",
+          connection_id: firstConnection?.id,
+          model: firstModel,
           aspect_ratio: "1:1",
           quality: "auto",
           count: 1,
@@ -570,11 +590,18 @@ function inputSummary(nodeID: string) {
 
 function updateGenerationField(
   node: CanvasNode,
-  field: "connection_id" | "aspect_ratio" | "quality",
+  field: "connection_id" | "model" | "aspect_ratio" | "quality",
   value: unknown
 ) {
   if (!node.generation) return;
-  node.generation[field] = String(value ?? "");
+  const nextValue = String(value ?? "");
+  node.generation[field] = nextValue;
+  if (field === "connection_id") {
+    const models = imageGenerationModels(nextValue);
+    if (!models.includes(node.generation.model ?? "")) {
+      node.generation.model = models[0] ?? "";
+    }
+  }
   scheduleSave();
 }
 
@@ -875,7 +902,7 @@ onBeforeUnmount(() => {
                   <SelectValue placeholder="默认连接" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem v-for="connection in configuredConnections" :key="connection.id" :value="connection.id">
+                  <SelectItem v-for="connection in imageGenerationConnections" :key="connection.id" :value="connection.id">
                     {{ connection.name }}
                   </SelectItem>
                 </SelectContent>
@@ -896,7 +923,24 @@ onBeforeUnmount(() => {
                 </SelectContent>
               </Select>
             </div>
-            <Input v-model="node.generation!.model" class="h-8 text-xs" placeholder="生图模型" @update:model-value="scheduleSave()" />
+            <Select
+              :model-value="node.generation!.model"
+              :disabled="!imageGenerationModels(node.generation!.connection_id).length"
+              @update:model-value="updateGenerationField(node, 'model', $event)"
+            >
+              <SelectTrigger size="sm" class="w-full text-xs">
+                <SelectValue placeholder="选择生图模型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem
+                  v-for="model in imageGenerationModels(node.generation!.connection_id)"
+                  :key="model"
+                  :value="model"
+                >
+                  {{ model }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
             <div class="grid grid-cols-2 gap-2">
               <Select
                 :model-value="node.generation!.quality"
