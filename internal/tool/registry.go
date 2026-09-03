@@ -85,6 +85,9 @@ func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []provider.ToolDe
 		tools = append(tools, t)
 	}
 	r.mu.RUnlock()
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name() < tools[j].Name()
+	})
 	defs := make([]provider.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		spec := t.Spec()
