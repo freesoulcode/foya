@@ -35,6 +35,7 @@ const (
 	KindCompactionFailed         Kind = "compaction_failed"
 	KindHistoryBranched          Kind = "history_branched"
 	KindTurnStarted              Kind = "turn_started"
+	KindTurnCancelRequested      Kind = "turn_cancel_requested"
 	KindTurnComplete             Kind = "turn_complete" // 回合结束(必达)
 	KindSubAgentQueued           Kind = "subagent_queued"
 	KindSubAgentRunning          Kind = "subagent_running"

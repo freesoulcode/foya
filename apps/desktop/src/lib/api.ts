@@ -428,6 +428,8 @@ export interface ChatMessage {
   // 最终 assistant 消息携带的通用回合生命周期时间。
   turn_started_at?: string;
   turn_completed_at?: string;
+  turn_status?: "completed" | "failed" | "cancelled";
+  turn_reason?: string;
   error?: boolean;
 }
 

@@ -35,9 +35,31 @@ import (
 const maxToolStepsUnlimited = 0
 const maxProviderImageBytes int64 = 20 << 20
 
-var errToolCancelledByUser = errors.New("tool execution cancelled by the user")
+var (
+	errToolCancelledByUser          = errors.New("tool execution cancelled by the user")
+	ErrTurnCancelledByUser          = errors.New("turn cancelled by user")
+	ErrTurnCancelledBySessionDelete = errors.New("turn cancelled by session deletion")
+	ErrTurnCancelledByQueueDispatch = errors.New("turn cancelled by queued message dispatch")
+)
 
 const toolCancelledByUserResult = `{"status":"cancelled","initiated_by":"user","message":"The user cancelled this tool execution. Do not treat it as an infrastructure failure."}`
+
+type TurnCancelReason string
+
+const (
+	TurnCancelReasonUserStop       TurnCancelReason = "user_stop"
+	TurnCancelReasonSessionDeleted TurnCancelReason = "session_deleted"
+	TurnCancelReasonQueueDispatch  TurnCancelReason = "queue_dispatch"
+)
+
+const (
+	turnStatusCompleted = "completed"
+	turnStatusFailed    = "failed"
+	turnStatusCancelled = "cancelled"
+
+	turnReasonError            = "error"
+	turnReasonContextCancelled = "context_cancelled"
+)
 
 // SessionLookup 是引擎读取会话元数据所需的最小依赖。
 type SessionLookup interface {
@@ -68,6 +90,12 @@ func (p *pendingToolCall) input() json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return json.RawMessage(p.argsBuf)
+}
+
+type turnRunState struct {
+	cancel            context.CancelCauseFunc
+	runID             string
+	cancelRequestOnce sync.Once
 }
 
 // Engine 是回合引擎。
@@ -110,7 +138,7 @@ type Engine struct {
 	// cancels 持有每个会话当前回合的取消函数。回合进行中时存在,
 	// 结束后删除。Cancel 据此中断正在跑的回合(provider HTTP、
 	// 工具执行、审批等待都会随 ctx 取消而终止)。
-	cancels sync.Map // sessionID -> context.CancelFunc
+	cancels sync.Map // sessionID -> *turnRunState
 
 	// dones 持有每个会话当前回合的结束信号:RunTurn goroutine 退出时 close。
 	// 删除会话时用 CancelAndWait 等待回合彻底收尾,避免收尾事件写入已删会话。
@@ -549,9 +577,10 @@ func (e *Engine) CompactSession(
 	ctx context.Context,
 	sessionID string,
 ) (*compaction.Checkpoint, error) {
-	compactCtx, cancel := context.WithCancel(ctx)
-	if _, loaded := e.cancels.LoadOrStore(sessionID, cancel); loaded {
-		cancel()
+	compactCtx, cancel := context.WithCancelCause(ctx)
+	runState := &turnRunState{cancel: cancel}
+	if _, loaded := e.cancels.LoadOrStore(sessionID, runState); loaded {
+		cancel(context.Canceled)
 		return nil, fmt.Errorf("该会话当前正忙")
 	}
 	done := make(chan struct{})
@@ -559,7 +588,7 @@ func (e *Engine) CompactSession(
 	defer e.cancels.Delete(sessionID)
 	defer e.dones.Delete(sessionID)
 	defer close(done)
-	defer cancel()
+	defer cancel(nil)
 
 	e.setSessionPhase(compactCtx, sessionID, session.PhaseCompact)
 	defer e.setSessionPhase(context.WithoutCancel(compactCtx), sessionID, session.PhaseIdle)
@@ -707,9 +736,51 @@ type turnStartedPayload struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
+type turnCancelRequestedPayload struct {
+	RunID       string    `json:"run_id"`
+	Reason      string    `json:"reason"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
 type turnCompletePayload struct {
+	RunID       string    `json:"run_id"`
 	StartedAt   time.Time `json:"started_at"`
 	CompletedAt time.Time `json:"completed_at"`
+	Status      string    `json:"status"`
+	Reason      string    `json:"reason,omitempty"`
+}
+
+func turnCompletionFromContext(ctx context.Context) (string, string) {
+	if ctx.Err() == nil {
+		return turnStatusCompleted, ""
+	}
+	return turnStatusCancelled, turnCancelReasonFromCause(context.Cause(ctx))
+}
+
+func turnCancelReasonFromCause(cause error) string {
+	switch {
+	case errors.Is(cause, ErrTurnCancelledByUser):
+		return string(TurnCancelReasonUserStop)
+	case errors.Is(cause, ErrTurnCancelledBySessionDelete):
+		return string(TurnCancelReasonSessionDeleted)
+	case errors.Is(cause, ErrTurnCancelledByQueueDispatch):
+		return string(TurnCancelReasonQueueDispatch)
+	default:
+		return turnReasonContextCancelled
+	}
+}
+
+func turnCancelCause(reason TurnCancelReason) error {
+	switch reason {
+	case TurnCancelReasonUserStop:
+		return ErrTurnCancelledByUser
+	case TurnCancelReasonSessionDeleted:
+		return ErrTurnCancelledBySessionDelete
+	case TurnCancelReasonQueueDispatch:
+		return ErrTurnCancelledByQueueDispatch
+	default:
+		return context.Canceled
+	}
 }
 
 type executedToolCall struct {
@@ -777,9 +848,15 @@ func (e *Engine) runTurn(
 	editedHistory bool,
 ) error {
 	// 注册 per-session cancel:同一会话只允许一个活跃回合。
-	turnCtx, cancel := context.WithCancel(ctx)
-	if _, loaded := e.cancels.LoadOrStore(sessionID, cancel); loaded {
-		cancel()
+	runID := newRunID()
+	turnStartedAt := time.Now()
+	turnCtx, cancel := context.WithCancelCause(ctx)
+	runState := &turnRunState{
+		cancel: cancel,
+		runID:  runID,
+	}
+	if _, loaded := e.cancels.LoadOrStore(sessionID, runState); loaded {
+		cancel(context.Canceled)
 		return fmt.Errorf("该会话已有回合正在运行")
 	}
 	// done 在 RunTurn 完全退出(所有收尾事件已发出)后 close;
@@ -789,17 +866,55 @@ func (e *Engine) runTurn(
 	defer e.cancels.Delete(sessionID)
 	defer e.dones.Delete(sessionID)
 	defer close(done)
-	defer cancel()
+	defer cancel(nil)
 	ctx = turnCtx
-	runID := newRunID()
 	ctx = tool.WithRunID(ctx, runID)
-	turnStartedAt := time.Now()
-	completeTurn := func() {
-		e.emit(ctx, sessionID, event.KindTurnComplete, turnCompletePayload{
-			StartedAt:   turnStartedAt,
-			CompletedAt: time.Now(),
+	terminalAssistantRecorded := false
+	recordPartialAssistant := func(content, reasoning, status, reason string) {
+		if terminalAssistantRecorded ||
+			strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
+			return
+		}
+		completedAt := time.Now()
+		e.emit(context.WithoutCancel(ctx), sessionID, event.KindMessageEnd, message.Message{
+			Role:            message.RoleAssistant,
+			Content:         content,
+			Reasoning:       reasoning,
+			TurnStartedAt:   &turnStartedAt,
+			TurnCompletedAt: &completedAt,
+			TurnStatus:      status,
+			TurnReason:      reason,
 		}, true)
-		e.notifyHook(ctx, sessionID, hookRequest(
+		terminalAssistantRecorded = true
+	}
+	completeTurn := func(status, reason string) {
+		if status == "" {
+			status, reason = turnCompletionFromContext(ctx)
+		}
+		if status == turnStatusCancelled && reason == string(TurnCancelReasonUserStop) {
+			e.emitTurnCancelRequested(ctx, sessionID, runState, TurnCancelReasonUserStop)
+		}
+		completedAt := time.Now()
+		persistCtx := context.WithoutCancel(ctx)
+		if status == turnStatusCancelled && !terminalAssistantRecorded {
+			msg := message.Message{
+				Role:            message.RoleAssistant,
+				TurnStartedAt:   &turnStartedAt,
+				TurnCompletedAt: &completedAt,
+				TurnStatus:      status,
+				TurnReason:      reason,
+			}
+			e.emit(persistCtx, sessionID, event.KindMessageEnd, msg, true)
+			terminalAssistantRecorded = true
+		}
+		e.emit(persistCtx, sessionID, event.KindTurnComplete, turnCompletePayload{
+			RunID:       runID,
+			StartedAt:   turnStartedAt,
+			CompletedAt: completedAt,
+			Status:      status,
+			Reason:      reason,
+		}, true)
+		e.notifyHook(persistCtx, sessionID, hookRequest(
 			hooks.EventNotification,
 			runID,
 			"",
@@ -864,7 +979,7 @@ func (e *Engine) runTurn(
 	if promptHook.Decision == hooks.DecisionDeny {
 		err := fmt.Errorf("用户请求被 hook 拦截: %s", hookFeedback(promptHook, "请求不被允许"))
 		e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-		completeTurn()
+		completeTurn(turnStatusFailed, turnReasonError)
 		return err
 	}
 	promptHookContext := append([]string(nil), promptHook.Context...)
@@ -902,8 +1017,8 @@ func (e *Engine) runTurn(
 		Attachments:     append([]message.AttachmentRef(nil), input.Attachments...),
 		BrowserElements: append([]message.BrowserElement(nil), input.BrowserElements...),
 	}
-	e.emit(ctx, sessionID, event.KindMessageEnd, userMsg, true)
-	e.emit(ctx, sessionID, event.KindTurnStarted, turnStartedPayload{
+	e.emit(context.WithoutCancel(ctx), sessionID, event.KindMessageEnd, userMsg, true)
+	e.emit(context.WithoutCancel(ctx), sessionID, event.KindTurnStarted, turnStartedPayload{
 		RunID: runID, StartedAt: turnStartedAt,
 	}, true)
 
@@ -972,15 +1087,23 @@ Inspect the current project tree before modifying files; do not assume it matche
 			toolDefs,
 		)
 		if err != nil {
+			if ctx.Err() != nil {
+				completeTurn(turnCompletionFromContext(ctx))
+				return nil
+			}
 			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-			completeTurn()
+			completeTurn(turnStatusFailed, turnReasonError)
 			return err
 		}
 
 		providerMessages, err := e.materializeProviderMessages(ctx, sessionID, messages, model)
 		if err != nil {
+			if ctx.Err() != nil {
+				completeTurn(turnCompletionFromContext(ctx))
+				return nil
+			}
 			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-			completeTurn()
+			completeTurn(turnStatusFailed, turnReasonError)
 			return err
 		}
 		stream, err := prov.Stream(ctx, provider.Request{
@@ -993,7 +1116,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 		if err != nil {
 			// ctx 取消(用户点停止)不算错误,只安静结束回合。
 			if ctx.Err() != nil {
-				completeTurn()
+				completeTurn(turnCompletionFromContext(ctx))
 				return nil
 			}
 			if !overflowRecoveryUsed && isContextOverflow(err.Error()) {
@@ -1004,7 +1127,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 				}
 			}
 			e.emit(ctx, sessionID, event.KindError, err.Error(), true)
-			completeTurn()
+			completeTurn(turnStatusFailed, turnReasonError)
 			return err
 		}
 
@@ -1065,7 +1188,9 @@ Inspect the current project tree before modifying files; do not assume it matche
 			case "error":
 				// ctx 被取消(用户点停止):安静结束回合,不弹错误气泡。
 				if ctx.Err() != nil {
-					completeTurn()
+					status, reason := turnCompletionFromContext(ctx)
+					recordPartialAssistant(accText, accReasoning, status, reason)
+					completeTurn(status, reason)
 					return nil
 				}
 				streamError = ev.Text
@@ -1093,7 +1218,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 				}
 			}
 			e.emit(ctx, sessionID, event.KindError, streamError, true)
-			completeTurn()
+			completeTurn(turnStatusFailed, turnReasonError)
 			return nil
 		}
 
@@ -1108,14 +1233,27 @@ Inspect the current project tree before modifying files; do not assume it matche
 				Input: pc.input(),
 			})
 		}
-		if len(toolCalls) > 0 {
+		if len(toolCalls) > 0 && (ctx.Err() == nil || finishReason == "tool_calls") {
 			asstMsg.ToolCalls = toolCalls
 		} else {
 			turnCompletedAt := time.Now()
+			status, reason := turnCompletionFromContext(ctx)
 			asstMsg.TurnStartedAt = &turnStartedAt
 			asstMsg.TurnCompletedAt = &turnCompletedAt
+			asstMsg.TurnStatus = status
+			asstMsg.TurnReason = reason
+			terminalAssistantRecorded = true
 		}
-		e.emit(ctx, sessionID, event.KindMessageEnd, asstMsg, true)
+		messageCtx := ctx
+		if ctx.Err() != nil {
+			messageCtx = context.WithoutCancel(ctx)
+		}
+		e.emit(messageCtx, sessionID, event.KindMessageEnd, asstMsg, true)
+
+		if ctx.Err() != nil {
+			completeTurn(turnCompletionFromContext(ctx))
+			return nil
+		}
 
 		// 没有工具调用,回合结束。
 		if finishReason != "tool_calls" || len(toolCalls) == 0 {
@@ -1130,7 +1268,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 					"",
 				))
 				if stopHook.Halt {
-					completeTurn()
+					completeTurn(turnStatusCompleted, "")
 					return nil
 				}
 				if stopHook.Decision == hooks.DecisionDeny {
@@ -1166,11 +1304,15 @@ Inspect the current project tree before modifying files; do not assume it matche
 		executed := e.executeToolCalls(toolCtx, sessionID, toolCalls, guard)
 		var interactions []stepInteraction
 		for _, item := range executed {
+			eventCtx := ctx
+			if ctx.Err() != nil {
+				eventCtx = context.WithoutCancel(ctx)
+			}
 			tc := item.call
 			interactions = append(interactions, stepInteraction{
 				name: tc.Name, input: tc.Input, output: item.output,
 			})
-			e.emit(ctx, sessionID, event.KindToolEnd, toolCallPayload{
+			e.emit(eventCtx, sessionID, event.KindToolEnd, toolCallPayload{
 				ID: tc.ID, Name: tc.Name, Output: item.output, IsError: item.isErr,
 				Attachments: item.attachments, Diff: item.diff,
 			}, true)
@@ -1182,16 +1324,16 @@ Inspect the current project tree before modifying files; do not assume it matche
 				Attachments: append([]message.AttachmentRef(nil), item.attachments...),
 				Diff:        item.diff,
 			}
-			e.emit(ctx, sessionID, event.KindMessageEnd, toolMsg, true)
+			e.emit(eventCtx, sessionID, event.KindMessageEnd, toolMsg, true)
 		}
 		for _, item := range executed {
 			if item.terminate {
-				completeTurn()
+				completeTurn(turnCompletionFromContext(ctx))
 				return nil
 			}
 		}
 		if ctx.Err() != nil {
-			completeTurn()
+			completeTurn(turnCompletionFromContext(ctx))
 			return nil
 		}
 
@@ -1201,12 +1343,12 @@ Inspect the current project tree before modifying files; do not assume it matche
 			e.emit(ctx, sessionID, event.KindError,
 				"检测到重复操作:agent 反复执行相同调用且无进展,已终止本回合。请调整指令或补充信息后重试。",
 				true)
-			completeTurn()
+			completeTurn(turnStatusFailed, turnReasonError)
 			return nil
 		}
 	}
 
-	completeTurn()
+	completeTurn(turnStatusCompleted, "")
 	return nil
 }
 
@@ -1371,9 +1513,42 @@ func (e *Engine) toolExecutionMode(sessionID, name string) string {
 // Cancel 中断指定会话当前正在运行的回合(若有)。
 // 取消会传播到 provider HTTP 请求、工具执行、审批等待。无活跃回合时 no-op。
 func (e *Engine) Cancel(sessionID string) {
+	e.CancelWithReason(sessionID, TurnCancelReasonUserStop)
+}
+
+func (e *Engine) CancelWithReason(sessionID string, reason TurnCancelReason) {
 	if v, ok := e.cancels.Load(sessionID); ok {
-		v.(context.CancelFunc)()
+		state := v.(*turnRunState)
+		if reason == TurnCancelReasonUserStop {
+			e.emitTurnCancelRequested(context.Background(), sessionID, state, reason)
+		}
+		state.cancel(turnCancelCause(reason))
 	}
+}
+
+func (e *Engine) emitTurnCancelRequested(
+	ctx context.Context,
+	sessionID string,
+	state *turnRunState,
+	reason TurnCancelReason,
+) {
+	if state == nil || state.runID == "" {
+		return
+	}
+	state.cancelRequestOnce.Do(func() {
+		requestedAt := time.Now()
+		e.emitEvent(context.WithoutCancel(ctx), event.Event{
+			Kind:    event.KindTurnCancelRequested,
+			Session: sessionID,
+			RunID:   state.runID,
+			Time:    requestedAt,
+			Payload: turnCancelRequestedPayload{
+				RunID:       state.runID,
+				Reason:      string(reason),
+				RequestedAt: requestedAt,
+			},
+		}, true)
+	})
 }
 
 // CancelTool interrupts one active tool call while leaving the Agent Loop
@@ -1394,7 +1569,7 @@ func (e *Engine) CancelAndWait(sessionID string, timeout time.Duration) {
 	if !ok {
 		return // 无活跃回合
 	}
-	v.(context.CancelFunc)()
+	v.(*turnRunState).cancel(ErrTurnCancelledBySessionDelete)
 	if d, ok := e.dones.Load(sessionID); ok {
 		select {
 		case <-d.(chan struct{}):
@@ -1741,13 +1916,26 @@ func (e *Engine) resolveReasoningEffort(sessionID string) string {
 
 // emit 追加事件到日志并广播。
 func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, payload any, mustDeliver bool) {
-	ev := event.Event{Kind: kind, Session: sessionID, Time: time.Now(), Payload: payload}
+	ev := event.Event{
+		Kind:    kind,
+		Session: sessionID,
+		RunID:   tool.RunIDFromContext(ctx),
+		Time:    time.Now(),
+		Payload: payload,
+	}
+	e.emitEvent(ctx, ev, mustDeliver)
+}
+
+func (e *Engine) emitEvent(ctx context.Context, ev event.Event, mustDeliver bool) {
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
+	}
 	seq, _ := e.log.Append(ctx, ev)
 	ev.Seq = seq
 	if mustDeliver {
-		_ = e.bus.PublishMustDeliver(ctx, topic(sessionID), ev)
+		_ = e.bus.PublishMustDeliver(ctx, topic(ev.Session), ev)
 	} else {
-		e.bus.Publish(topic(sessionID), ev)
+		e.bus.Publish(topic(ev.Session), ev)
 	}
 }
 

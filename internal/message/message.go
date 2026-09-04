@@ -7,6 +7,7 @@ package message
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -78,4 +79,32 @@ type Message struct {
 	// 回合生命周期时间仅写入最终 assistant 消息，不回灌模型。
 	TurnStartedAt   *time.Time `json:"turn_started_at,omitempty"`
 	TurnCompletedAt *time.Time `json:"turn_completed_at,omitempty"`
+	TurnStatus      string     `json:"turn_status,omitempty"`
+	TurnReason      string     `json:"turn_reason,omitempty"`
+}
+
+// ModelContent returns the provider-visible text for this message.
+// Reasoning stays display-only for completed turns. If a turn was cancelled
+// before a final answer, preserve the interrupted analysis as explicit context
+// so a later user correction can build on that work.
+func (m Message) ModelContent() string {
+	content := strings.TrimSpace(m.Content)
+	if m.Role != RoleAssistant || m.TurnStatus != "cancelled" {
+		return m.Content
+	}
+	reasoning := strings.TrimSpace(m.Reasoning)
+	if reasoning == "" {
+		return m.Content
+	}
+	note := "[Interrupted assistant analysis preserved before cancellation]\n" + reasoning
+	if content == "" {
+		return note
+	}
+	return m.Content + "\n\n" + note
+}
+
+func (m Message) EmptyAssistantForModel() bool {
+	return m.Role == RoleAssistant &&
+		len(m.ToolCalls) == 0 &&
+		strings.TrimSpace(m.ModelContent()) == ""
 }

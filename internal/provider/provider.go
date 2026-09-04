@@ -69,7 +69,7 @@ type InputMessage struct {
 
 // TextMessage projects a canonical message without binary attachments.
 func TextMessage(item message.Message) InputMessage {
-	parts := []InputPart{{Type: "text", Text: item.Content}}
+	parts := []InputPart{{Type: "text", Text: item.ModelContent()}}
 	for _, element := range item.BrowserElements {
 		data, err := json.Marshal(element)
 		if err != nil {
@@ -92,6 +92,9 @@ func TextMessage(item message.Message) InputMessage {
 func TextMessages(items []message.Message) []InputMessage {
 	out := make([]InputMessage, 0, len(items))
 	for _, item := range items {
+		if item.EmptyAssistantForModel() {
+			continue
+		}
 		out = append(out, TextMessage(item))
 	}
 	return out

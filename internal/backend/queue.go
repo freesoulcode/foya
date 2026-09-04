@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/freesoulcode/foya/internal/agent"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
@@ -70,7 +71,7 @@ type EditSubmission struct {
 }
 
 type sessionRunner struct {
-	cancel           context.CancelFunc
+	cancel           context.CancelCauseFunc
 	done             chan struct{}
 	stopAfterCurrent bool
 }
@@ -439,7 +440,8 @@ func (b *Backend) DispatchQueuedMessage(
 		cancel := runner.cancel
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		cancel()
+		b.engine.CancelWithReason(sessionID, agent.TurnCancelReasonQueueDispatch)
+		cancel(agent.ErrTurnCancelledByQueueDispatch)
 		return selected, nil
 	}
 	if b.turns.compacting[sessionID] {
@@ -452,7 +454,7 @@ func (b *Backend) DispatchQueuedMessage(
 		selected = b.turns.queues[sessionID][0]
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		b.engine.Cancel(sessionID)
+		b.engine.CancelWithReason(sessionID, agent.TurnCancelReasonQueueDispatch)
 		return selected, nil
 	}
 
@@ -476,11 +478,12 @@ func (b *Backend) cancelCurrentTurn(sessionID string) {
 	}
 	b.turns.mu.Unlock()
 	if runner != nil {
-		runner.cancel()
+		b.engine.CancelWithReason(sessionID, agent.TurnCancelReasonUserStop)
+		runner.cancel(agent.ErrTurnCancelledByUser)
 		return
 	}
 	if compacting {
-		b.engine.Cancel(sessionID)
+		b.engine.CancelWithReason(sessionID, agent.TurnCancelReasonUserStop)
 	}
 }
 
@@ -630,7 +633,8 @@ func (b *Backend) stopSessionAndWait(sessionID string, timeout time.Duration) {
 		b.engine.CancelAndWait(sessionID, timeout)
 		return
 	}
-	runner.cancel()
+	b.engine.CancelWithReason(sessionID, agent.TurnCancelReasonSessionDeleted)
+	runner.cancel(agent.ErrTurnCancelledBySessionDelete)
 	select {
 	case <-runner.done:
 	case <-time.After(timeout):
@@ -638,7 +642,7 @@ func (b *Backend) stopSessionAndWait(sessionID string, timeout time.Duration) {
 }
 
 func (b *Backend) createRunnerLocked(sessionID string) (*sessionRunner, context.Context) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	runner := &sessionRunner{cancel: cancel, done: make(chan struct{})}
 	b.turns.runners[sessionID] = runner
 	return runner, ctx
@@ -683,7 +687,7 @@ func (b *Backend) runTurnLoop(
 		}
 
 		next := b.popQueueLocked(sessionID)
-		turnCtx, runner.cancel = context.WithCancel(context.Background())
+		turnCtx, runner.cancel = context.WithCancelCause(context.Background())
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
 		input = queueInput(next)

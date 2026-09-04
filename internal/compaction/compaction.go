@@ -230,9 +230,12 @@ type providerVisibleMessage struct {
 func providerVisibleMessages(messages []message.Message) []providerVisibleMessage {
 	out := make([]providerVisibleMessage, 0, len(messages))
 	for _, item := range messages {
+		if item.EmptyAssistantForModel() {
+			continue
+		}
 		out = append(out, providerVisibleMessage{
 			Role:       item.Role,
-			Content:    item.Content,
+			Content:    item.ModelContent(),
 			ToolCalls:  item.ToolCalls,
 			ToolCallID: item.ToolCallID,
 		})

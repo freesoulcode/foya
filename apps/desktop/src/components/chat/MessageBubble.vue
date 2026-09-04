@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   BotIcon,
+  CircleStopIcon,
   CopyIcon,
   CheckIcon,
   PencilIcon,
@@ -119,6 +120,21 @@ const isPending = computed(
 );
 
 const isError = computed(() => !isUser.value && props.message.error === true);
+const isCancelledTurn = computed(
+  () => !isUser.value && props.message.turn_status === "cancelled"
+);
+const cancelledLabel = computed(() => {
+  switch (props.message.turn_reason) {
+    case "user_stop":
+		return "用户终止输出";
+    case "queue_dispatch":
+      return "已切换到队列中的下一条消息";
+    case "session_deleted":
+      return "会话删除时已取消本次回复";
+    default:
+      return "本次回复已取消";
+  }
+});
 
 // 回合中「工作中」空窗:纯派生自 streaming + segments,不依赖任何专用事件。
 // 各段各自的进行态已被覆盖(首 token 前=isPending 打字点、思考中=「正在思考…」、
@@ -521,6 +537,14 @@ function onEditKeydown(event: KeyboardEvent) {
           :project-path="projectPath"
           @open-diff="(diff) => emit('open-diff', diff)"
         />
+
+        <div
+          v-if="isCancelledTurn"
+          class="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"
+        >
+          <CircleStopIcon class="size-3.5" />
+          <span>{{ cancelledLabel }}</span>
+        </div>
       </template>
 
       <div

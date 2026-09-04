@@ -271,6 +271,8 @@ function handleEvent(sessionId: string, data: string) {
         }
         if (m.turn_started_at) bucket[idx].turn_started_at = m.turn_started_at;
         if (m.turn_completed_at) bucket[idx].turn_completed_at = m.turn_completed_at;
+        if (m.turn_status) bucket[idx].turn_status = m.turn_status;
+        if (m.turn_reason) bucket[idx].turn_reason = m.turn_reason;
         bucket[idx].error = false;
         // 仅当本条消息不携带 tool_calls(即最终回复)时才释放流式槽位。
         // 携带 tool_calls 时回合尚未结束:工具执行后模型会继续输出,
@@ -480,12 +482,25 @@ function handleEvent(sessionId: string, data: string) {
       const p = ev.payload as {
         started_at?: string;
         completed_at?: string;
+        status?: ChatMessage["turn_status"];
+        reason?: string;
       } | null;
       const streamingMessageIdx = streamingIdx[sessionId] ?? -1;
       const idx = streamingMessageIdx >= 0 ? streamingMessageIdx : findLastAssistantIdx(bucket);
       if (idx >= 0) {
         bucket[idx].turn_started_at ??= p?.started_at ?? ev.time;
         bucket[idx].turn_completed_at = p?.completed_at ?? ev.time;
+        if (p?.status) bucket[idx].turn_status = p.status;
+        if (p?.reason) bucket[idx].turn_reason = p.reason;
+      } else if (p?.status === "cancelled") {
+        bucket.push({
+          role: "assistant",
+          content: "",
+          turn_started_at: p.started_at ?? ev.time,
+          turn_completed_at: p.completed_at ?? ev.time,
+          turn_status: p.status,
+          turn_reason: p.reason,
+        });
       }
       streamingIdx[sessionId] = -1;
       delete runningSessions.value[sessionId];
@@ -749,6 +764,8 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       }
       if (m.turn_started_at) cur.turn_started_at = m.turn_started_at;
       if (m.turn_completed_at) cur.turn_completed_at = m.turn_completed_at;
+      if (m.turn_status) cur.turn_status = m.turn_status;
+      if (m.turn_reason) cur.turn_reason = m.turn_reason;
       if (m.tool_calls) {
         for (const tc of m.tool_calls) {
           const tool = { ...tc, status: "queued" as const };

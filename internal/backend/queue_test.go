@@ -214,6 +214,55 @@ func awaitStarted(t *testing.T, p *controlledProvider, want string) {
 	}
 }
 
+func awaitEventSnapshot(
+	t *testing.T,
+	be *Backend,
+	sessionID string,
+	matches func([]event.Event) bool,
+) []event.Event {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		events, err := be.log.Read(context.Background(), sessionID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matches(events) {
+			return events
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for event snapshot; saw %#v", eventKinds(events))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func lastEvent(events []event.Event, kind event.Kind) *event.Event {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == kind {
+			return &events[i]
+		}
+	}
+	return nil
+}
+
+func eventKinds(events []event.Event) []event.Kind {
+	kinds := make([]event.Kind, 0, len(events))
+	for _, ev := range events {
+		kinds = append(kinds, ev.Kind)
+	}
+	return kinds
+}
+
+func payloadString(payload any, key string) string {
+	fields, ok := payload.(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := fields[key].(string)
+	return value
+}
+
 func TestSubmitTurnDrainsQueueInFIFOOrder(t *testing.T) {
 	be, sessionID, prov := newQueueTestBackend(t)
 
@@ -273,6 +322,16 @@ func TestDispatchQueuedMessageCancelsAndPrioritizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitStarted(t, prov, "queued-b")
+	events := awaitEventSnapshot(t, be, sessionID, func(events []event.Event) bool {
+		return lastEvent(events, event.KindTurnComplete) != nil
+	})
+	if ev := lastEvent(events, event.KindTurnCancelRequested); ev != nil {
+		t.Fatalf("queue dispatch should not record user stop request: %#v", ev)
+	}
+	complete := lastEvent(events, event.KindTurnComplete)
+	if got := payloadString(complete.Payload, "reason"); got != string(agent.TurnCancelReasonQueueDispatch) {
+		t.Fatalf("dispatch cancellation reason = %q, want %q", got, agent.TurnCancelReasonQueueDispatch)
+	}
 
 	items, err := be.ListQueuedMessages(sessionID)
 	if err != nil {
@@ -311,6 +370,43 @@ func TestCancelTurnPreservesAndPausesQueue(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != queued.Queued.ID {
 		t.Fatalf("queue after cancel = %#v", items)
+	}
+
+	events := awaitEventSnapshot(t, be, sessionID, func(events []event.Event) bool {
+		return lastEvent(events, event.KindTurnComplete) != nil
+	})
+	cancelRequested := lastEvent(events, event.KindTurnCancelRequested)
+	if cancelRequested == nil {
+		t.Fatalf("turn_cancel_requested was not recorded: %#v", eventKinds(events))
+	}
+	if got := payloadString(cancelRequested.Payload, "reason"); got != string(agent.TurnCancelReasonUserStop) {
+		t.Fatalf("cancel request reason = %q, want %q", got, agent.TurnCancelReasonUserStop)
+	}
+	complete := lastEvent(events, event.KindTurnComplete)
+	if cancelRequested.RunID == "" || complete.RunID != cancelRequested.RunID {
+		t.Fatalf("cancel run_id = %q, complete run_id = %q", cancelRequested.RunID, complete.RunID)
+	}
+	if got := payloadString(complete.Payload, "status"); got != "cancelled" {
+		t.Fatalf("turn_complete status = %q, want cancelled", got)
+	}
+	if got := payloadString(complete.Payload, "reason"); got != string(agent.TurnCancelReasonUserStop) {
+		t.Fatalf("turn_complete reason = %q, want %q", got, agent.TurnCancelReasonUserStop)
+	}
+
+	history, err := be.History(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) < 2 {
+		t.Fatalf("history after cancel = %#v", history)
+	}
+	finalAssistant := history[len(history)-1]
+	if finalAssistant.Role != message.RoleAssistant ||
+		finalAssistant.TurnStatus != "cancelled" ||
+		finalAssistant.TurnReason != string(agent.TurnCancelReasonUserStop) ||
+		finalAssistant.TurnStartedAt == nil ||
+		finalAssistant.TurnCompletedAt == nil {
+		t.Fatalf("cancelled assistant terminal state = %#v", finalAssistant)
 	}
 }
 
