@@ -636,6 +636,14 @@ async function refreshFileReview(sessionId: string) {
   }
 }
 
+function refreshActiveFileReview() {
+  const sessionId = activeId.value;
+  if (!sessionId || !fileReviewsBySession.value[sessionId]?.files.length) {
+    return Promise.resolve();
+  }
+  return refreshFileReview(sessionId);
+}
+
 // 拉取所有连接及其模型目录。单个连接的目录失败不阻塞其它连接。
 async function refreshConnections() {
   modelsLoading.value = true;
@@ -1408,6 +1416,7 @@ export function useKernel() {
     keepAllFileChanges,
     undoAllFileChanges,
     toggleFileReviewForceFile,
+    refreshActiveFileReview,
     cancelTurn,
     cancelTool,
     backgroundTool,

@@ -71,6 +71,7 @@ const {
   keepAllFileChanges,
   undoAllFileChanges,
   toggleFileReviewForceFile,
+  refreshActiveFileReview,
   cancelTurn,
   cancelTool,
   backgroundTool,
@@ -533,6 +534,7 @@ const viewContext: ChatWorkspaceContext = {
         :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
         :ensure-session="ensureSession"
+        @project-files-changed="refreshActiveFileReview"
         @browser-element-selected="onBrowserElementSelected"
         @browser-action-result="onBrowserActionResult"
       />

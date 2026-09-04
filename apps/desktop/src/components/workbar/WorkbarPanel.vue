@@ -48,6 +48,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: "browser-element-selected", element: BrowserElementSelection): void;
+  (event: "project-files-changed", paths: string[]): void;
   (
     event: "browser-action-result",
     request: BrowserActionRequest,
@@ -387,6 +388,7 @@ watch(
           @update:selected-mode="setFileMode"
           @entry-renamed="entryRenamed"
           @entry-deleted="entryDeleted"
+          @files-changed="emit('project-files-changed', $event)"
         />
 
         <template v-for="tab in tabs" :key="tab.id">

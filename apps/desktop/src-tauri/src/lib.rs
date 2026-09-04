@@ -2,9 +2,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
+use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -16,8 +21,12 @@ static ACTIVE_BROWSER_PICKERS: LazyLock<Mutex<HashSet<String>>> =
 static PENDING_BROWSER_ACTIONS: LazyLock<
     Mutex<HashMap<String, tokio::sync::oneshot::Sender<BrowserActionResult>>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
+static PROJECT_FILE_WATCHERS: LazyLock<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_PROJECT_FILE_WATCHER_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_PROJECT_ENTRIES: usize = 10_000;
 const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
+const PROJECT_FILE_EVENT_BATCH: Duration = Duration::from_millis(150);
 const IGNORED_PROJECT_DIRS: &[&str] = &[
     ".git",
     ".idea",
@@ -30,6 +39,14 @@ const IGNORED_PROJECT_DIRS: &[&str] = &[
     "target",
     "vendor",
 ];
+
+#[derive(serde::Serialize)]
+struct ProjectFilesChanged {
+    paths: Vec<String>,
+    tree_changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
 fn encode_query_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
@@ -1044,6 +1061,59 @@ fn project_relative_string(root: &Path, path: &Path) -> Result<String, String> {
         .map_err(|_| "项目条目不在当前项目中".into())
 }
 
+fn project_watch_path(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    let ignored = relative.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        IGNORED_PROJECT_DIRS
+            .iter()
+            .any(|ignored| name == std::ffi::OsStr::new(ignored))
+    });
+    if ignored {
+        return None;
+    }
+    Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn project_event_changes_tree(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Any
+            | EventKind::Other
+            | EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(notify::event::ModifyKind::Name(_))
+    )
+}
+
+fn merge_project_watch_event(
+    root: &Path,
+    event: Result<NotifyEvent, notify::Error>,
+    paths: &mut HashSet<String>,
+    tree_changed: &mut bool,
+    error: &mut Option<String>,
+) {
+    match event {
+        Ok(event) => {
+            if matches!(event.kind, EventKind::Access(_)) {
+                return;
+            }
+            *tree_changed |= project_event_changes_tree(&event.kind);
+            for path in event.paths {
+                if let Some(relative) = project_watch_path(root, &path) {
+                    paths.insert(relative);
+                }
+            }
+        }
+        Err(cause) => {
+            *tree_changed = true;
+            *error = Some(cause.to_string());
+        }
+    }
+}
+
 fn collect_project_entries(
     root: &Path,
     directory: &Path,
@@ -1086,6 +1156,113 @@ fn collect_project_entries(
         if file_type.is_dir() {
             collect_project_entries(root, &path, entries)?;
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn watch_project_files(project_path: String, channel: Channel<String>) -> Result<String, String> {
+    let root = project_root(&project_path)?;
+    let (event_tx, event_rx) = mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |event| {
+            let _ = event_tx.send(event);
+        },
+        notify::Config::default(),
+    )
+    .map_err(|error| format!("无法创建文件监听器: {error}"))?;
+    watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|error| format!("无法监听项目目录: {error}"))?;
+
+    let watch_id = format!(
+        "project-watch-{}",
+        NEXT_PROJECT_FILE_WATCHER_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    PROJECT_FILE_WATCHERS
+        .lock()
+        .map_err(|_| "文件监听器状态已损坏".to_string())?
+        .insert(watch_id.clone(), Arc::clone(&stop));
+
+    let thread_watch_id = watch_id.clone();
+    thread::Builder::new()
+        .name(thread_watch_id.clone())
+        .spawn(move || {
+            let _watcher = watcher;
+            while !stop.load(Ordering::Acquire) {
+                let first = match event_rx.recv_timeout(PROJECT_FILE_EVENT_BATCH) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+
+                let mut paths = HashSet::new();
+                let mut tree_changed = false;
+                let mut error = None;
+                merge_project_watch_event(&root, first, &mut paths, &mut tree_changed, &mut error);
+
+                let deadline = Instant::now() + PROJECT_FILE_EVENT_BATCH;
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match event_rx.recv_timeout(remaining) {
+                        Ok(event) => merge_project_watch_event(
+                            &root,
+                            event,
+                            &mut paths,
+                            &mut tree_changed,
+                            &mut error,
+                        ),
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            stop.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+
+                if paths.is_empty() && error.is_none() {
+                    continue;
+                }
+                let mut paths = paths.into_iter().collect::<Vec<_>>();
+                paths.sort();
+                let payload = ProjectFilesChanged {
+                    paths,
+                    tree_changed,
+                    error,
+                };
+                let Ok(payload) = serde_json::to_string(&payload) else {
+                    continue;
+                };
+                if channel.send(payload).is_err() {
+                    break;
+                }
+            }
+            if let Ok(mut watchers) = PROJECT_FILE_WATCHERS.lock() {
+                watchers.remove(&thread_watch_id);
+            }
+        })
+        .map_err(|error| {
+            if let Ok(mut watchers) = PROJECT_FILE_WATCHERS.lock() {
+                watchers.remove(&watch_id);
+            }
+            format!("无法启动文件监听器: {error}")
+        })?;
+
+    Ok(watch_id)
+}
+
+#[tauri::command]
+fn unwatch_project_files(watch_id: String) -> Result<(), String> {
+    let stop = PROJECT_FILE_WATCHERS
+        .lock()
+        .map_err(|_| "文件监听器状态已损坏".to_string())?
+        .remove(&watch_id);
+    if let Some(stop) = stop {
+        stop.store(true, Ordering::Release);
     }
     Ok(())
 }
@@ -3710,6 +3887,64 @@ async fn search_mcp_registry(_query: String) -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
 
+#[cfg(test)]
+mod project_file_watcher_tests {
+    use super::*;
+    use notify::event::{AccessKind, CreateKind, DataChange, ModifyKind, RenameMode};
+
+    #[test]
+    fn project_watch_path_filters_ignored_directories() {
+        let root = Path::new("/workspace/project");
+        assert_eq!(
+            project_watch_path(root, Path::new("/workspace/project/src/main.rs")),
+            Some("src/main.rs".to_string())
+        );
+        assert_eq!(
+            project_watch_path(
+                root,
+                Path::new("/workspace/project/node_modules/pkg/index.js")
+            ),
+            None
+        );
+        assert_eq!(
+            project_watch_path(root, Path::new("/workspace/other/main.rs")),
+            None
+        );
+    }
+
+    #[test]
+    fn project_watch_event_only_marks_structure_changes() {
+        assert!(!project_event_changes_tree(&EventKind::Modify(
+            ModifyKind::Data(DataChange::Content)
+        )));
+        assert!(project_event_changes_tree(&EventKind::Modify(
+            ModifyKind::Name(RenameMode::Both)
+        )));
+        assert!(project_event_changes_tree(&EventKind::Create(
+            CreateKind::File
+        )));
+    }
+
+    #[test]
+    fn project_watch_ignores_file_access_events() {
+        let root = Path::new("/workspace/project");
+        let mut paths = HashSet::new();
+        let mut tree_changed = false;
+        let mut error = None;
+        merge_project_watch_event(
+            root,
+            Ok(NotifyEvent::new(EventKind::Access(AccessKind::Read))
+                .add_path(root.join("src/main.rs"))),
+            &mut paths,
+            &mut tree_changed,
+            &mut error,
+        );
+        assert!(paths.is_empty());
+        assert!(!tree_changed);
+        assert!(error.is_none());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sidecar_child = Arc::new(Mutex::new(None::<CommandChild>));
@@ -3882,6 +4117,8 @@ pub fn run() {
             close_browser,
             list_project_files,
             read_project_file,
+            watch_project_files,
+            unwatch_project_files,
             create_project_file,
             create_project_directory,
             rename_project_entry,

@@ -6,6 +6,7 @@ import {
   ref,
   watch,
 } from "vue";
+import { useEventListener } from "@vueuse/core";
 import {
   AlertCircleIcon,
   ChevronDownIcon,
@@ -77,6 +78,7 @@ const emit = defineEmits<{
     isDirectory: boolean
   ): void;
   (event: "entry-deleted", path: string, isDirectory: boolean): void;
+  (event: "files-changed", paths: string[]): void;
 }>();
 
 interface FileDiff {
@@ -126,8 +128,15 @@ const deleteError = ref("");
 const operating = ref(false);
 const notice = ref("");
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+let filesystemRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let fileRequest = 0;
+let treeRequest = 0;
+let projectWatchGeneration = 0;
+let projectWatchID = "";
 let stopTreeResize: (() => void) | null = null;
+let pendingTreeRefresh = false;
+let pendingFileRefresh = false;
+const pendingChangedPaths = new Set<string>();
 
 const menuItemClass =
   "relative flex h-8 cursor-default select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
@@ -522,14 +531,20 @@ async function onMarkdownClick(event: MouseEvent) {
 }
 
 async function loadTree() {
-  if (!props.projectPath) {
+  const request = ++treeRequest;
+  const projectPath = props.projectPath;
+  if (!projectPath) {
     entries.value = [];
+    treeError.value = "";
+    loadingTree.value = false;
     return;
   }
   loadingTree.value = true;
   treeError.value = "";
   try {
-    entries.value = await api.listProjectFiles(props.projectPath);
+    const next = await api.listProjectFiles(projectPath);
+    if (request !== treeRequest) return;
+    entries.value = next;
     if (
       treeSelection.value &&
       !entries.value.some((entry) => entry.path === treeSelection.value)
@@ -537,26 +552,30 @@ async function loadTree() {
       treeSelection.value = "";
     }
   } catch (cause) {
+    if (request !== treeRequest) return;
     treeError.value = String(cause);
     entries.value = [];
   } finally {
-    loadingTree.value = false;
+    if (request === treeRequest) loadingTree.value = false;
   }
 }
 
 async function loadFile() {
   const request = ++fileRequest;
-  if (!props.projectPath || !props.selectedPath) {
+  const projectPath = props.projectPath;
+  const selectedPath = props.selectedPath;
+  if (!projectPath || !selectedPath) {
     content.value = "";
     fileError.value = "";
+    loadingFile.value = false;
     return;
   }
   loadingFile.value = true;
   fileError.value = "";
   try {
     const next = await api.readProjectFile(
-      props.projectPath,
-      props.selectedPath
+      projectPath,
+      selectedPath
     );
     if (request === fileRequest) content.value = next;
   } catch (cause) {
@@ -569,14 +588,88 @@ async function loadFile() {
   }
 }
 
+function selectedFileAffected(paths: string[]) {
+  const selectedPath = props.selectedPath;
+  if (!selectedPath) return false;
+  return paths.some(
+    (path) =>
+      !path ||
+      path === selectedPath ||
+      selectedPath.startsWith(`${path}/`)
+  );
+}
+
+function scheduleFilesystemRefresh(
+  paths: string[],
+  treeChanged: boolean,
+  forceFileRefresh = false
+) {
+  pendingTreeRefresh ||= treeChanged;
+  pendingFileRefresh ||= forceFileRefresh || selectedFileAffected(paths);
+  for (const path of paths) pendingChangedPaths.add(path);
+  if (filesystemRefreshTimer) clearTimeout(filesystemRefreshTimer);
+  filesystemRefreshTimer = setTimeout(async () => {
+    filesystemRefreshTimer = undefined;
+    const refreshTree = pendingTreeRefresh;
+    const refreshFile = pendingFileRefresh;
+    const changedPaths = Array.from(pendingChangedPaths);
+    pendingTreeRefresh = false;
+    pendingFileRefresh = false;
+    pendingChangedPaths.clear();
+    emit("files-changed", changedPaths);
+    if (refreshTree) await loadTree();
+    if (refreshFile) await loadFile();
+  }, 50);
+}
+
+async function replaceProjectWatcher(projectPath: string) {
+  const generation = ++projectWatchGeneration;
+  const previous = projectWatchID;
+  projectWatchID = "";
+  if (previous) {
+    await api.unwatchProjectFiles(previous).catch(() => undefined);
+  }
+  if (!projectPath) return;
+
+  try {
+    const watchID = await api.watchProjectFiles(projectPath, (event) => {
+      if (
+        generation !== projectWatchGeneration ||
+        props.projectPath !== projectPath
+      ) {
+        return;
+      }
+      if (event.error) treeError.value = `文件监听失败：${event.error}`;
+      scheduleFilesystemRefresh(
+        event.paths,
+        event.tree_changed,
+        Boolean(event.error)
+      );
+    });
+    if (
+      generation !== projectWatchGeneration ||
+      props.projectPath !== projectPath
+    ) {
+      await api.unwatchProjectFiles(watchID).catch(() => undefined);
+      return;
+    }
+    projectWatchID = watchID;
+  } catch (cause) {
+    if (generation === projectWatchGeneration) {
+      treeError.value = `无法监听项目文件：${String(cause)}`;
+    }
+  }
+}
+
 watch(
   () => props.projectPath,
-  () => {
+  (projectPath) => {
     collapsed.value = new Set();
     treeSelection.value = "";
     inlineActionsPath.value = "";
     query.value = "";
     void loadTree();
+    void replaceProjectWatcher(projectPath ?? "");
   },
   { immediate: true }
 );
@@ -605,7 +698,18 @@ watch(diffSignature, (value, previous) => {
   if (value !== previous) void loadTree();
 });
 
+useEventListener(window, "focus", () => {
+  if (!props.projectPath) return;
+  scheduleFilesystemRefresh([], true, true);
+});
+
 onBeforeUnmount(() => {
+  projectWatchGeneration += 1;
+  if (projectWatchID) {
+    void api.unwatchProjectFiles(projectWatchID);
+    projectWatchID = "";
+  }
+  if (filesystemRefreshTimer) clearTimeout(filesystemRefreshTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
   stopTreeResize?.();
 });

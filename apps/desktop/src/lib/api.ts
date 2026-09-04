@@ -368,6 +368,12 @@ export interface ProjectEntry {
   is_dir: boolean;
 }
 
+export interface ProjectFilesChanged {
+  paths: string[];
+  tree_changed: boolean;
+  error?: string;
+}
+
 // 审批档位(与 Go approval.Mode 对齐)。
 export type ApprovalMode = "manual" | "auto" | "full_access";
 export type ApprovalDecision =
@@ -863,6 +869,20 @@ export const api = {
 
   readProjectFile: (projectPath: string, path: string) =>
     invoke<string>("read_project_file", { projectPath, path }),
+
+  watchProjectFiles: (
+    projectPath: string,
+    onEvent: (event: ProjectFilesChanged) => void
+  ) => {
+    const channel = new Channel<string>();
+    channel.onmessage = (data) => {
+      onEvent(JSON.parse(data) as ProjectFilesChanged);
+    };
+    return invoke<string>("watch_project_files", { projectPath, channel });
+  },
+
+  unwatchProjectFiles: (watchId: string) =>
+    invoke("unwatch_project_files", { watchId }),
 
   createProjectFile: (projectPath: string, path: string) =>
     invoke<string>("create_project_file", { projectPath, path }),
