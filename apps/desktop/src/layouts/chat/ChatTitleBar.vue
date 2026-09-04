@@ -6,9 +6,11 @@ import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
 import { useWorkbar } from "@/composables/useWorkbar";
 import type { Session } from "@/lib/api";
+import ExternalEditorButton from "@/components/workbar/ExternalEditorButton.vue";
 
 const props = defineProps<{
   session?: Session;
+  projectPath?: string;
 }>();
 
 const emit = defineEmits<{
@@ -50,7 +52,7 @@ function cancel() {
 <template>
   <div
     data-tauri-drag-region
-    class="flex h-9 shrink-0 items-center gap-2 pr-2"
+    class="flex h-11 shrink-0 items-center gap-2 pr-2"
     :class="isMac && isCollapsed ? 'pl-[72px]' : 'pl-2'"
   >
     <SidebarTrigger
@@ -80,8 +82,13 @@ function cancel() {
       </button>
     </div>
 
-    <div v-if="!workbarOpen" class="no-drag flex h-full items-center">
+    <div class="no-drag flex h-full items-center">
+      <ExternalEditorButton
+        v-if="projectPath"
+        :project-path="projectPath"
+      />
       <button
+        v-if="!workbarOpen"
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         title="打开右侧工作区"
@@ -90,7 +97,7 @@ function cancel() {
       >
         <PanelRightIcon class="size-4" />
       </button>
-      <WindowControls v-if="showCustomWindowControls" />
+      <WindowControls v-if="!workbarOpen && showCustomWindowControls" />
     </div>
   </div>
 </template>

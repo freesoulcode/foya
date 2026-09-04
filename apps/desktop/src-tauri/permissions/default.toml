@@ -115,6 +115,8 @@ commands.allow = [
   "close_browser",
   "list_project_files",
   "read_project_file",
+  "list_external_editors",
+  "open_project_in_external_editor",
   "watch_project_files",
   "unwatch_project_files",
   "create_project_file",

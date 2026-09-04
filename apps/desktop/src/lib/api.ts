@@ -374,6 +374,12 @@ export interface ProjectFilesChanged {
   error?: string;
 }
 
+export interface ExternalEditor {
+  id: string;
+  name: string;
+  icon_data_url?: string;
+}
+
 // 审批档位(与 Go approval.Mode 对齐)。
 export type ApprovalMode = "manual" | "auto" | "full_access";
 export type ApprovalDecision =
@@ -869,6 +875,14 @@ export const api = {
 
   readProjectFile: (projectPath: string, path: string) =>
     invoke<string>("read_project_file", { projectPath, path }),
+
+  listExternalEditors: () =>
+    invoke<string>("list_external_editors").then(
+      (result) => (JSON.parse(result) as ExternalEditor[]) ?? []
+    ),
+
+  openProjectInExternalEditor: (projectPath: string, editorId: string) =>
+    invoke("open_project_in_external_editor", { projectPath, editorId }),
 
   watchProjectFiles: (
     projectPath: string,

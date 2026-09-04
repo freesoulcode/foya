@@ -517,6 +517,7 @@ const viewContext: ChatWorkspaceContext = {
         <ChatTitleBar
           v-if="!automationsActive"
           :session="activeSession"
+          :project-path="projectPath"
           @rename="onRename"
         />
         <RouterView v-slot="{ Component }">
