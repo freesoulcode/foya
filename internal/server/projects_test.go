@@ -16,7 +16,6 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -32,8 +31,8 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := idleProvider{}

@@ -9,12 +9,12 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/question"
-	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 func TestAskUserToolReturnsCompleteAnswers(t *testing.T) {
 	bus := broker.New[event.Event]()
-	gateway := question.NewGateway(bus, state.NewMemLog())
+	gateway := question.NewGateway(bus, testkit.NewLog())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := bus.Subscribe(ctx, "session:session-1")

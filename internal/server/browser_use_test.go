@@ -14,7 +14,6 @@ import (
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -23,8 +22,8 @@ func newBrowserUseTestServer(
 	t *testing.T,
 ) (http.Handler, *browseruse.Controller, *broker.Broker[event.Event], string) {
 	t.Helper()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	engine := agent.NewEngine(

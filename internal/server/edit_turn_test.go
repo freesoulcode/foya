@@ -23,8 +23,8 @@ import (
 )
 
 func TestEditTurnRouteRequiresAndAcceptsEffectConfirmation(t *testing.T) {
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	engine := agent.NewEngine(
@@ -123,7 +123,7 @@ func TestEditTurnRouteRequiresAndAcceptsEffectConfirmation(t *testing.T) {
 
 func appendServerHistoryMessage(
 	t *testing.T,
-	log *state.MemLog,
+	log state.Store,
 	sessionID string,
 	msg message.Message,
 ) event.Seq {

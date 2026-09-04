@@ -1,80 +1,18 @@
 package session
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/approval"
 )
-
-func TestPersistentManagerRestoresChildRuntimeSnapshot(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "data")
-	manager, err := NewPersistentManager(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := manager.Create(CreateOptions{
-		Model: "model", ParentID: "parent", AgentRef: "user:researcher",
-		AgentInstructions: "research carefully", AllowedTools: []string{"read"},
-		AgentMaxTurns: 7,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored, err := NewPersistentManager(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, ok := restored.Get(created.ID)
-	if !ok {
-		t.Fatal("restored session missing")
-	}
-	if item.AgentInstructions != "research carefully" ||
-		len(item.AllowedTools) != 1 || item.AgentMaxTurns != 7 {
-		t.Fatalf("runtime snapshot = %+v", item)
-	}
-}
-
-func TestPersistentManagerRestoresTasks(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "data")
-	manager, err := NewPersistentManager(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := manager.Create(CreateOptions{Model: "model"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.SetTasks(created.ID, []Task{
-		{Content: "Read implementation", Status: TaskStatusCompleted},
-		{Content: "Add task UI", Status: TaskStatusInProgress},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	restored, err := NewPersistentManager(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, ok := restored.Get(created.ID)
-	if !ok {
-		t.Fatal("restored session missing")
-	}
-	if len(item.Tasks) != 2 || item.Tasks[0].Status != TaskStatusCompleted ||
-		item.Tasks[1].Content != "Add task UI" {
-		t.Fatalf("Tasks = %#v", item.Tasks)
-	}
-}
 
 func stringPointer(value string) *string {
 	return &value
 }
 
 func TestUpdateLocksBoundProject(t *testing.T) {
-	manager := NewMemManager()
+	manager := newSQLiteTestManager(t)
 	created, err := manager.Create(CreateOptions{
 		Model:     "model-a",
 		ProjectID: "project-alpha",
@@ -120,7 +58,7 @@ func TestUpdateLocksBoundProject(t *testing.T) {
 }
 
 func TestUpdateAllowsFirstProjectBinding(t *testing.T) {
-	manager := NewMemManager()
+	manager := newSQLiteTestManager(t)
 	created, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +86,7 @@ func TestUpdateAllowsFirstProjectBinding(t *testing.T) {
 }
 
 func TestUpdateReasoningEffort(t *testing.T) {
-	manager := NewMemManager()
+	manager := newSQLiteTestManager(t)
 	created, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +114,7 @@ func TestUpdateReasoningEffort(t *testing.T) {
 }
 
 func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
-	manager := NewMemManager()
+	manager := newSQLiteTestManager(t)
 	parent, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +143,7 @@ func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
 }
 
 func TestApprovalModesRejectLegacyValues(t *testing.T) {
-	manager := NewMemManager()
+	manager := newSQLiteTestManager(t)
 	for _, mode := range []string{"explore", "ask", "bypass"} {
 		if _, err := manager.Create(CreateOptions{ApprovalMode: mode}); !errors.Is(err, ErrInvalidApprovalMode) {
 			t.Fatalf("Create mode %q error = %v", mode, err)
@@ -225,30 +163,5 @@ func TestApprovalModesRejectLegacyValues(t *testing.T) {
 		if _, err := manager.Update(created.ID, nil, nil, nil, nil, &value); err != nil {
 			t.Fatalf("Update mode %q: %v", mode, err)
 		}
-	}
-}
-
-func TestPersistentManagerDropsLegacyApprovalModes(t *testing.T) {
-	dataDir := t.TempDir()
-	data, err := json.Marshal([]persistedSession{
-		{Session: Session{ID: "valid", ApprovalMode: string(approval.ModeManual)}},
-		{Session: Session{ID: "legacy", ApprovalMode: "ask"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dataDir, "sessions.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	manager, err := NewPersistentManager(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := manager.Get("valid"); !ok {
-		t.Fatal("valid session was dropped")
-	}
-	if _, ok := manager.Get("legacy"); ok {
-		t.Fatal("legacy session was loaded")
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 type registryTestTool struct {
@@ -61,7 +61,7 @@ func TestSearchDeferredMatchesQueryTerms(t *testing.T) {
 }
 
 func TestBrowserToolsIncludeScroll(t *testing.T) {
-	log := state.NewMemLog()
+	log := testkit.NewLog()
 	bus := broker.New[event.Event]()
 	controller, err := browseruse.NewController(t.TempDir(), bus, log)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestBrowserToolsIncludeScroll(t *testing.T) {
 }
 
 func TestBrowserNavigateAndSnapshotAreDirect(t *testing.T) {
-	log := state.NewMemLog()
+	log := testkit.NewLog()
 	bus := broker.New[event.Event]()
 	controller, err := browseruse.NewController(t.TempDir(), bus, log)
 	if err != nil {

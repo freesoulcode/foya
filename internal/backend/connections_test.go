@@ -11,14 +11,13 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
 func TestSessionBindsConfiguredConnection(t *testing.T) {
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	fallback := newControlledProvider()
@@ -75,8 +74,8 @@ func TestSessionBindsConfiguredConnection(t *testing.T) {
 }
 
 func TestConnectionOrderSelectsNewSessionConnection(t *testing.T) {
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	fallback := newControlledProvider()

@@ -8,7 +8,7 @@ import (
 
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 type staticReviewer struct {
@@ -22,14 +22,14 @@ func (r *staticReviewer) Review(context.Context, Request) (Review, error) {
 	return r.review, r.err
 }
 
-func newTestGateway() Gateway {
-	return NewGateway(broker.New[event.Event](), state.NewMemLog())
+func newTestGateway(t testing.TB) Gateway {
+	return NewGateway(broker.New[event.Event](), testkit.NewLog())
 }
 
 func TestGatewayAutomaticallyApprovesReads(t *testing.T) {
 	reviewer := &staticReviewer{err: errors.New("must not be called")}
 	ctx := WithReviewer(WithMode(context.Background(), ModeAuto), reviewer)
-	decision, err := newTestGateway().Request(ctx, Request{Action: "read"})
+	decision, err := newTestGateway(t).Request(ctx, Request{Action: "read"})
 	if err != nil || decision != DecisionAutoApprove {
 		t.Fatalf("decision = %q, err = %v", decision, err)
 	}
@@ -53,7 +53,7 @@ func TestGatewayUsesGuardianInAutoMode(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			reviewer := &staticReviewer{review: test.review, err: test.err}
 			ctx := WithReviewer(WithMode(context.Background(), ModeAuto), reviewer)
-			decision, err := newTestGateway().Request(ctx, Request{Action: "execute"})
+			decision, err := newTestGateway(t).Request(ctx, Request{Action: "execute"})
 			if decision != test.decision || (err != nil) != test.wantErr {
 				t.Fatalf("decision = %q, err = %v", decision, err)
 			}
@@ -62,7 +62,7 @@ func TestGatewayUsesGuardianInAutoMode(t *testing.T) {
 }
 
 func TestGuardianApprovalIsNotCached(t *testing.T) {
-	gateway := newTestGateway()
+	gateway := newTestGateway(t)
 	request := Request{
 		ToolName: "bash",
 		Action:   "execute",
@@ -91,7 +91,7 @@ func TestGuardianApprovalIsNotCached(t *testing.T) {
 }
 
 func TestGatewaySessionGrantIsScopedAndClearable(t *testing.T) {
-	gateway := newTestGateway()
+	gateway := newTestGateway(t)
 	request := Request{
 		ID:       "request-1",
 		ToolName: "write",
@@ -149,7 +149,7 @@ func assertManualApprovalRequired(t *testing.T, gateway Gateway, sessionID, scop
 }
 
 func TestGatewayRejectsLegacyModesAndInvalidDecisions(t *testing.T) {
-	gateway := newTestGateway()
+	gateway := newTestGateway(t)
 	decision, err := gateway.Request(
 		WithMode(context.Background(), Mode("ask")),
 		Request{Action: "execute"},

@@ -14,16 +14,14 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
 func TestRuleAndMemoryRoutesKeepScopesSeparate(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := idleProvider{}
@@ -92,8 +90,8 @@ func TestRuleAndMemoryRoutesKeepScopesSeparate(t *testing.T) {
 
 func TestRulePatchWithoutMetadataPreservesRuleConfiguration(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := idleProvider{}
@@ -133,8 +131,8 @@ func TestRulePatchWithoutMetadataPreservesRuleConfiguration(t *testing.T) {
 
 func TestMemorySettingsRoutes(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := idleProvider{}

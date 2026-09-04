@@ -138,7 +138,7 @@ type Manager struct {
 	sessions        session.Manager
 	runner          Runner
 	history         HistoryReader
-	log             *state.MemLog
+	log             state.Log
 	bus             *broker.Broker[event.Event]
 	resolveProject  ProjectResolver
 	mu              sync.RWMutex
@@ -158,7 +158,7 @@ func NewManager(
 	sessions session.Manager,
 	runner Runner,
 	history HistoryReader,
-	log *state.MemLog,
+	log state.Log,
 	bus *broker.Broker[event.Event],
 	resolveProject ProjectResolver,
 	limits Limits,

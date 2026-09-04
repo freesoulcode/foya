@@ -8,7 +8,7 @@ import (
 
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 func newTestController(t *testing.T) *Controller {
@@ -16,7 +16,7 @@ func newTestController(t *testing.T) *Controller {
 	controller, err := NewController(
 		t.TempDir(),
 		broker.New[event.Event](),
-		state.NewMemLog(),
+		testkit.NewLog(),
 	)
 	if err != nil {
 		t.Fatal(err)

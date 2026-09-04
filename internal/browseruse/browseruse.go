@@ -64,7 +64,7 @@ type pendingAction struct {
 type Controller struct {
 	dataDir string
 	bus     *broker.Broker[event.Event]
-	log     *state.MemLog
+	log     state.Log
 
 	mu      sync.Mutex
 	pending map[string]pendingAction
@@ -73,7 +73,7 @@ type Controller struct {
 func NewController(
 	dataDir string,
 	bus *broker.Broker[event.Event],
-	log *state.MemLog,
+	log state.Log,
 ) (*Controller, error) {
 	controller := &Controller{
 		dataDir: dataDir,

@@ -1,12 +1,9 @@
 package state
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +14,7 @@ import (
 
 func TestBranchKeepsSourceEventsAndProjectsOnlyActiveHistory(t *testing.T) {
 	ctx := context.Background()
-	log := NewMemLog()
+	log := newSQLiteTestStore(t)
 	sessionID := "session-1"
 
 	firstUser := appendMessage(t, log, sessionID, message.Message{
@@ -103,7 +100,7 @@ func TestBranchKeepsSourceEventsAndProjectsOnlyActiveHistory(t *testing.T) {
 	if !committed.Applied || committed.Event.Kind != event.KindHistoryBranched {
 		t.Fatalf("committed branch = %#v", committed)
 	}
-	if _, ok := log.Checkpoint(sessionID); ok {
+	if _, ok, err := log.Checkpoint(ctx, sessionID); err != nil || ok {
 		t.Fatal("branch did not invalidate the old checkpoint")
 	}
 
@@ -172,7 +169,7 @@ func TestBranchKeepsSourceEventsAndProjectsOnlyActiveHistory(t *testing.T) {
 
 func TestBranchWithoutSideEffectsAppliesWithoutConfirmation(t *testing.T) {
 	ctx := context.Background()
-	log := NewMemLog()
+	log := newSQLiteTestStore(t)
 	sessionID := "session-1"
 	target := appendMessage(t, log, sessionID, message.Message{
 		Role: message.RoleUser, Content: "question",
@@ -192,7 +189,7 @@ func TestBranchWithoutSideEffectsAppliesWithoutConfirmation(t *testing.T) {
 
 func TestBranchRejectsStaleEffectConfirmation(t *testing.T) {
 	ctx := context.Background()
-	log := NewMemLog()
+	log := newSQLiteTestStore(t)
 	sessionID := "session-1"
 	target := appendMessage(t, log, sessionID, message.Message{
 		Role: message.RoleUser, Content: "run a command",
@@ -232,7 +229,7 @@ func TestBranchRejectsStaleEffectConfirmation(t *testing.T) {
 
 func appendMessage(
 	t *testing.T,
-	log *MemLog,
+	log Store,
 	sessionID string,
 	msg message.Message,
 ) event.Seq {
@@ -247,72 +244,4 @@ func appendMessage(
 		t.Fatal(err)
 	}
 	return seq
-}
-
-func TestPersistentLogRestoresTypedHistoryAndDeletion(t *testing.T) {
-	dataDir := t.TempDir()
-	log, err := NewPersistentLog(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appendMessage(t, log, "kept", message.Message{
-		Role: message.RoleUser, Content: "persist me",
-	})
-	appendMessage(t, log, "deleted", message.Message{
-		Role: message.RoleUser, Content: "remove me",
-	})
-	log.Delete("deleted")
-
-	restored, err := NewPersistentLog(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	history, err := restored.History(context.Background(), "kept")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(history) != 1 || history[0].Content != "persist me" {
-		t.Fatalf("restored history = %+v", history)
-	}
-	deleted, err := restored.Read(context.Background(), "deleted", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(deleted) != 0 {
-		t.Fatalf("deleted events restored: %+v", deleted)
-	}
-}
-
-func TestPersistentLogStoresAndRestoresOnlyAttachmentReferences(t *testing.T) {
-	dataDir := t.TempDir()
-	log, err := NewPersistentLog(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := message.AttachmentRef{
-		ID: "artifact-1", Name: "screen.png", Kind: "image",
-		MediaType: "image/png", Bytes: 123, Width: 10, Height: 8, SHA256: "checksum",
-	}
-	appendMessage(t, log, "session-1", message.Message{
-		Role: message.RoleUser, Content: "describe", Attachments: []message.AttachmentRef{ref},
-	})
-
-	onDisk, err := os.ReadFile(filepath.Join(dataDir, "events.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(onDisk, []byte("data:image/")) || bytes.Contains(onDisk, []byte(`"data"`)) {
-		t.Fatalf("event log contains inline image data: %s", onDisk)
-	}
-	restored, err := NewPersistentLog(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	history, err := restored.History(context.Background(), "session-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(history) != 1 || len(history[0].Attachments) != 1 || history[0].Attachments[0] != ref {
-		t.Fatalf("restored attachments = %#v", history)
-	}
 }

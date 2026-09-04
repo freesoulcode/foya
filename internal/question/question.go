@@ -81,10 +81,10 @@ type gateway struct {
 	mu      sync.Mutex
 	pending map[string]pendingBatch
 	bus     *broker.Broker[event.Event]
-	log     *state.MemLog
+	log     state.Log
 }
 
-func NewGateway(bus *broker.Broker[event.Event], log *state.MemLog) Gateway {
+func NewGateway(bus *broker.Broker[event.Event], log state.Log) Gateway {
 	return &gateway{
 		pending: make(map[string]pendingBatch),
 		bus:     bus,

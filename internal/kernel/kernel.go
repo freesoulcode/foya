@@ -33,6 +33,7 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/storage"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
@@ -50,6 +51,7 @@ type App struct {
 	browser     *browseruse.Controller
 	channels    *feishu.Manager
 	automations *automation.Manager
+	database    *storage.Database
 }
 
 // New 按配置装配内核。
@@ -59,14 +61,21 @@ func New(cfg config.Config) (*App, error) {
 	} else if ok {
 		cfg.Agents = saved
 	}
-	sessions, err := session.NewPersistentManager(cfg.DataDir)
+	database, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	log, err := state.NewPersistentLog(cfg.DataDir)
+	keepDatabase := false
+	defer func() {
+		if !keepDatabase {
+			_ = database.Close()
+		}
+	}()
+	sessions, err := session.NewSQLiteManager(database)
 	if err != nil {
 		return nil, err
 	}
+	log := state.NewSQLiteStore(database)
 	bus := broker.New[event.Event]()
 	artifactStore, err := artifact.NewFileStore(cfg.DataDir)
 	if err != nil {
@@ -307,11 +316,14 @@ func New(cfg config.Config) (*App, error) {
 	be.SetMemoryMaintenanceWake(memoryManager.Wake)
 	memoryManager.Start(appCtx)
 	go mcpManager.Start(appCtx)
-	return &App{
+	app := &App{
 		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
 		memory: memoryManager, browser: browserController,
 		channels: feishuManager, automations: automationManager,
-	}, nil
+		database: database,
+	}
+	keepDatabase = true
+	return app, nil
 }
 
 func loadConnections(cfg config.Config) []config.Connection {
@@ -363,4 +375,5 @@ func (a *App) Close() {
 	a.cancel()
 	a.browser.Close()
 	a.mcp.Close()
+	_ = a.database.Close()
 }

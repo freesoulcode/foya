@@ -14,8 +14,8 @@ import (
 
 func TestUsageStatisticsAggregatesRecentActivity(t *testing.T) {
 	ctx := context.Background()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	root, err := sessions.Create(session.CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestUsageStatisticsAggregatesRecentActivity(t *testing.T) {
 
 func appendUsageEvent(
 	t *testing.T,
-	log *state.MemLog,
+	log state.Store,
 	sessionID string,
 	at time.Time,
 	kind event.Kind,
@@ -123,8 +123,8 @@ func appendUsageEvent(
 func TestUsageStatisticsReturnsZeroValuesWithoutActivity(t *testing.T) {
 	now := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.Local)
 	be := &Backend{
-		sessions: session.NewMemManager(),
-		log:      state.NewMemLog(),
+		sessions: newTestSessionManager(t),
+		log:      newTestStore(t),
 	}
 	stats, err := be.usageStatisticsAt(context.Background(), 30, now)
 	if err != nil {

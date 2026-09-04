@@ -36,8 +36,8 @@ func (c *testCompleter) Calls() int {
 
 func TestRunExtractsStableRootSessionOnlyOnce(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	store, err := contextdata.NewStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +80,8 @@ func TestRunExtractsStableRootSessionOnlyOnce(t *testing.T) {
 
 func TestRunThrottlesConsecutiveRootSessionsPerProject(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	store, err := contextdata.NewStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -118,8 +118,8 @@ func TestRunThrottlesConsecutiveRootSessionsPerProject(t *testing.T) {
 
 func TestRunSkipsActiveSessions(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	store, err := contextdata.NewStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +152,8 @@ func TestRunSkipsActiveSessions(t *testing.T) {
 
 func TestRunSkipsExtractionWhenMemoryIsDisabled(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	store, err := contextdata.NewStore(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestRunSkipsExtractionWhenMemoryIsDisabled(t *testing.T) {
 
 func appendMessage(
 	t *testing.T,
-	log *state.MemLog,
+	log state.Store,
 	sessionID string,
 	at time.Time,
 	item message.Message,

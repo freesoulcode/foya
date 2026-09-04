@@ -8,11 +8,11 @@ import (
 
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
-func testGateway() *gateway {
-	return NewGateway(broker.New[event.Event](), state.NewMemLog()).(*gateway)
+func testGateway(t testing.TB) *gateway {
+	return NewGateway(broker.New[event.Event](), testkit.NewLog()).(*gateway)
 }
 
 func testBatch(id string) Batch {
@@ -27,7 +27,7 @@ func testBatch(id string) Batch {
 }
 
 func TestGatewayAnswersOneBatchOnce(t *testing.T) {
-	gateway := testGateway()
+	gateway := testGateway(t)
 	result := make(chan struct {
 		answers []Answer
 		err     error
@@ -59,7 +59,7 @@ func TestGatewayAnswersOneBatchOnce(t *testing.T) {
 }
 
 func TestGatewayClearSessionUnblocksAsk(t *testing.T) {
-	gateway := testGateway()
+	gateway := testGateway(t)
 	done := make(chan error, 1)
 	go func() {
 		_, err := gateway.Ask(context.Background(), testBatch("batch-2"))

@@ -13,7 +13,6 @@ import (
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -120,12 +119,12 @@ func (t *blockingSequentialTool) Run(ctx context.Context, call tool.Call) (tool.
 }
 
 func TestParallelSafeToolCallsRunConcurrently(t *testing.T) {
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	sess, err := sessions.Create(session.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	registry := tool.NewRegistry()
@@ -190,7 +189,7 @@ func TestMixedToolBatchUsesParallelAndOrderedSequentialLanes(t *testing.T) {
 	registry.Register(sequential)
 	engine := &Engine{
 		tools: registry,
-		log:   state.NewMemLog(),
+		log:   newTestStore(t),
 		bus:   broker.New[event.Event](),
 	}
 
@@ -248,7 +247,7 @@ func TestMixedToolBatchUsesParallelAndOrderedSequentialLanes(t *testing.T) {
 }
 
 func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	child, err := sessions.Create(session.CreateOptions{
 		Model: "test-model", ParentID: "parent",
 		AgentInstructions: "Only analyze market evidence.",
@@ -257,7 +256,7 @@ func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	registry := tool.NewRegistry()

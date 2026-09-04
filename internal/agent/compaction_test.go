@@ -88,7 +88,7 @@ func TestRunTurnCompactsBeforeOversizedRequest(t *testing.T) {
 	if err := engine.RunTurn(context.Background(), sessionID, "continue"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := log.Checkpoint(sessionID); !ok {
+	if _, ok, err := log.Checkpoint(context.Background(), sessionID); err != nil || !ok {
 		t.Fatal("expected an automatic checkpoint")
 	}
 	prov.mu.Lock()
@@ -119,7 +119,7 @@ func TestRunTurnUsesConfiguredInputLimitForCompaction(t *testing.T) {
 	if err := engine.RunTurn(context.Background(), sessionID, "continue"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := log.Checkpoint(sessionID); !ok {
+	if _, ok, err := log.Checkpoint(context.Background(), sessionID); err != nil || !ok {
 		t.Fatal("expected configured max input tokens to trigger compaction")
 	}
 }
@@ -138,7 +138,7 @@ func TestConfiguredInputLimitDoesNotExpandContextBudget(t *testing.T) {
 }
 
 func TestRunTurnForwardsSessionReasoningEffort(t *testing.T) {
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	sess, err := sessions.Create(session.CreateOptions{
 		Model:           "test-model",
 		ReasoningEffort: session.ReasoningEffortHigh,
@@ -146,7 +146,7 @@ func TestRunTurnForwardsSessionReasoningEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := &compactionProvider{contextWindow: 100_000}
@@ -236,14 +236,14 @@ func TestContextOverflowClassification(t *testing.T) {
 func newCompactionTestEngine(
 	t *testing.T,
 	contextWindow int64,
-) (*Engine, *state.MemLog, string, *compactionProvider) {
+) (*Engine, state.Store, string, *compactionProvider) {
 	t.Helper()
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	sess, err := sessions.Create(session.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := &compactionProvider{contextWindow: contextWindow}
@@ -261,7 +261,7 @@ func newCompactionTestEngine(
 
 func appendMessage(
 	t *testing.T,
-	log *state.MemLog,
+	log state.Store,
 	sessionID string,
 	role message.Role,
 	content string,

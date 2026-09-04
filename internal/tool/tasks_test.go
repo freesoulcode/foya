@@ -10,7 +10,7 @@ import (
 )
 
 func TestReadTasksToolReturnsCurrentTasks(t *testing.T) {
-	manager := session.NewMemManager()
+	manager := newTestSessionManager(t)
 	created, err := manager.Create(session.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestReadTasksToolReturnsCurrentTasks(t *testing.T) {
 }
 
 func TestReadTasksToolReturnsEmptyList(t *testing.T) {
-	manager := session.NewMemManager()
+	manager := newTestSessionManager(t)
 	created, err := manager.Create(session.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestReadTasksToolReturnsEmptyList(t *testing.T) {
 }
 
 func TestReadTasksToolRequiresSessionID(t *testing.T) {
-	tool := NewReadTasksTool(session.NewMemManager())
+	tool := NewReadTasksTool(newTestSessionManager(t))
 	result, err := tool.Run(context.Background(), Call{Input: []byte(`{}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestReadTasksToolRequiresSessionID(t *testing.T) {
 }
 
 func TestUpdateTasksToolPersistsAndSummarizes(t *testing.T) {
-	manager := session.NewMemManager()
+	manager := newTestSessionManager(t)
 	created, err := manager.Create(session.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestUpdateTasksToolPersistsAndSummarizes(t *testing.T) {
 }
 
 func TestUpdateTasksToolRejectsMultipleInProgress(t *testing.T) {
-	manager := session.NewMemManager()
+	manager := newTestSessionManager(t)
 	created, err := manager.Create(session.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestUpdateTasksToolRejectsMultipleInProgress(t *testing.T) {
 }
 
 func TestUpdateTasksToolRejectsInvalidStatus(t *testing.T) {
-	manager := session.NewMemManager()
+	manager := newTestSessionManager(t)
 	created, err := manager.Create(session.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestUpdateTasksToolRejectsInvalidStatus(t *testing.T) {
 }
 
 func TestUpdateTasksToolRequiresSessionID(t *testing.T) {
-	tool := NewUpdateTasksTool(session.NewMemManager(), nil)
+	tool := NewUpdateTasksTool(newTestSessionManager(t), nil)
 	result, err := tool.Run(context.Background(), Call{Input: []byte(`{"tasks":[]}`)})
 	if err != nil {
 		t.Fatal(err)

@@ -17,7 +17,6 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/subagent"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
@@ -39,8 +38,8 @@ description: project agent
 Research this project.
 `)
 
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	prov := idleProvider{}
@@ -82,8 +81,8 @@ Research this project.
 
 func TestAgentLimitsRoutesPersistAndApplySettings(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	engine := agent.NewEngine(
@@ -156,9 +155,9 @@ func TestAgentLimitsRoutesPersistAndApplySettings(t *testing.T) {
 
 func TestAgentLimitsChildSafetyStillEnforced(t *testing.T) {
 	dataDir := t.TempDir()
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	engine := agent.NewEngine(

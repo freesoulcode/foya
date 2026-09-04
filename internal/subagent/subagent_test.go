@@ -19,7 +19,7 @@ import (
 )
 
 type recordingRunner struct {
-	log  *state.MemLog
+	log  state.Store
 	task chan string
 }
 
@@ -36,9 +36,9 @@ func (r recordingRunner) RunTurn(ctx context.Context, sessionID, task string) er
 
 func TestStartReturnsImmediatelyAndWaitsForCompletion(t *testing.T) {
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
@@ -77,9 +77,9 @@ func TestStartReturnsImmediatelyAndWaitsForCompletion(t *testing.T) {
 
 func TestContextSelectionBuildsExplicitTaskPackage(t *testing.T) {
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	_, _ = log.Append(context.Background(), event.Event{
 		Kind: event.KindMessageEnd, Session: parent.ID,
 		Payload: message.Message{Role: message.RoleUser, Content: "first fact"},
@@ -111,9 +111,9 @@ func TestContextSelectionBuildsExplicitTaskPackage(t *testing.T) {
 func TestPersistenceMarksRunningAgentInterrupted(t *testing.T) {
 	dataDir := t.TempDir()
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
@@ -150,9 +150,9 @@ func TestPersistenceMarksRunningAgentInterrupted(t *testing.T) {
 
 func TestTreeTokenBudgetCancelsActiveRun(t *testing.T) {
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
@@ -195,7 +195,7 @@ max_turns: 7
 Return evidence-backed findings.
 `)
 	definitions := agentdef.NewManager(home, agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, err := sessions.Create(session.CreateOptions{
 		ConnectionID: "connection-1", Model: "parent-model",
 		ProjectID: "project-1", ApprovalMode: "manual",
@@ -203,7 +203,7 @@ Return evidence-backed findings.
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	manager := NewManager(
 		definitions, sessions, recordingRunner{log: log}, log, log, bus,
@@ -270,9 +270,9 @@ func (r *blockingRunner) RunTurn(ctx context.Context, _, _ string) error {
 
 func TestManagerEnforcesConcurrencyLimit(t *testing.T) {
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 3),
 		release: make(chan struct{}, 3),
@@ -324,9 +324,9 @@ func TestManagerEnforcesConcurrencyLimit(t *testing.T) {
 
 func TestManagerAppliesConcurrencyIncreaseAtRuntime(t *testing.T) {
 	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
-	sessions := session.NewMemManager()
+	sessions := newTestSessionManager(t)
 	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
-	log := state.NewMemLog()
+	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 2),
 		release: make(chan struct{}, 2),

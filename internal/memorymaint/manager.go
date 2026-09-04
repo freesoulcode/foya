@@ -58,7 +58,7 @@ type CompleterResolver func(sessionID string) (provider.Completer, string, strin
 // root-session creation but executes only when its time and idle gates pass.
 type Manager struct {
 	sessions session.Manager
-	log      *state.MemLog
+	log      state.Store
 	store    *contextdata.Store
 	complete CompleterResolver
 	path     string
@@ -74,7 +74,7 @@ type Manager struct {
 func New(
 	dataDir string,
 	sessions session.Manager,
-	log *state.MemLog,
+	log state.Store,
 	store *contextdata.Store,
 	complete CompleterResolver,
 ) (*Manager, error) {

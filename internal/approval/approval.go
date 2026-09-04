@@ -144,11 +144,11 @@ type gateway struct {
 	pending map[string]pendingRequest
 	grants  map[grantKey]struct{}
 	bus     *broker.Broker[event.Event]
-	log     *state.MemLog
+	log     state.Log
 }
 
 // NewGateway 创建内存版审批网关。
-func NewGateway(bus *broker.Broker[event.Event], log *state.MemLog) Gateway {
+func NewGateway(bus *broker.Broker[event.Event], log state.Log) Gateway {
 	return &gateway{
 		pending: make(map[string]pendingRequest),
 		grants:  make(map[grantKey]struct{}),

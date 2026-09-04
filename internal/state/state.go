@@ -1,22 +1,53 @@
-// Package state 实现「日志即真相」:一条带单调序号的追加事件日志是
-// 唯一真相来源,会话 / UI / 上下文 / 恢复都是它的投影。
-//
-// 事件日志持久化为 JSONL(权威),SQLite 仅作派生查询索引,坏了能从
-// 日志重建。上下文压缩只生成带 coverage 的投影 checkpoint,永不改源日志。
+// Package state implements the canonical event log and its projections.
 package state
 
 import (
 	"context"
+	"errors"
 
+	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
+	"github.com/freesoulcode/foya/internal/message"
 )
 
-// Log 是会话事件日志的追加与读取接口(权威真相)。
+var (
+	ErrActiveUserMessageNotFound = errors.New("active user message not found")
+	ErrMessageUnchanged          = errors.New("edited message is unchanged")
+	ErrBranchChanged             = errors.New("active history changed after branch preview")
+)
+
+// BranchResult reports a branch preview or committed history branch.
+type BranchResult struct {
+	Event     event.Event
+	Effects   []event.BranchEffect
+	HeadSeq   event.Seq
+	FirstUser bool
+	Applied   bool
+}
+
+// Log is the minimal append and replay contract.
 type Log interface {
-	// Append 追加一个事件,返回其分配的单调序号。
 	Append(ctx context.Context, ev event.Event) (event.Seq, error)
-	// Read 从指定序号(不含)之后读取事件,用于 SSE 补发与投影重建。
 	Read(ctx context.Context, session string, after event.Seq) ([]event.Event, error)
+}
+
+// Store is the complete event storage contract used by the runtime.
+type Store interface {
+	Log
+	Delete(ctx context.Context, session string) error
+	History(ctx context.Context, session string) ([]message.Message, error)
+	ModelHistory(ctx context.Context, session string) ([]message.Message, error)
+	Events(ctx context.Context, session string) ([]event.Event, error)
+	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
+	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)
+	Branch(
+		ctx context.Context,
+		session string,
+		targetUserSeq event.Seq,
+		editedContent string,
+		allowEffects bool,
+		expectedHeadSeq event.Seq,
+	) (BranchResult, error)
 }
 
 // Projection 从事件日志派生某种视图。

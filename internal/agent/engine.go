@@ -72,7 +72,7 @@ func (p *pendingToolCall) input() json.RawMessage {
 
 // Engine 是回合引擎。
 type Engine struct {
-	log       *state.MemLog
+	log       state.Store
 	bus       *broker.Broker[event.Event]
 	sessions  titleStore
 	tools     tool.Registry
@@ -225,7 +225,7 @@ Do not include hidden reasoning or commentary about the summarization process.`
 
 // NewEngine 组装回合引擎。
 func NewEngine(
-	log *state.MemLog,
+	log state.Store,
 	bus *broker.Broker[event.Event],
 	sessions titleStore,
 	p provider.Provider,
@@ -575,7 +575,10 @@ func (e *Engine) compactHistory(
 	if err != nil {
 		return nil, err
 	}
-	previous, _ := e.log.Checkpoint(sessionID)
+	previous, _, err := e.log.Checkpoint(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	plan, ok := compaction.BuildPlan(events, previous, preserveLatestTurn)
 	if !ok {
 		return nil, ErrNothingToCompact

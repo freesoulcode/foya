@@ -39,7 +39,7 @@ func (t *toolSearchTool) Spec() []byte {
 func (t *toolSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 	var params toolSearchParams
 	if err := json.Unmarshal(call.Input, &params); err != nil {
-		return errResult("invalid arguments: "+err.Error()), nil
+		return errResult("invalid arguments: " + err.Error()), nil
 	}
 	params.Query = strings.TrimSpace(params.Query)
 	if params.Query == "" {

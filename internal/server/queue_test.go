@@ -18,7 +18,6 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -36,8 +35,8 @@ func (idleProvider) Stream(context.Context, provider.Request) (<-chan provider.S
 
 func newQueueTestServer(t *testing.T) (http.Handler, string) {
 	t.Helper()
-	sessions := session.NewMemManager()
-	log := state.NewMemLog()
+	sessions := newTestSessionManager(t)
+	log := newTestStore(t)
 	bus := broker.New[event.Event]()
 	gateway := approval.NewGateway(bus, log)
 	engine := agent.NewEngine(

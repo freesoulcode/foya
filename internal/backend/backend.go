@@ -63,7 +63,7 @@ type ProviderBuilder func(config.Provider) (provider.Provider, string)
 // Backend 是内核业务的统一入口(传输无关)。
 type Backend struct {
 	sessions           session.Manager
-	log                *state.MemLog
+	log                state.Store
 	bus                *broker.Broker[event.Event]
 	engine             *agent.Engine
 	approval           approval.Gateway
@@ -1402,7 +1402,7 @@ func (b *Backend) MCPGetPrompt(ctx context.Context, serverID, name string, args 
 // New 组装一个 Backend。
 func New(
 	sessions session.Manager,
-	log *state.MemLog,
+	log state.Store,
 	bus *broker.Broker[event.Event],
 	engine *agent.Engine,
 	gw approval.Gateway,
@@ -1591,7 +1591,9 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
 		}
-		b.log.Delete(sessionID)
+		if err := b.log.Delete(ctx, sessionID); err != nil {
+			return err
+		}
 		b.mu.RLock()
 		artifactStore := b.artifacts
 		b.mu.RUnlock()
