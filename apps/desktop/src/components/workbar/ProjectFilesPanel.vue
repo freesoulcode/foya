@@ -12,8 +12,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CopyIcon,
-  FileCodeIcon,
-  FileIcon,
   FilePlus2Icon,
   FolderIcon,
   FolderOpenIcon,
@@ -57,6 +55,7 @@ import {
   type FullDiffLine,
 } from "@/lib/diff";
 import { renderMarkdown } from "@/lib/markdown";
+import FileTypeIcon from "./FileTypeIcon.vue";
 
 const CodePreview = defineAsyncComponent(() => import("./CodePreview.vue"));
 
@@ -115,7 +114,6 @@ const loadingFile = ref(false);
 const treeError = ref("");
 const fileError = ref("");
 const previewMode = ref<"file" | "diff">("file");
-const inlineActionsPath = ref("");
 const editOpen = ref(false);
 const editKind = ref<EditKind>("create-file");
 const editTarget = ref<ProjectEntry>();
@@ -316,16 +314,9 @@ function toggleDirectory(path: string) {
 
 function selectTreeEntry(entry: ProjectEntry, event: MouseEvent) {
   treeSelection.value = entry.path;
-  inlineActionsPath.value = "";
   if (event.detail > 1) return;
   if (entry.is_dir) toggleDirectory(entry.path);
   else emit("select", entry.path);
-}
-
-function showEntryActions(entry: ProjectEntry) {
-  treeSelection.value = entry.path;
-  inlineActionsPath.value =
-    inlineActionsPath.value === entry.path ? "" : entry.path;
 }
 
 function openCreateDialog(
@@ -337,7 +328,6 @@ function openCreateDialog(
   editDirectory.value = directoryForEntry(entry);
   editValue.value = "";
   editError.value = "";
-  inlineActionsPath.value = "";
   editOpen.value = true;
 }
 
@@ -348,7 +338,6 @@ function openRenameDialog(entry = selectedEntry.value) {
   editDirectory.value = parentPath(entry.path);
   editValue.value = entry.name;
   editError.value = "";
-  inlineActionsPath.value = "";
   editOpen.value = true;
 }
 
@@ -356,7 +345,6 @@ function requestDelete(entry = selectedEntry.value) {
   if (!entry) return;
   deleteTarget.value = entry;
   deleteError.value = "";
-  inlineActionsPath.value = "";
   deleteOpen.value = true;
 }
 
@@ -479,7 +467,6 @@ function copyText(text: string): Promise<void> {
 
 async function copyEntryPath(entry = selectedEntry.value) {
   if (!props.projectPath) return;
-  inlineActionsPath.value = "";
   treeError.value = "";
   try {
     const path = await api.resolveProjectPath(
@@ -495,7 +482,6 @@ async function copyEntryPath(entry = selectedEntry.value) {
 
 async function revealEntry(entry = selectedEntry.value) {
   if (!props.projectPath) return;
-  inlineActionsPath.value = "";
   treeError.value = "";
   try {
     const path = await api.resolveProjectPath(
@@ -666,7 +652,6 @@ watch(
   (projectPath) => {
     collapsed.value = new Set();
     treeSelection.value = "";
-    inlineActionsPath.value = "";
     query.value = "";
     void loadTree();
     void replaceProjectWatcher(projectPath ?? "");
@@ -678,7 +663,6 @@ watch(
   () => props.selectedPath,
   (path) => {
     if (path) treeSelection.value = path;
-    inlineActionsPath.value = "";
     previewMode.value =
       props.selectedMode === "diff" && selectedDiff.value ? "diff" : "file";
     void loadFile();
@@ -737,7 +721,7 @@ onBeforeUnmount(() => {
           treeOpen ? 'pr-3' : 'pr-11',
         ]"
       >
-        <FileCodeIcon class="size-4 shrink-0 text-muted-foreground" />
+        <FileTypeIcon :path="selectedPath" />
         <span class="min-w-0 flex-1 truncate font-mono text-xs">
           {{ selectedPath }}
         </span>
@@ -906,7 +890,6 @@ onBeforeUnmount(() => {
                 ]"
                 :style="{ paddingLeft: `${8 + (entry.path.split('/').length - 1) * 12}px` }"
                 @click="selectTreeEntry(entry, $event)"
-                @dblclick.stop="showEntryActions(entry)"
                 @contextmenu="treeSelection = entry.path"
               >
                 <template v-if="entry.is_dir">
@@ -922,56 +905,11 @@ onBeforeUnmount(() => {
                 </template>
                 <template v-else>
                   <span class="w-3 shrink-0" />
-                  <FileIcon class="size-3.5 shrink-0 text-muted-foreground" />
+                  <FileTypeIcon :path="entry.path" />
                 </template>
                 <span class="min-w-0 flex-1 truncate">{{ entry.name }}</span>
               </button>
             </ContextMenuTrigger>
-            <div
-              v-if="inlineActionsPath === entry.path"
-              class="mx-2 my-1 flex h-9 items-center justify-end gap-1 rounded-md border border-border bg-background px-1"
-            >
-              <Button
-                size="icon"
-                variant="ghost"
-                class="size-7"
-                title="重命名"
-                aria-label="重命名"
-                @click="openRenameDialog(entry)"
-              >
-                <PencilIcon class="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                class="size-7"
-                title="在 Finder 中打开"
-                aria-label="在 Finder 中打开"
-                @click="revealEntry(entry)"
-              >
-                <FolderOpenIcon class="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                class="size-7"
-                title="复制路径"
-                aria-label="复制路径"
-                @click="copyEntryPath(entry)"
-              >
-                <CopyIcon class="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                class="size-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                title="删除"
-                aria-label="删除"
-                @click="requestDelete(entry)"
-              >
-                <Trash2Icon class="size-3.5" />
-              </Button>
-            </div>
             <ContextMenuPortal>
               <ContextMenuContent
                 class="z-[80] min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
