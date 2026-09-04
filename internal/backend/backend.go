@@ -57,6 +57,12 @@ var (
 	ErrGenerationProvider = fmt.Errorf("generation provider failed")
 )
 
+// ForkSessionOptions controls user-visible metadata for a copied conversation.
+type ForkSessionOptions struct {
+	Title      string
+	ThroughSeq event.Seq
+}
+
 // ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
 type ProviderBuilder func(config.Provider) (provider.Provider, string)
 
@@ -1470,6 +1476,221 @@ func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, e
 		}
 	}
 	return created, nil
+}
+
+// ForkSession copies the current active message history into a new top-level
+// session. Runtime state such as queues, approvals and in-flight turns is not
+// copied.
+func (b *Backend) ForkSession(
+	ctx context.Context,
+	sourceID string,
+	opts ForkSessionOptions,
+) (*session.Session, error) {
+	b.turns.mu.Lock()
+	defer b.turns.mu.Unlock()
+
+	source, ok := b.sessions.Get(sourceID)
+	if !ok {
+		return nil, session.ErrNotFound
+	}
+	if _, deleted := b.turns.deleted[sourceID]; deleted {
+		return nil, session.ErrNotFound
+	}
+	if b.turns.runners[sourceID] != nil ||
+		b.turns.compacting[sourceID] ||
+		len(b.turns.queues[sourceID]) > 0 {
+		return nil, ErrSessionBusy
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	history, err := b.log.History(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	history, err = forkHistoryThrough(history, opts.ThroughSeq)
+	if err != nil {
+		return nil, err
+	}
+	throughSeq := opts.ThroughSeq
+	if throughSeq == 0 {
+		throughSeq = forkThroughSeq(history)
+	}
+	title := strings.TrimSpace(opts.Title)
+	if title == "" {
+		title = defaultForkTitle(source.Title)
+	}
+	forked, err := b.sessions.Create(session.CreateOptions{
+		ConnectionID:    source.ConnectionID,
+		Model:           source.Model,
+		ReasoningEffort: source.ReasoningEffort,
+		ProjectID:       source.ProjectID,
+		ApprovalMode:    source.ApprovalMode,
+		Title:           title,
+		TitleIsManual:   true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	copiedHistory, artifactStore, err := b.copyForkHistoryArtifacts(
+		ctx,
+		sourceID,
+		forked.ID,
+		history,
+	)
+	if err != nil {
+		b.cleanupFailedFork(ctx, forked.ID, artifactStore)
+		return nil, err
+	}
+	if _, err := b.log.ImportMessages(
+		ctx,
+		forked.ID,
+		sourceID,
+		throughSeq,
+		copiedHistory,
+	); err != nil {
+		b.cleanupFailedFork(ctx, forked.ID, artifactStore)
+		return nil, err
+	}
+
+	return forked, nil
+}
+
+func (b *Backend) cleanupFailedFork(
+	ctx context.Context,
+	sessionID string,
+	store artifact.Store,
+) {
+	_ = b.sessions.Delete(sessionID)
+	if store != nil {
+		_ = store.DeleteSession(ctx, sessionID)
+	}
+}
+
+func (b *Backend) copyForkHistoryArtifacts(
+	ctx context.Context,
+	sourceID string,
+	targetID string,
+	history []message.Message,
+) ([]message.Message, artifact.Store, error) {
+	out := make([]message.Message, len(history))
+	copy(out, history)
+
+	var needsArtifacts bool
+	for _, item := range out {
+		if len(item.Attachments) > 0 {
+			needsArtifacts = true
+			break
+		}
+	}
+	if !needsArtifacts {
+		return out, nil, nil
+	}
+
+	b.mu.RLock()
+	store := b.artifacts
+	b.mu.RUnlock()
+	if store == nil {
+		return nil, nil, errors.New("artifact store is unavailable")
+	}
+
+	copied := make(map[string]message.AttachmentRef)
+	commitIDs := make([]string, 0)
+	for i := range out {
+		refs, err := copyAttachmentRefs(
+			ctx,
+			store,
+			sourceID,
+			targetID,
+			out[i].Attachments,
+			copied,
+			&commitIDs,
+		)
+		if err != nil {
+			return nil, store, err
+		}
+		out[i].Attachments = refs
+	}
+	if len(commitIDs) > 0 {
+		if err := store.Commit(ctx, targetID, commitIDs); err != nil {
+			return nil, store, fmt.Errorf("commit forked artifacts: %w", err)
+		}
+	}
+	return out, store, nil
+}
+
+func copyAttachmentRefs(
+	ctx context.Context,
+	store artifact.Store,
+	sourceID string,
+	targetID string,
+	refs []message.AttachmentRef,
+	copied map[string]message.AttachmentRef,
+	commitIDs *[]string,
+) ([]message.AttachmentRef, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	out := make([]message.AttachmentRef, 0, len(refs))
+	for _, ref := range refs {
+		if existing, ok := copied[ref.ID]; ok {
+			out = append(out, existing)
+			continue
+		}
+		data, canonical, err := store.Read(ctx, sourceID, ref.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read fork source artifact %q: %w", ref.ID, err)
+		}
+		if canonical.Kind != "image" {
+			return nil, fmt.Errorf("unsupported fork artifact kind %q", canonical.Kind)
+		}
+		next, err := store.PutImage(ctx, targetID, canonical.Name, bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("write fork artifact %q: %w", ref.ID, err)
+		}
+		copied[ref.ID] = next
+		*commitIDs = append(*commitIDs, next.ID)
+		out = append(out, next)
+	}
+	return out, nil
+}
+
+func forkThroughSeq(history []message.Message) event.Seq {
+	var through event.Seq
+	for _, item := range history {
+		if event.Seq(item.EventSeq) > through {
+			through = event.Seq(item.EventSeq)
+		}
+	}
+	return through
+}
+
+func forkHistoryThrough(
+	history []message.Message,
+	throughSeq event.Seq,
+) ([]message.Message, error) {
+	if throughSeq == 0 {
+		return history, nil
+	}
+	for i, item := range history {
+		if event.Seq(item.EventSeq) == throughSeq {
+			if item.Role == message.RoleUser {
+				return nil, ErrInvalidForkBoundary
+			}
+			return history[:i+1], nil
+		}
+	}
+	return nil, ErrActiveMessageNotFound
+}
+
+func defaultForkTitle(sourceTitle string) string {
+	base := strings.TrimSpace(sourceTitle)
+	if base == "" {
+		base = "新对话"
+	}
+	return base + " 副本"
 }
 
 // UpdateSession 局部更新会话可变字段。

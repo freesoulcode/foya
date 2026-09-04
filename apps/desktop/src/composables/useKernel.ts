@@ -250,7 +250,8 @@ function handleEvent(sessionId: string, data: string) {
       if (sessionId === activeId.value) streaming.value = true;
       break;
     }
-    case "message_end": {
+    case "message_end":
+    case "message_imported": {
       const m = { ...(ev.payload as ChatMessage), event_seq: ev.seq };
       // 用户消息由内核事件统一落到界面,而非只在发起请求的客户端乐观插入;
       // 因此同一会话的其它在线客户端也能看到新回合。
@@ -260,6 +261,7 @@ function handleEvent(sessionId: string, data: string) {
       }
       const idx = streamingIdx[sessionId] ?? -1;
       if (m.role === "assistant" && idx >= 0) {
+        bucket[idx].event_seq = m.event_seq;
         // 内容以流式累积的 delta 为准;仅在无 delta 时用服务端 payload 兜底。
         if (!bucket[idx].content && m.content) {
           bucket[idx].content = m.content;
@@ -414,19 +416,6 @@ function handleEvent(sessionId: string, data: string) {
       const run = ev.payload as AgentRunSnapshot;
       if (run?.id) {
         void hydrateAgentRun(sessionId, run);
-      } else {
-        // Compatibility with synchronous agent events.
-        const legacy = ev.payload as {
-          child_session_id: string;
-          agent_ref: string;
-          agent_name: string;
-          tool_call_id: string;
-        };
-        for (const item of matchingAgentTools(sessionId, legacy.tool_call_id)) {
-          item.child_session_id = legacy.child_session_id;
-          item.agent_ref = legacy.agent_ref;
-          item.agent_name = legacy.agent_name;
-        }
       }
       break;
     }
@@ -753,9 +742,16 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
     }
     if (m.role === "assistant") {
       if (!cur) {
-        cur = { role: "assistant", content: "", segments: [], tool_calls: [] };
+        cur = {
+          role: "assistant",
+          content: "",
+          event_seq: m.event_seq,
+          segments: [],
+          tool_calls: [],
+        };
         out.push(cur);
       }
+      cur.event_seq = m.event_seq;
       const segs = cur.segments!;
       if (m.reasoning) segs.push({ kind: "reasoning", text: m.reasoning });
       if (m.content) {
@@ -778,6 +774,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
     if (m.role === "tool") {
       // 工具结果:回填到当前气泡对应 tool 段(按 tool_call_id 关联)。
       if (cur) {
+        if (m.event_seq) cur.event_seq = m.event_seq;
         const seg = cur.segments!.find(
           (s) => s.kind === "tool" && s.tool.id === m.tool_call_id
         );
@@ -848,6 +845,21 @@ async function renameSession(id: string, title: string) {
 // 置顶/取消置顶:走 PATCH,返回的会话项直接替换本地项。
 async function pinSession(id: string, pinned: boolean) {
   return updateSession(id, { pinned });
+}
+
+async function forkSession(id: string, throughSeq?: number) {
+  const forked = await api.forkSession(
+    id,
+    throughSeq ? { through_seq: throughSeq } : undefined
+  );
+  deletedSessions.delete(forked.id);
+  const existing = sessions.value.findIndex((s) => s.id === forked.id);
+  if (existing >= 0) sessions.value[existing] = forked;
+  else sessions.value.unshift(forked);
+  const history = await api.loadHistory(forked.id);
+  messagesBySession.value[forked.id] = normalizeHistory(history);
+  await select(forked.id);
+  return forked;
 }
 
 // 从本地集合移除会话并清理缓存;若移除的是当前会话,切到另一个或进入草稿态。
@@ -1262,6 +1274,7 @@ export function useKernel() {
     updateSession,
     renameSession,
     pinSession,
+    forkSession,
     deleteSession,
     editQueuedMessage,
     reorderQueuedMessage,

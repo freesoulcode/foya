@@ -44,6 +44,7 @@ const {
   pendingBrowserElements,
   onTurnSelect,
   editSentMessage,
+  forkSession,
   onOpenDiff,
   cancelTool,
   backgroundTool,
@@ -80,6 +81,13 @@ function updateActiveTurn(value: number) {
 function updateQuestionPanelExpanded(value: boolean) {
   questionPanelExpanded.value = value;
 }
+
+function forkAtMessage(messageSeq: number) {
+  if (!activeId.value) return;
+  void forkSession(activeId.value, messageSeq).catch((error) => {
+    console.error("从当前消息复制会话失败:", error);
+  });
+}
 </script>
 
 <template>
@@ -105,6 +113,7 @@ function updateQuestionPanelExpanded(value: boolean) {
         :compacting="activeCompacting"
         :editable="queuedMessages.length === 0"
         @edit-message="editSentMessage"
+        @fork-message="forkAtMessage"
         @open-diff="onOpenDiff"
         @cancel-tool="cancelTool"
         @background-tool="backgroundTool"

@@ -28,6 +28,7 @@ type KernelBindings = Pick<
   | "isDraft"
   | "runningSessions"
   | "editSentMessage"
+  | "forkSession"
   | "cancelTool"
   | "backgroundTool"
   | "stopBackgroundCommand"

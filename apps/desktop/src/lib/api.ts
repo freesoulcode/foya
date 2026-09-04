@@ -49,6 +49,11 @@ export interface CreateSessionOptions {
   approval_mode?: ApprovalMode;
 }
 
+export interface ForkSessionOptions {
+  title?: string;
+  through_seq?: number;
+}
+
 // 局部更新会话配置(undefined 表示不变)。project_id 绑定后不可更换。
 export interface UpdateSessionPatch {
   connection_id?: string;
@@ -819,6 +824,11 @@ function parseMcpConfig(raw: string): McpConfig {
 export const api = {
   createSession: (opts?: CreateSessionOptions) =>
     invoke<string>("create_session", { options: opts ?? null }).then(
+      (r) => JSON.parse(r) as Session
+    ),
+
+  forkSession: (sessionId: string, opts?: ForkSessionOptions) =>
+    invoke<string>("fork_session", { sessionId, options: opts ?? null }).then(
       (r) => JSON.parse(r) as Session
     ),
 

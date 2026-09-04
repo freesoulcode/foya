@@ -212,6 +212,66 @@ func (s *store) RecordCheckpoint(
 	return ev, nil
 }
 
+func (s *store) ImportMessages(
+	ctx context.Context,
+	session string,
+	sourceSession string,
+	throughSeq event.Seq,
+	messages []message.Message,
+) ([]event.Event, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin history import: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	events := make([]event.Event, 0, len(messages)+1)
+	forked := event.Event{
+		Kind:    event.KindSessionForked,
+		Session: session,
+		Time:    now,
+		Payload: event.SessionForked{
+			SourceSessionID: sourceSession,
+			ThroughSeq:      throughSeq,
+			ForkedAt:        now,
+			MessageCount:    len(messages),
+		},
+	}
+	seq, inserted, err := appendEventTx(ctx, tx, forked)
+	if err != nil {
+		return nil, err
+	}
+	if !inserted {
+		return nil, errors.New("cannot import history into a deleted session")
+	}
+	forked.Seq = seq
+	events = append(events, forked)
+
+	for _, item := range messages {
+		item.EventSeq = 0
+		ev := event.Event{
+			Kind:    event.KindMessageImported,
+			Session: session,
+			Time:    now,
+			Payload: item,
+		}
+		seq, inserted, err := appendEventTx(ctx, tx, ev)
+		if err != nil {
+			return nil, err
+		}
+		if !inserted {
+			return nil, errors.New("cannot import history into a deleted session")
+		}
+		ev.Seq = seq
+		events = append(events, ev)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit history import: %w", err)
+	}
+	return events, nil
+}
+
 func (s *store) Branch(
 	ctx context.Context,
 	session string,
@@ -347,10 +407,10 @@ func applyProjectionTx(
 	payload []byte,
 ) error {
 	switch ev.Kind {
-	case event.KindMessageEnd:
+	case event.KindMessageEnd, event.KindMessageImported:
 		item, ok := messageFromEvent(ev)
 		if !ok {
-			return errors.New("message_end payload is not a message")
+			return fmt.Errorf("%s payload is not a message", ev.Kind)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO message_projection(event_seq, session_id, role, active)
@@ -358,7 +418,8 @@ func applyProjectionTx(
 		`, int64(ev.Seq), ev.Session, string(item.Role)); err != nil {
 			return fmt.Errorf("project message event: %w", err)
 		}
-		if item.Role == message.RoleUser || item.Role == message.RoleAssistant {
+		if ev.Kind == event.KindMessageEnd &&
+			(item.Role == message.RoleUser || item.Role == message.RoleAssistant) {
 			if err := incrementMessageLedgerTx(ctx, tx, ev); err != nil {
 				return err
 			}

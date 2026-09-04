@@ -73,6 +73,7 @@ const {
   updateSession,
   renameSession,
   pinSession,
+  forkSession,
   deleteSession,
   editQueuedMessage,
   reorderQueuedMessage,
@@ -353,6 +354,13 @@ function onPin(id: string, pinned: boolean) {
   void pinSession(id, pinned);
 }
 
+function onFork(id: string) {
+  if (automationsActive.value) void router.push("/chat");
+  void forkSession(id).catch((error) => {
+    console.error("复制会话失败:", error);
+  });
+}
+
 // 删除会话:内核中断回合、清历史并广播,前端移除并按需切换会话。
 function onDelete(id: string) {
   void deleteSession(id);
@@ -432,6 +440,7 @@ const viewContext: ChatWorkspaceContext = {
   pendingBrowserElements,
   onTurnSelect,
   editSentMessage,
+  forkSession,
   onOpenDiff,
   cancelTool,
   backgroundTool,
@@ -473,6 +482,7 @@ const viewContext: ChatWorkspaceContext = {
       @select="onSelectSession"
       @rename="onRename"
       @pin="onPin"
+      @fork="onFork"
       @delete="onDelete"
       @delete-dialog-change="sessionDeleteDialogOpen = $event"
       @delete-project="onDeleteProject"

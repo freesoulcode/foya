@@ -16,12 +16,14 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 	}
 	var target any
 	switch kind {
-	case event.KindMessageEnd:
+	case event.KindMessageEnd, event.KindMessageImported:
 		target = &message.Message{}
 	case event.KindCompactionCompleted:
 		target = &compaction.Checkpoint{}
 	case event.KindHistoryBranched:
 		target = &event.HistoryBranched{}
+	case event.KindSessionForked:
+		target = &event.SessionForked{}
 	case event.KindUsageUpdated:
 		target = &provider.Usage{}
 	default:
@@ -41,6 +43,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 		return *value
 	case *event.HistoryBranched:
 		return *value
+	case *event.SessionForked:
+		return *value
 	case *provider.Usage:
 		return *value
 	default:
@@ -52,7 +56,7 @@ func activeMessageEvents(events []event.Event) []event.Event {
 	active := make([]event.Event, 0, len(events))
 	for _, ev := range events {
 		switch ev.Kind {
-		case event.KindMessageEnd:
+		case event.KindMessageEnd, event.KindMessageImported:
 			active = append(active, ev)
 		case event.KindHistoryBranched:
 			branch, ok := historyBranchFromPayload(ev.Payload)

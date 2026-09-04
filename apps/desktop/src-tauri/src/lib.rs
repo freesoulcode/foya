@@ -1316,6 +1316,21 @@ async fn create_session(options: Option<serde_json::Value>) -> Result<String, St
     kernel::request("POST", "/sessions", body.as_deref()).await
 }
 
+#[cfg(unix)]
+#[tauri::command]
+async fn fork_session(
+    session_id: String,
+    options: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let body = options.map(|v| v.to_string());
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/fork"),
+        body.as_deref(),
+    )
+    .await
+}
+
 /// 局部更新会话(模型/工作目录/审批档位),返回更新后的会话 JSON。
 #[cfg(unix)]
 #[tauri::command]
@@ -2960,6 +2975,15 @@ fn create_session(_options: Option<serde_json::Value>) -> Result<String, String>
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn fork_session(
+    _session_id: String,
+    _options: Option<serde_json::Value>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn update_session(_session_id: String, _patch: serde_json::Value) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -3705,6 +3729,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_session,
+            fork_session,
             update_session,
             submit_turn,
             upload_image,

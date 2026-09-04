@@ -74,6 +74,7 @@ const emit = defineEmits<{
   (e: "select", id: string): void;
   (e: "rename", id: string, title: string): void;
   (e: "pin", id: string, pinned: boolean): void;
+  (e: "fork", id: string): void;
   (e: "delete", id: string): void;
   (e: "delete-dialog-change", open: boolean): void;
   (e: "delete-project", id: string): void;
@@ -293,6 +294,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               @select="emit('select', $event)"
               @rename="(id, value) => emit('rename', id, value)"
               @pin="(id, value) => emit('pin', id, value)"
+              @fork="(item) => emit('fork', item.id)"
               @delete="onDelete"
             />
           </SidebarMenu>
@@ -409,6 +411,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   @select="emit('select', $event)"
                   @rename="(id, value) => emit('rename', id, value)"
                   @pin="(id, value) => emit('pin', id, value)"
+                  @fork="(item) => emit('fork', item.id)"
                   @delete="onDelete"
                 />
               </SidebarMenu>

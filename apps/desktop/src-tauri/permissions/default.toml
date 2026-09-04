@@ -7,6 +7,7 @@ identifier = "allow-main-window-commands"
 description = "Allows the application commands used by the main window."
 commands.allow = [
   "create_session",
+  "fork_session",
   "update_session",
   "submit_turn",
   "upload_image",

@@ -34,6 +34,8 @@ const (
 	KindCompactionCompleted      Kind = "compaction_completed"
 	KindCompactionFailed         Kind = "compaction_failed"
 	KindHistoryBranched          Kind = "history_branched"
+	KindMessageImported          Kind = "message_imported"
+	KindSessionForked            Kind = "session_forked"
 	KindTurnStarted              Kind = "turn_started"
 	KindTurnCancelRequested      Kind = "turn_cancel_requested"
 	KindTurnComplete             Kind = "turn_complete" // 回合结束(必达)
@@ -67,6 +69,15 @@ type BranchEffect struct {
 type HistoryBranched struct {
 	TargetUserSeq Seq            `json:"target_user_seq"`
 	Effects       []BranchEffect `json:"effects,omitempty"`
+}
+
+// SessionForked records that a new session imported the active history of an
+// existing session. The imported messages are copied as independent events.
+type SessionForked struct {
+	SourceSessionID string    `json:"source_session_id"`
+	ThroughSeq      Seq       `json:"through_seq"`
+	ForkedAt        time.Time `json:"forked_at"`
+	MessageCount    int       `json:"message_count"`
 }
 
 // Event 是内核事件的信封。Payload 由 Kind 决定其具体类型。

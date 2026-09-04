@@ -99,6 +99,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
+	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
@@ -1360,6 +1361,38 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req protocol.ForkSessionRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	sess, err := s.backend.ForkSession(r.Context(), id, backend.ForkSessionOptions{
+		Title:      req.Title,
+		ThroughSeq: event.Seq(req.ThroughSeq),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, backend.ErrActiveMessageNotFound):
+			writeErr(w, http.StatusNotFound, "message_not_found", err.Error())
+		case errors.Is(err, backend.ErrInvalidForkBoundary):
+			writeErr(w, http.StatusBadRequest, "invalid_fork_boundary", err.Error())
+		case errors.Is(err, backend.ErrSessionBusy):
+			writeErr(w, http.StatusConflict, "session_busy", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "fork_failed", err.Error())
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)

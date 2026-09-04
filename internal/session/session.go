@@ -126,6 +126,8 @@ type CreateOptions struct {
 	ReasoningEffort   ReasoningEffort
 	ProjectID         string
 	ApprovalMode      string
+	Title             string
+	TitleIsManual     bool
 	ParentID          string
 	SpawnedBy         *SpawnedBy
 	AgentRef          string

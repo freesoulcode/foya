@@ -246,7 +246,7 @@ func providerVisibleMessages(messages []message.Message) []providerVisibleMessag
 func messageEvents(events []event.Event) []messageEvent {
 	out := make([]messageEvent, 0, len(events))
 	for _, ev := range events {
-		if ev.Kind != event.KindMessageEnd {
+		if ev.Kind != event.KindMessageEnd && ev.Kind != event.KindMessageImported {
 			continue
 		}
 		msg, ok := ev.Payload.(message.Message)

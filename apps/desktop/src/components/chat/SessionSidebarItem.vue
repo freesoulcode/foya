@@ -2,6 +2,7 @@
 import { nextTick, ref } from "vue";
 import {
   CircleHelpIcon,
+  GitForkIcon,
   Loader2Icon,
   MessageSquareIcon,
   PinIcon,
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   (event: "select", id: string): void;
   (event: "rename", id: string, title: string): void;
   (event: "pin", id: string, pinned: boolean): void;
+  (event: "fork", session: Session): void;
   (event: "delete", session: Session): void;
 }>();
 
@@ -60,6 +62,11 @@ function togglePin(event: Event) {
   emit("pin", props.session.id, !props.session.pinned);
 }
 
+function requestFork(event: Event) {
+  event.stopPropagation();
+  emit("fork", props.session);
+}
+
 function requestDelete(event: Event) {
   event.stopPropagation();
   emit("delete", props.session);
@@ -73,7 +80,7 @@ function requestDelete(event: Event) {
         :as="editing ? 'div' : 'button'"
         :is-active="active"
         :tooltip="title()"
-        class="pr-14"
+        class="pr-20"
         @click="!editing && emit('select', session.id)"
       >
         <MessageSquareIcon />
@@ -109,6 +116,16 @@ function requestDelete(event: Event) {
         v-if="!editing"
         class="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100"
       >
+        <button
+          type="button"
+          class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          title="复制会话"
+          aria-label="复制会话"
+          :disabled="running || waitingForAnswer"
+          @click="requestFork"
+        >
+          <GitForkIcon class="size-3.5" />
+        </button>
         <button
           type="button"
           class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"

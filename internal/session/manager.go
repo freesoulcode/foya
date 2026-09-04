@@ -49,6 +49,8 @@ func (m *manager) Create(opts CreateOptions) (*Session, error) {
 		ReasoningEffort:   opts.ReasoningEffort,
 		ProjectID:         opts.ProjectID,
 		ApprovalMode:      opts.ApprovalMode,
+		Title:             opts.Title,
+		TitleIsManual:     opts.TitleIsManual,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		AgentInstructions: opts.AgentInstructions,

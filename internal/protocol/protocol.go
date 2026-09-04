@@ -55,6 +55,11 @@ type CreateSessionRequest struct {
 	ApprovalMode    string `json:"approval_mode,omitempty"`
 }
 
+type ForkSessionRequest struct {
+	Title      string `json:"title,omitempty"`
+	ThroughSeq uint64 `json:"through_seq,omitempty"`
+}
+
 // UpdateSessionRequest 局部更新会话配置。
 // ProjectID 只能首次绑定，已有非空值后不可更换或清空。
 type UpdateSessionRequest struct {

@@ -41,6 +41,13 @@ type Store interface {
 	UsageSummary(ctx context.Context, query UsageQuery) (UsageSummary, error)
 	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
 	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)
+	ImportMessages(
+		ctx context.Context,
+		session string,
+		sourceSession string,
+		throughSeq event.Seq,
+		messages []message.Message,
+	) ([]event.Event, error)
 	Branch(
 		ctx context.Context,
 		session string,

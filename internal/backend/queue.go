@@ -34,6 +34,10 @@ var (
 	ErrMessageUnchanged = errors.New("edited message is unchanged")
 	// ErrSessionQueueNotEmpty avoids carrying prompts authored against a superseded branch.
 	ErrSessionQueueNotEmpty = errors.New("session has queued messages")
+	// ErrActiveMessageNotFound indicates that a requested fork boundary is not active.
+	ErrActiveMessageNotFound = errors.New("active message not found")
+	// ErrInvalidForkBoundary indicates that the requested fork boundary is not a complete assistant/tool point.
+	ErrInvalidForkBoundary = errors.New("invalid fork boundary")
 	// ErrHistoryChanged rejects a stale side-effect confirmation.
 	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
 	// ErrAttachmentEditUnsupported avoids silently dropping attachments from an edited turn.

@@ -325,6 +325,61 @@ func TestStoreDeletePreservesHistoricalUsageLedger(t *testing.T) {
 	}
 }
 
+func TestStoreImportMessagesProjectsWithoutUsageLedger(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.Local)
+	messages := []message.Message{
+		{Role: message.RoleUser, Content: "question", EventSeq: 10},
+		{Role: message.RoleAssistant, Content: "answer", EventSeq: 11},
+	}
+
+	events, err := store.ImportMessages(ctx, "fork", "source", 11, messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 ||
+		events[0].Kind != event.KindSessionForked ||
+		events[1].Kind != event.KindMessageImported ||
+		events[2].Kind != event.KindMessageImported {
+		t.Fatalf("import events = %#v", events)
+	}
+	meta, ok := events[0].Payload.(event.SessionForked)
+	if !ok || meta.SourceSessionID != "source" || meta.ThroughSeq != 11 || meta.MessageCount != 2 {
+		t.Fatalf("fork metadata = %#v", events[0].Payload)
+	}
+
+	history, err := store.History(ctx, "fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 ||
+		history[0].Content != "question" ||
+		history[1].Content != "answer" ||
+		history[0].EventSeq != uint64(events[1].Seq) ||
+		history[1].EventSeq != uint64(events[2].Seq) {
+		t.Fatalf("imported history = %#v", history)
+	}
+
+	summary, err := store.UsageSummary(ctx, UsageQuery{
+		RangeStart:    now.AddDate(0, 0, -6).Format(time.DateOnly),
+		RangeEnd:      now.AddDate(0, 0, 1).Format(time.DateOnly),
+		ActivityStart: now.AddDate(0, 0, -6).Format(time.DateOnly),
+		Today:         now.Format(time.DateOnly),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.MessageCount != 0 || summary.SessionCount != 0 || summary.TotalTokens != 0 {
+		t.Fatalf("import changed usage summary = %#v", summary)
+	}
+}
+
 func TestStoreRollsBackInvalidProjection(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {

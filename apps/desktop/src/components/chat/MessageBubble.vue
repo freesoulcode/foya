@@ -8,6 +8,7 @@ import {
   PencilIcon,
   XIcon,
   ChevronRightIcon,
+  GitForkIcon,
   BrainIcon,
   FileTextIcon,
   MousePointer2Icon,
@@ -71,6 +72,7 @@ onBeforeUnmount(() => {
 
 const emit = defineEmits<{
   (e: "edit", messageSeq: number, text: string): void;
+  (e: "fork", messageSeq: number): void;
   (e: "open-diff", diff: string): void;
   (e: "cancel-tool", toolCallId: string): void;
   (e: "background-tool", toolCallId: string): void;
@@ -126,7 +128,7 @@ const isCancelledTurn = computed(
 const cancelledLabel = computed(() => {
   switch (props.message.turn_reason) {
     case "user_stop":
-		return "用户终止输出";
+      return "用户终止输出";
     case "queue_dispatch":
       return "已切换到队列中的下一条消息";
     case "session_deleted":
@@ -306,6 +308,11 @@ function saveEdit() {
   }
   emit("edit", props.message.event_seq, text);
   cancelEdit();
+}
+
+function forkAtMessage() {
+  if (!props.message.event_seq || !props.editable) return;
+  emit("fork", props.message.event_seq);
 }
 
 function onEditKeydown(event: KeyboardEvent) {
@@ -548,18 +555,30 @@ function onEditKeydown(event: KeyboardEvent) {
       </template>
 
       <div
-        v-if="!isUser && !streaming && message.content && !isError"
+        v-if="!isUser && !streaming && !isError && (message.content || message.event_seq)"
         class="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100"
       >
         <button
+          v-if="message.event_seq"
           type="button"
-          class="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+          :disabled="!editable"
+          title="从此处复制会话"
+          aria-label="从此处复制会话"
+          @click="forkAtMessage"
+        >
+          <GitForkIcon class="size-3.5" />
+        </button>
+        <button
+          v-if="message.content"
+          type="button"
+          class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           :title="copiedAll ? '已复制' : '复制回复'"
+          :aria-label="copiedAll ? '已复制' : '复制回复'"
           @click="copyAll"
         >
-          <CheckIcon v-if="copiedAll" class="size-3" />
-          <CopyIcon v-else class="size-3" />
-          {{ copiedAll ? "已复制" : "复制" }}
+          <CheckIcon v-if="copiedAll" class="size-3.5" />
+          <CopyIcon v-else class="size-3.5" />
         </button>
       </div>
     </div>

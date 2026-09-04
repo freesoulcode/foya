@@ -17,6 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:activeTurn": [value: number];
   "edit-message": [messageSeq: number, text: string];
+  "fork-message": [messageSeq: number];
   "open-diff": [diff: string];
   "cancel-tool": [toolCallId: string];
   "background-tool": [toolCallId: string];
@@ -196,6 +197,7 @@ onBeforeUnmount(() => {
             @edit="
               (messageSeq, text) => emit('edit-message', messageSeq, text)
             "
+            @fork="(messageSeq) => emit('fork-message', messageSeq)"
             @open-diff="(diff) => emit('open-diff', diff)"
             @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
             @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
