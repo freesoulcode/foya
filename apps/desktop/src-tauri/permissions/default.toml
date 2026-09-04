@@ -37,6 +37,7 @@ commands.allow = [
   "load_agent_budget",
   "load_history",
   "load_usage",
+  "load_usage_statistics",
   "list_connections",
   "create_connection",
   "update_connection",

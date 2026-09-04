@@ -95,6 +95,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /canvases/{id}/assets/{asset_id}", s.handleReadCanvasAsset)
 	s.mux.HandleFunc("POST /canvases/{id}/generate-image", s.handleGenerateCanvasImage)
 	s.mux.HandleFunc("POST /canvases/{id}/generate-video", s.handleGenerateCanvasVideo)
+	s.mux.HandleFunc("GET /usage", s.handleUsageStatistics)
 	s.mux.HandleFunc("POST /sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
@@ -1985,6 +1986,25 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, usage)
+}
+
+// handleUsageStatistics returns application-wide usage for a supported range.
+func (s *Server) handleUsageStatistics(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if value := r.URL.Query().Get("days"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || (parsed != 7 && parsed != 30) {
+			writeErr(w, http.StatusBadRequest, "invalid_range", "days must be 7 or 30")
+			return
+		}
+		days = parsed
+	}
+	statistics, err := s.backend.UsageStatistics(r.Context(), days)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "usage_statistics_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, statistics)
 }
 
 // handleSubmitTurn 原子提交消息:空闲时立即启动,运行时进入 FIFO 队列。

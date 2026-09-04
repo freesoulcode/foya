@@ -115,6 +115,12 @@ export const router = createRouter({
               meta: { settingsSection: "agents" },
             },
             {
+              path: "usage",
+              name: "settings-usage",
+              component: () => import("@/views/settings/UsageView.vue"),
+              meta: { settingsSection: "usage" },
+            },
+            {
               path: "appearance",
               name: "settings-appearance",
               component: () => import("@/views/settings/AppearanceView.vue"),

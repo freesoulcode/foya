@@ -188,6 +188,35 @@ export interface ContextUsage {
   cached_tokens: number;
 }
 
+export interface DailyUsage {
+  date: string;
+  message_count: number;
+  token_count: number;
+}
+
+export interface ModelUsage {
+  model: string;
+  token_count: number;
+  request_count: number;
+  share: number;
+}
+
+export interface UsageStatistics {
+  range_days: 7 | 30;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  session_count: number;
+  message_count: number;
+  active_days: number;
+  current_streak: number;
+  most_used_model?: string;
+  most_used_model_share: number;
+  activity: DailyUsage[];
+  model_usage: ModelUsage[];
+}
+
 export interface CompactSessionResult {
   through_seq: number;
   estimated_tokens_before: number;
@@ -860,6 +889,11 @@ export const api = {
   loadUsage: (sessionId: string) =>
     invoke<string>("load_usage", { sessionId }).then(
       (r) => JSON.parse(r) as ContextUsage | null
+    ),
+
+  loadUsageStatistics: (days: 7 | 30) =>
+    invoke<string>("load_usage_statistics", { days }).then(
+      (r) => JSON.parse(r) as UsageStatistics
     ),
 
   submitTurn: (

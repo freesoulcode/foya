@@ -5,6 +5,7 @@ import {
   BotIcon,
   BookOpenIcon,
   BrainIcon,
+  ChartNoAxesColumnIncreasingIcon,
   CommandIcon,
   FileJsonIcon,
   GaugeIcon,
@@ -38,6 +39,7 @@ export type SettingsSection =
   | "web-search"
   | "channels"
   | "agents"
+  | "usage"
   | "appearance";
 
 defineProps<{ activeSection: SettingsSection }>();
@@ -60,6 +62,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
   { id: "web-search", label: "联网搜索", icon: GlobeIcon },
   { id: "channels", label: "消息渠道", icon: MessageCircleIcon },
   { id: "agents", label: "Agent", icon: BotIcon },
+  { id: "usage", label: "使用统计", icon: ChartNoAxesColumnIncreasingIcon },
   { id: "appearance", label: "外观", icon: PaletteIcon },
 ];
 </script>

@@ -1698,6 +1698,13 @@ async fn load_usage(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/usage"), None).await
 }
 
+/// 读取全局应用使用统计。
+#[cfg(unix)]
+#[tauri::command]
+async fn load_usage_statistics(days: u16) -> Result<String, String> {
+    kernel::request("GET", &format!("/usage?days={days}"), None).await
+}
+
 /// 列出已配置的模型连接(key 脱敏)。
 #[cfg(unix)]
 #[tauri::command]
@@ -3135,6 +3142,12 @@ fn load_usage(_session_id: String) -> Result<String, String> {
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn load_usage_statistics(_days: u16) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn list_connections() -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -3722,6 +3735,7 @@ pub fn run() {
             load_agent_budget,
             load_history,
             load_usage,
+            load_usage_statistics,
             list_connections,
             create_connection,
             update_connection,
