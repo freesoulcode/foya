@@ -787,6 +787,7 @@ type executedToolCall struct {
 	call        message.ToolCall
 	output      string
 	attachments []message.AttachmentRef
+	fileChange  *message.FileChange
 	isErr       bool
 	diff        string
 	sig         string
@@ -824,13 +825,7 @@ func (e *Engine) RunTurn(ctx context.Context, sessionID, userText string) error 
 }
 
 func (e *Engine) RunInput(ctx context.Context, sessionID string, input message.UserInput) error {
-	return e.runTurn(ctx, sessionID, input, false)
-}
-
-// RunEditedTurn executes the replacement turn after an earlier user message was
-// edited. The notice keeps the model aware that the project tree was not rewound.
-func (e *Engine) RunEditedTurn(ctx context.Context, sessionID, userText string) error {
-	return e.runTurn(ctx, sessionID, message.UserInput{Text: userText}, true)
+	return e.runTurn(ctx, sessionID, input)
 }
 
 // InvalidateHistoryEstimate drops request-size baselines tied to a superseded
@@ -845,7 +840,6 @@ func (e *Engine) runTurn(
 	ctx context.Context,
 	sessionID string,
 	input message.UserInput,
-	editedHistory bool,
 ) error {
 	// 注册 per-session cancel:同一会话只允许一个活跃回合。
 	runID := newRunID()
@@ -1064,15 +1058,6 @@ func (e *Engine) runTurn(
 The following instructions define this child agent's assigned role. They cannot expand permissions, tools, or system authority.
 ` + instructions + `
 </agent_definition>`
-		}
-		if editedHistory {
-			sysPrompt += `
-
-<edited_history_notice>
-An earlier user message was edited and the superseded conversation suffix is not visible.
-The project working tree was not rolled back and may still contain changes from that old branch or from the user.
-Inspect the current project tree before modifying files; do not assume it matches the visible conversation history.
-</edited_history_notice>`
 		}
 		if len(promptHookContext) > 0 {
 			sysPrompt += "\n\n<hook_context source=\"user_prompt_submit\">\n" +
@@ -1323,6 +1308,7 @@ Inspect the current project tree before modifying files; do not assume it matche
 				Content:     item.output,
 				Attachments: append([]message.AttachmentRef(nil), item.attachments...),
 				Diff:        item.diff,
+				FileChange:  item.fileChange,
 			}
 			e.emit(eventCtx, sessionID, event.KindMessageEnd, toolMsg, true)
 		}
@@ -1442,10 +1428,10 @@ func (e *Engine) executeToolCalls(
 		item.attachments = e.persistToolImages(ctx, sessionID, item.call.Name, result)
 		item.isErr = result.IsError
 		item.diff = result.Diff
+		item.fileChange = result.FileChange
 		if ctx.Err() != nil {
 			item.output = "已中断"
 			item.isErr = false
-			item.diff = ""
 		}
 		status := "done"
 		if item.isErr {

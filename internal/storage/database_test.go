@@ -43,6 +43,10 @@ func TestOpenCreatesPrivateDatabaseWithRequiredPragmas(t *testing.T) {
 	}
 
 	for _, table := range []string{
+		"file_blobs",
+		"file_changes",
+		"file_rewind_journals",
+		"file_rewind_journal_files",
 		"usage_daily_ledger",
 		"usage_message_daily_ledger",
 		"usage_session_days",

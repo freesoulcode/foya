@@ -3,7 +3,7 @@ import { onMounted } from "vue";
 import { RouterView } from "vue-router";
 import { useKernel } from "@/composables/useKernel";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
-import HistoryEditDialog from "@/components/chat/HistoryEditDialog.vue";
+import HistoryRewindDialog from "@/components/chat/HistoryRewindDialog.vue";
 
 const { connect } = useKernel();
 
@@ -15,5 +15,5 @@ onMounted(() => {
 <template>
   <RouterView />
   <ApprovalDialog />
-  <HistoryEditDialog />
+  <HistoryRewindDialog />
 </template>

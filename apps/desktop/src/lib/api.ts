@@ -169,15 +169,18 @@ export interface CanvasDocument {
   updated_at: string;
 }
 
-export interface BranchEffect {
-  tool: string;
-  detail?: string;
+export interface RewindFile {
+  key: string;
+  path: string;
+  status: "ready" | "mergeable" | "modified";
 }
 
-export interface EditTurnResult {
-  status: "started" | "confirmation_required";
-  effects?: BranchEffect[];
-  head_seq?: number;
+export interface RewindTurnResult {
+  status: "rewound" | "confirmation_required";
+  message: string;
+  files?: RewindFile[];
+  file_state_token: string;
+  head_seq: number;
 }
 
 export interface UpdateQueuedMessagePatch {
@@ -1023,20 +1026,22 @@ export const api = {
     return invoke("subscribe_canvas_events", { canvasId, channel });
   },
 
-  editTurn: (
+  rewindTurn: (
     sessionId: string,
     messageSeq: number,
-    message: string,
-    confirmEffects = false,
-    expectedHeadSeq = 0
+    confirm = false,
+    expectedHeadSeq = 0,
+    expectedFileState = "",
+    forceFileKeys: string[] = []
   ) =>
-    invoke<string>("edit_turn", {
+    invoke<string>("rewind_turn", {
       sessionId,
       messageSeq,
-      message,
-      confirmEffects,
+      confirm,
       expectedHeadSeq,
-    }).then((r) => JSON.parse(r) as EditTurnResult),
+      expectedFileState,
+      forceFileKeys,
+    }).then((r) => JSON.parse(r) as RewindTurnResult),
 
   compactSession: (sessionId: string) =>
     invoke<string>("compact_session", { sessionId }).then(

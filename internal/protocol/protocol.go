@@ -7,7 +7,6 @@ package protocol
 
 import (
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/question"
@@ -79,20 +78,28 @@ type SubmitTurnResponse struct {
 	Queued *queue.Message `json:"queued,omitempty"`
 }
 
-// EditTurnRequest replaces one active user turn. ConfirmEffects acknowledges
-// that side effects from the superseded branch remain in the project tree.
-type EditTurnRequest struct {
-	Message         string `json:"message"`
-	ConfirmEffects  bool   `json:"confirm_effects,omitempty"`
-	ExpectedHeadSeq uint64 `json:"expected_head_seq,omitempty"`
+// RewindTurnRequest confirms moving one active user message back to the
+// composer. ExpectedHeadSeq fences the preview the user confirmed.
+type RewindTurnRequest struct {
+	Confirm           bool     `json:"confirm"`
+	ExpectedHeadSeq   uint64   `json:"expected_head_seq"`
+	ExpectedFileState string   `json:"expected_file_state"`
+	ForceFileKeys     []string `json:"force_file_keys,omitempty"`
 }
 
-// EditTurnResponse either reports a started replacement turn or asks the
-// client to confirm retained side effects.
-type EditTurnResponse struct {
-	Status  string               `json:"status"` // started / confirmation_required
-	Effects []event.BranchEffect `json:"effects,omitempty"`
-	HeadSeq uint64               `json:"head_seq,omitempty"`
+type RewindFilePreview struct {
+	Key    string `json:"key"`
+	Path   string `json:"path"`
+	Status string `json:"status"` // ready / mergeable / modified
+}
+
+// RewindTurnResponse either asks for confirmation or reports a completed rewind.
+type RewindTurnResponse struct {
+	Status         string              `json:"status"` // rewound / confirmation_required
+	Message        string              `json:"message"`
+	Files          []RewindFilePreview `json:"files,omitempty"`
+	FileStateToken string              `json:"file_state_token"`
+	HeadSeq        uint64              `json:"head_seq"`
 }
 
 // QueueMessageRequest 显式向待发送队列追加消息。

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -69,19 +70,44 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("用户拒绝写入文件"), nil
 	}
 
-	// 读取旧内容用于生成 diff(文件不存在视为新建,旧内容为空)。
-	var oldContent string
-	if data, err := os.ReadFile(path); err == nil {
-		oldContent = string(data)
+	// 读取旧内容用于生成 diff 和可验证的回退记录。
+	oldData, readErr := os.ReadFile(path)
+	beforeExists := readErr == nil
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return errResult(fmt.Sprintf("读取原文件失败: %v", readErr)), nil
+	}
+	var beforeMode os.FileMode
+	if beforeExists {
+		info, err := os.Stat(path)
+		if err != nil {
+			return errResult(fmt.Sprintf("读取原文件属性失败: %v", err)), nil
+		}
+		beforeMode = info.Mode()
 	}
 
 	if err := writeFileAtBoundary(ctx, t.runner, path, []byte(params.Content)); err != nil {
 		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
 	}
+	afterMode := beforeMode
+	if !beforeExists {
+		afterMode = 0o644
+	}
 
+	var change *message.FileChange
+	if !beforeExists || string(oldData) != params.Content {
+		change = trackedFileChange(
+			path,
+			oldData,
+			beforeExists,
+			beforeMode,
+			[]byte(params.Content),
+			afterMode,
+		)
+	}
 	return Result{
-		Content: []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
-		Diff:    unifiedDiff(path, oldContent, params.Content),
+		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
+		Diff:       unifiedDiff(path, string(oldData), params.Content),
+		FileChange: change,
 	}, nil
 }
 

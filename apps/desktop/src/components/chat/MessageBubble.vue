@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import {
   BotIcon,
   CircleStopIcon,
   CopyIcon,
   CheckIcon,
-  PencilIcon,
-  XIcon,
+  Undo2Icon,
   ChevronRightIcon,
   GitForkIcon,
   BrainIcon,
@@ -19,7 +18,6 @@ import { cn } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/markdown";
 import { api } from "@/lib/api";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
-import { Textarea } from "@/components/ui/textarea";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 import TaskArtifacts from "./TaskArtifacts.vue";
 
@@ -71,7 +69,7 @@ onBeforeUnmount(() => {
 });
 
 const emit = defineEmits<{
-  (e: "edit", messageSeq: number, text: string): void;
+  (e: "rewind", messageSeq: number): void;
   (e: "fork", messageSeq: number): void;
   (e: "open-diff", diff: string): void;
   (e: "cancel-tool", toolCallId: string): void;
@@ -230,9 +228,12 @@ function renderSegment(text: string): string {
 
 const bodyEl = ref<HTMLElement | null>(null);
 const copiedAll = ref(false);
-const editing = ref(false);
-const editText = ref("");
-const editRef = ref<InstanceType<typeof Textarea> | null>(null);
+const rewindUnsupported = computed(
+  () =>
+    !!props.message.command ||
+    !!props.message.attachments?.length ||
+    !!props.message.browser_elements?.length
+);
 
 async function copyText(text: string) {
   try {
@@ -274,56 +275,14 @@ async function copyAll() {
   }
 }
 
-function beginEdit() {
-  if (
-    !props.editable ||
-    !props.message.event_seq ||
-    props.message.attachments?.length ||
-    props.message.browser_elements?.length
-  ) {
-    return;
-  }
-  editText.value = props.message.content;
-  editing.value = true;
-  void nextTick(() => {
-    const textarea = editRef.value?.$el as HTMLTextAreaElement | undefined;
-    textarea?.focus();
-    textarea?.select();
-  });
-}
-
-function cancelEdit() {
-  editing.value = false;
-  editText.value = "";
-}
-
-function saveEdit() {
-  const text = editText.value.trim();
-  if (
-    !props.message.event_seq ||
-    !text ||
-    text === props.message.content.trim()
-  ) {
-    return;
-  }
-  emit("edit", props.message.event_seq, text);
-  cancelEdit();
-}
-
 function forkAtMessage() {
   if (!props.message.event_seq || !props.editable) return;
   emit("fork", props.message.event_seq);
 }
 
-function onEditKeydown(event: KeyboardEvent) {
-  if (event.isComposing) return;
-  if (event.key === "Escape") {
-    event.preventDefault();
-    cancelEdit();
-  } else if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    saveEdit();
-  }
+function rewindMessage() {
+  if (!props.message.event_seq || !props.editable || rewindUnsupported.value) return;
+  emit("rewind", props.message.event_seq);
 }
 </script>
 
@@ -349,10 +308,7 @@ function onEditKeydown(event: KeyboardEvent) {
       :class="cn(
         'min-w-0',
         isUser
-          ? cn(
-              'max-w-[80%] rounded-2xl rounded-tr-md bg-secondary px-4 py-2.5 text-sm leading-relaxed',
-              editing && 'w-full'
-            )
+          ? 'max-w-[80%] rounded-2xl rounded-tr-md bg-secondary px-4 py-2.5 text-sm leading-relaxed'
           : 'w-full'
       )"
     >
@@ -410,37 +366,7 @@ function onEditKeydown(event: KeyboardEvent) {
               )
             "
           >
-            <template v-if="editing">
-              <Textarea
-                ref="editRef"
-                v-model="editText"
-                class="max-h-56 min-h-20 resize-none border-border bg-background px-3 py-2 text-sm leading-relaxed"
-                rows="3"
-                @keydown="onEditKeydown"
-              />
-              <div class="mt-2 flex justify-end gap-1">
-                <button
-                  type="button"
-                  class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  title="取消编辑"
-                  @click="cancelEdit"
-                >
-                  <XIcon class="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  class="flex size-7 items-center justify-center rounded-md bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
-                  :disabled="
-                    !editText.trim() || editText.trim() === message.content.trim()
-                  "
-                  title="保存并重新执行"
-                  @click="saveEdit"
-                >
-                  <CheckIcon class="size-3.5" />
-                </button>
-              </div>
-            </template>
-            <div v-else class="whitespace-pre-wrap break-words">
+            <div class="whitespace-pre-wrap break-words">
               {{ message.content }}
             </div>
           </div>
@@ -584,7 +510,7 @@ function onEditKeydown(event: KeyboardEvent) {
     </div>
 
     <div
-      v-if="isUser && !editing"
+      v-if="isUser"
       class="flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
     >
       <button
@@ -600,21 +526,22 @@ function onEditKeydown(event: KeyboardEvent) {
         v-if="message.event_seq"
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-        :disabled="
-          !editable ||
-          !!message.attachments?.length ||
-          !!message.browser_elements?.length
-        "
+        :disabled="!editable || rewindUnsupported"
         :title="
-          message.attachments?.length || message.browser_elements?.length
-            ? '带上下文的消息暂不支持编辑'
+          rewindUnsupported
+            ? '含附件、浏览器上下文或命令的消息暂不支持回退'
             : editable
-              ? '编辑消息'
-              : '会话运行时不可编辑'
+              ? '回退到输入框'
+              : '会话运行时不可回退'
         "
-        @click="beginEdit"
+        :aria-label="
+          rewindUnsupported
+            ? '含附件、浏览器上下文或命令的消息暂不支持回退'
+            : '回退到输入框'
+        "
+        @click="rewindMessage"
       >
-        <PencilIcon class="size-3.5" />
+        <Undo2Icon class="size-3.5" />
       </button>
     </div>
   </div>

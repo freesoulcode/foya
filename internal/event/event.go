@@ -33,7 +33,7 @@ const (
 	KindCompactionStarted        Kind = "compaction_started"
 	KindCompactionCompleted      Kind = "compaction_completed"
 	KindCompactionFailed         Kind = "compaction_failed"
-	KindHistoryBranched          Kind = "history_branched"
+	KindHistoryRewound           Kind = "history_rewound"
 	KindMessageImported          Kind = "message_imported"
 	KindSessionForked            Kind = "session_forked"
 	KindTurnStarted              Kind = "turn_started"
@@ -57,18 +57,24 @@ const (
 	KindError                    Kind = "error"
 )
 
-// BranchEffect summarizes a potentially persistent project side effect in a
-// superseded history suffix. It is advisory: external effects are not rolled back.
-type BranchEffect struct {
-	Tool   string `json:"tool"`
-	Detail string `json:"detail,omitempty"`
+// RewindFileResult records how one tracked file was handled by a history rewind.
+type RewindFileResult struct {
+	Path   string `json:"path"`
+	Action string `json:"action"` // restored / merged / kept / force_restored
 }
 
-// HistoryBranched marks the active history as the prefix before TargetUserSeq.
-// All source events remain immutable; later projections hide the superseded suffix.
-type HistoryBranched struct {
-	TargetUserSeq Seq            `json:"target_user_seq"`
-	Effects       []BranchEffect `json:"effects,omitempty"`
+const (
+	RewindFileRestored      = "restored"
+	RewindFileMerged        = "merged"
+	RewindFileKept          = "kept"
+	RewindFileForceRestored = "force_restored"
+)
+
+// HistoryRewound marks the active history as the prefix before TargetUserSeq
+// and records the files restored while applying the rewind.
+type HistoryRewound struct {
+	TargetUserSeq Seq                `json:"target_user_seq"`
+	Files         []RewindFileResult `json:"files,omitempty"`
 }
 
 // SessionForked records that a new session imported the active history of an

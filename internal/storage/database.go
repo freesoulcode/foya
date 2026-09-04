@@ -148,6 +148,60 @@ CREATE TABLE IF NOT EXISTS message_projection (
 CREATE INDEX IF NOT EXISTS message_projection_active_idx
     ON message_projection(session_id, active, event_seq);
 
+CREATE TABLE IF NOT EXISTS file_blobs (
+    hash TEXT PRIMARY KEY,
+    codec TEXT NOT NULL,
+    raw_size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at_ns INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_changes (
+    event_seq INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    before_exists INTEGER NOT NULL,
+    before_mode INTEGER NOT NULL,
+    after_mode INTEGER NOT NULL,
+    before_blob_hash TEXT,
+    after_blob_hash TEXT NOT NULL,
+    FOREIGN KEY(event_seq) REFERENCES events(seq) ON DELETE CASCADE,
+    FOREIGN KEY(before_blob_hash) REFERENCES file_blobs(hash),
+    FOREIGN KEY(after_blob_hash) REFERENCES file_blobs(hash)
+);
+
+CREATE INDEX IF NOT EXISTS file_changes_session_event_idx
+    ON file_changes(session_id, event_seq);
+CREATE INDEX IF NOT EXISTS file_changes_before_blob_idx
+    ON file_changes(before_blob_hash);
+CREATE INDEX IF NOT EXISTS file_changes_after_blob_idx
+    ON file_changes(after_blob_hash);
+
+CREATE TABLE IF NOT EXISTS file_rewind_journals (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    target_user_seq INTEGER NOT NULL,
+    expected_head_seq INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    created_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_rewind_journal_files (
+    journal_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    before_exists INTEGER NOT NULL,
+    before_mode INTEGER NOT NULL,
+    before_blob_hash TEXT,
+    after_exists INTEGER NOT NULL,
+    after_mode INTEGER NOT NULL,
+    after_blob_hash TEXT,
+    PRIMARY KEY(journal_id, path),
+    FOREIGN KEY(journal_id) REFERENCES file_rewind_journals(id) ON DELETE CASCADE,
+    FOREIGN KEY(before_blob_hash) REFERENCES file_blobs(hash),
+    FOREIGN KEY(after_blob_hash) REFERENCES file_blobs(hash)
+);
+
 CREATE TABLE IF NOT EXISTS usage_records (
     event_seq INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL,

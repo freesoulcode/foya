@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -472,9 +474,15 @@ func TestChildSessionsStayOutOfRootListAndDeleteWithParent(t *testing.T) {
 	}
 }
 
-func TestEditTurnStartsFromActiveHistoryPrefix(t *testing.T) {
+func TestRewindTurnReturnsMessageAndDoesNotStartProvider(t *testing.T) {
 	be, sessionID, prov := newQueueTestBackend(t)
 	ctx := context.Background()
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	beforeContent := []byte("old\n")
+	afterContent := []byte("new\n")
+	if err := os.WriteFile(filePath, afterContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	appendHistoryMessage(t, be, sessionID, message.Message{
 		Role: message.RoleUser, Content: "first",
 	})
@@ -485,32 +493,96 @@ func TestEditTurnStartsFromActiveHistoryPrefix(t *testing.T) {
 		Role: message.RoleUser, Content: "old second",
 	})
 	appendHistoryMessage(t, be, sessionID, message.Message{
-		Role: message.RoleAssistant, Content: "old answer",
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{
+			{
+				ID:    "bash-1",
+				Name:  "bash",
+				Input: json.RawMessage(`{"command":"go test ./..."}`),
+			},
+			{
+				ID:    "write-1",
+				Name:  "write",
+				Input: json.RawMessage(`{"path":"main.go","content":"new"}`),
+			},
+		},
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "bash-1",
+		Content:    "ok",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "write-1",
+		Content:    "written",
+		Diff:       "--- " + filePath + "\n+++ " + filePath + "\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+		FileChange: capturedFileChange(filePath, true, string(beforeContent), string(afterContent)),
 	})
 
-	result, err := be.EditTurn(ctx, sessionID, target, "edited second", false, 0)
+	preview, err := be.RewindTurn(ctx, sessionID, target, false, 0, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != EditStarted {
-		t.Fatalf("edit status = %q", result.Status)
+	if preview.Status != RewindConfirmationNeeded ||
+		preview.Message != "old second" ||
+		len(preview.Files) != 1 ||
+		preview.Files[0].Path != filepath.ToSlash(filePath) ||
+		preview.Files[0].Status != RewindFileReady ||
+		preview.FileStateToken == "" {
+		t.Fatalf("rewind preview = %#v", preview)
 	}
-	awaitStarted(t, prov, "edited second")
-
 	history, err := be.History(ctx, sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 3 ||
+	if len(history) != 6 {
+		t.Fatalf("preview changed active history: %#v", history)
+	}
+
+	applied, err := be.RewindTurn(
+		ctx,
+		sessionID,
+		target,
+		true,
+		preview.HeadSeq,
+		preview.FileStateToken,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Status != RewindApplied || applied.Message != "old second" {
+		t.Fatalf("rewind applied = %#v", applied)
+	}
+	restored, err := os.ReadFile(filePath)
+	if err != nil || !bytes.Equal(restored, beforeContent) {
+		t.Fatalf("restored file = %q, err = %v", restored, err)
+	}
+	select {
+	case started := <-prov.started:
+		t.Fatalf("rewind started provider: %q", started)
+	case <-time.After(25 * time.Millisecond):
+	}
+	history, err = be.History(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 ||
 		history[0].Content != "first" ||
-		history[1].Content != "first answer" ||
-		history[2].Content != "edited second" {
+		history[1].Content != "first answer" {
 		t.Fatalf("active history = %#v", history)
 	}
-	prov.releases <- struct{}{}
+	events, err := be.log.Read(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastEvent(events, event.KindHistoryRewound) == nil {
+		t.Fatalf("missing history_rewound event: %#v", eventKinds(events))
+	}
 }
 
-func TestEditTurnRejectsMessageWithAttachments(t *testing.T) {
+func TestRewindTurnRejectsUserMessageWithContext(t *testing.T) {
 	be, sessionID, _ := newQueueTestBackend(t)
 	target := appendHistoryMessage(t, be, sessionID, message.Message{
 		Role:    message.RoleUser,
@@ -519,113 +591,232 @@ func TestEditTurnRejectsMessageWithAttachments(t *testing.T) {
 			ID: "artifact-1", Name: "screen.png", Kind: "image", MediaType: "image/png",
 		}},
 	})
-	_, err := be.EditTurn(context.Background(), sessionID, target, "edited", false, 0)
-	if !errors.Is(err, ErrAttachmentEditUnsupported) {
-		t.Fatalf("edit attachment message error = %v", err)
+
+	_, err := be.RewindTurn(context.Background(), sessionID, target, false, 0, "", nil)
+	if !errors.Is(err, ErrRewindContextUnsupported) {
+		t.Fatalf("rewind attachment message error = %v", err)
 	}
 }
 
-func TestEditTurnRequiresConfirmationForRetainedEffects(t *testing.T) {
-	be, sessionID, prov := newQueueTestBackend(t)
+func TestRewindTurnRestoresReadyFilesAndKeepsModifiedFilesByDefault(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
 	ctx := context.Background()
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	safePath := filepath.Join(t.TempDir(), "safe.go")
+	beforeContent := []byte("before\n")
+	afterContent := []byte("after\n")
+	safeBefore := []byte("safe before\n")
+	safeAfter := []byte("safe after\n")
+	if err := os.WriteFile(filePath, []byte("external\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(safePath, safeAfter, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	target := appendHistoryMessage(t, be, sessionID, message.Message{
-		Role: message.RoleUser, Content: "change the file",
+		Role: message.RoleUser, Content: "change file",
 	})
 	appendHistoryMessage(t, be, sessionID, message.Message{
-		Role: message.RoleAssistant,
-		ToolCalls: []message.ToolCall{{
-			ID:    "write-1",
-			Name:  "write",
-			Input: json.RawMessage(`{"path":"main.go","content":"new"}`),
-		}},
+		Role: message.RoleTool,
+		Diff: "--- " + filePath + "\n+++ " + filePath +
+			"\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+		FileChange: capturedFileChange(filePath, true, string(beforeContent), string(afterContent)),
 	})
 	appendHistoryMessage(t, be, sessionID, message.Message{
-		Role:       message.RoleTool,
-		ToolCallID: "write-1",
-		Content:    "written",
-		Diff:       "@@ -0,0 +1 @@\n+new",
+		Role: message.RoleTool,
+		Diff: "--- " + safePath + "\n+++ " + safePath +
+			"\n@@ -1,1 +1,1 @@\n-safe before\n+safe after\n",
+		FileChange: capturedFileChange(safePath, true, string(safeBefore), string(safeAfter)),
 	})
 
-	preview, err := be.EditTurn(
-		ctx,
-		sessionID,
-		target,
-		"change it differently",
-		false,
-		0,
-	)
+	preview, err := be.RewindTurn(ctx, sessionID, target, false, 0, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Status != EditConfirmationRequired ||
-		len(preview.Effects) != 1 ||
-		preview.Effects[0].Detail != "main.go" {
-		t.Fatalf("edit preview = %#v", preview)
+	if len(preview.Files) != 2 ||
+		preview.Files[0].Status != RewindFileModified ||
+		preview.Files[1].Status != RewindFileReady {
+		t.Fatalf("rewind preview = %#v", preview)
 	}
-	select {
-	case started := <-prov.started:
-		t.Fatalf("turn started before confirmation: %q", started)
-	case <-time.After(25 * time.Millisecond):
-	}
-
-	started, err := be.EditTurn(
+	_, err = be.RewindTurn(
 		ctx,
 		sessionID,
 		target,
-		"change it differently",
 		true,
 		preview.HeadSeq,
+		preview.FileStateToken,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if started.Status != EditStarted {
-		t.Fatalf("confirmed edit status = %q", started.Status)
-	}
-	awaitStarted(t, prov, "change it differently")
-	prov.releases <- struct{}{}
-}
-
-func TestEditFirstTurnRefreshesAutomaticTitle(t *testing.T) {
-	be, sessionID, prov := newQueueTestBackend(t)
-	ctx := context.Background()
-	target := appendHistoryMessage(t, be, sessionID, message.Message{
-		Role: message.RoleUser, Content: "old first request",
-	})
-	appendHistoryMessage(t, be, sessionID, message.Message{
-		Role: message.RoleAssistant, Content: "old answer",
-	})
-	if _, err := be.sessions.SetGeneratedTitle(sessionID, "old title"); err != nil {
+	assertFileContent(t, filePath, "external\n")
+	assertFileContent(t, safePath, "safe before\n")
+	history, err := be.History(ctx, sessionID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if len(history) != 0 {
+		t.Fatalf("history was not rewound: %#v", history)
+	}
+	events, err := be.log.Read(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewound := lastEvent(events, event.KindHistoryRewound)
+	if rewound == nil {
+		t.Fatalf("missing history_rewound event: %#v", eventKinds(events))
+	}
+	payload, ok := rewound.Payload.(event.HistoryRewound)
+	if !ok || len(payload.Files) != 2 ||
+		payload.Files[0].Action != event.RewindFileKept ||
+		payload.Files[1].Action != event.RewindFileRestored {
+		t.Fatalf("rewind file results = %#v", rewound)
+	}
+}
 
-	if _, err := be.EditTurn(
+func TestRewindTurnMergesNonOverlappingUserChanges(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	ctx := context.Background()
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	beforeContent := "name\nold implementation\nfooter\n"
+	afterContent := "name\nagent implementation\nfooter\n"
+	currentContent := "custom name\nagent implementation\nfooter\n"
+	if err := os.WriteFile(filePath, []byte(currentContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "change implementation",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleTool,
+		Diff: "--- " + filePath + "\n+++ " + filePath +
+			"\n@@ -1,3 +1,3 @@\n name\n-old implementation\n+agent implementation\n footer\n",
+		FileChange: capturedFileChange(filePath, true, beforeContent, afterContent),
+	})
+
+	preview, err := be.RewindTurn(ctx, sessionID, target, false, 0, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Files) != 1 || preview.Files[0].Status != RewindFileMergeable {
+		t.Fatalf("rewind preview = %#v", preview)
+	}
+	_, err = be.RewindTurn(
 		ctx,
 		sessionID,
 		target,
-		"edited first request",
-		false,
-		0,
-	); err != nil {
+		true,
+		preview.HeadSeq,
+		preview.FileStateToken,
+		nil,
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	awaitStarted(t, prov, "edited first request")
+	assertFileContent(t, filePath, "custom name\nold implementation\nfooter\n")
+}
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		sess, ok := be.sessions.Get(sessionID)
-		if !ok {
-			t.Fatal("session disappeared")
-		}
-		if sess.Title == "edited first request" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("automatic title = %q, want edited first request", sess.Title)
-		}
-		time.Sleep(time.Millisecond)
+func TestRewindTurnRejectsStaleFilePreview(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	ctx := context.Background()
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	beforeContent := []byte("before\n")
+	afterContent := []byte("after\n")
+	if err := os.WriteFile(filePath, afterContent, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	prov.releases <- struct{}{}
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "change file",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleTool,
+		Diff: "--- " + filePath + "\n+++ " + filePath +
+			"\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+		FileChange: capturedFileChange(filePath, true, string(beforeContent), string(afterContent)),
+	})
+
+	preview, err := be.RewindTurn(ctx, sessionID, target, false, 0, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, []byte("external\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = be.RewindTurn(
+		ctx,
+		sessionID,
+		target,
+		true,
+		preview.HeadSeq,
+		preview.FileStateToken,
+		nil,
+	)
+	if !errors.Is(err, ErrFileStateChanged) {
+		t.Fatalf("stale file preview error = %v", err)
+	}
+	assertFileContent(t, filePath, "external\n")
+	history, err := be.History(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history changed after stale preview: %#v", history)
+	}
+}
+
+func TestRewindTurnForceRestoresModifiedFile(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	ctx := context.Background()
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	beforeContent := []byte("before\n")
+	afterContent := []byte("after\n")
+	if err := os.WriteFile(filePath, []byte("external\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleUser, Content: "change file",
+	})
+	appendHistoryMessage(t, be, sessionID, message.Message{
+		Role: message.RoleTool,
+		Diff: "--- " + filePath + "\n+++ " + filePath +
+			"\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+		FileChange: capturedFileChange(filePath, true, string(beforeContent), string(afterContent)),
+	})
+
+	preview, err := be.RewindTurn(ctx, sessionID, target, false, 0, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Files) != 1 || preview.Files[0].Status != RewindFileModified {
+		t.Fatalf("rewind preview = %#v", preview)
+	}
+	_, err = be.RewindTurn(
+		ctx,
+		sessionID,
+		target,
+		true,
+		preview.HeadSeq,
+		preview.FileStateToken,
+		[]string{preview.Files[0].Key},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, filePath, "before\n")
+	events, err := be.log.Read(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewound := lastEvent(events, event.KindHistoryRewound)
+	if rewound == nil {
+		t.Fatalf("missing history_rewound event: %#v", eventKinds(events))
+	}
+	payload, ok := rewound.Payload.(event.HistoryRewound)
+	if !ok || len(payload.Files) != 1 ||
+		payload.Files[0].Action != event.RewindFileForceRestored {
+		t.Fatalf("rewind file results = %#v", rewound.Payload)
+	}
 }
 
 func appendHistoryMessage(

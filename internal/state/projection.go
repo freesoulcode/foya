@@ -2,7 +2,6 @@ package state
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
@@ -20,8 +19,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 		target = &message.Message{}
 	case event.KindCompactionCompleted:
 		target = &compaction.Checkpoint{}
-	case event.KindHistoryBranched:
-		target = &event.HistoryBranched{}
+	case event.KindHistoryRewound:
+		target = &event.HistoryRewound{}
 	case event.KindSessionForked:
 		target = &event.SessionForked{}
 	case event.KindUsageUpdated:
@@ -41,7 +40,7 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 		return *value
 	case *compaction.Checkpoint:
 		return *value
-	case *event.HistoryBranched:
+	case *event.HistoryRewound:
 		return *value
 	case *event.SessionForked:
 		return *value
@@ -58,13 +57,13 @@ func activeMessageEvents(events []event.Event) []event.Event {
 		switch ev.Kind {
 		case event.KindMessageEnd, event.KindMessageImported:
 			active = append(active, ev)
-		case event.KindHistoryBranched:
-			branch, ok := historyBranchFromPayload(ev.Payload)
+		case event.KindHistoryRewound:
+			rewind, ok := historyRewindFromPayload(ev.Payload)
 			if !ok {
 				continue
 			}
 			for i := len(active) - 1; i >= 0; i-- {
-				if active[i].Seq == branch.TargetUserSeq {
+				if active[i].Seq == rewind.TargetUserSeq {
 					active = active[:i]
 					break
 				}
@@ -86,76 +85,22 @@ func messageFromEvent(ev event.Event) (message.Message, bool) {
 	return message.Message{}, false
 }
 
-func historyBranchFromPayload(payload any) (event.HistoryBranched, bool) {
+func historyRewindFromPayload(payload any) (event.HistoryRewound, bool) {
 	switch value := payload.(type) {
-	case event.HistoryBranched:
+	case event.HistoryRewound:
 		return value, true
-	case *event.HistoryBranched:
+	case *event.HistoryRewound:
 		if value != nil {
 			return *value, true
 		}
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return event.HistoryBranched{}, false
+		return event.HistoryRewound{}, false
 	}
-	var branch event.HistoryBranched
-	if err := json.Unmarshal(data, &branch); err != nil || branch.TargetUserSeq == 0 {
-		return event.HistoryBranched{}, false
+	var rewind event.HistoryRewound
+	if err := json.Unmarshal(data, &rewind); err != nil || rewind.TargetUserSeq == 0 {
+		return event.HistoryRewound{}, false
 	}
-	return branch, true
-}
-
-func branchEffects(events []event.Event) []event.BranchEffect {
-	toolResults := make(map[string]message.Message)
-	for _, ev := range events {
-		msg, ok := messageFromEvent(ev)
-		if ok && msg.Role == message.RoleTool {
-			toolResults[msg.ToolCallID] = msg
-		}
-	}
-
-	effects := make([]event.BranchEffect, 0)
-	for _, ev := range events {
-		msg, ok := messageFromEvent(ev)
-		if !ok || msg.Role != message.RoleAssistant {
-			continue
-		}
-		for _, call := range msg.ToolCalls {
-			switch call.Name {
-			case "bash":
-				effects = append(effects, event.BranchEffect{
-					Tool:   call.Name,
-					Detail: toolArgument(call.Input, "command"),
-				})
-			case "write", "edit":
-				result, completed := toolResults[call.ID]
-				if !completed || result.Diff == "" {
-					continue
-				}
-				effects = append(effects, event.BranchEffect{
-					Tool:   call.Name,
-					Detail: toolArgument(call.Input, "path"),
-				})
-			}
-			if len(effects) == 20 {
-				return effects
-			}
-		}
-	}
-	return effects
-}
-
-func toolArgument(input json.RawMessage, key string) string {
-	var args map[string]any
-	if err := json.Unmarshal(input, &args); err != nil {
-		return ""
-	}
-	value, _ := args[key].(string)
-	const maxRunes = 160
-	runes := []rune(strings.TrimSpace(value))
-	if len(runes) > maxRunes {
-		return string(runes[:maxRunes]) + "..."
-	}
-	return string(runes)
+	return rewind, true
 }

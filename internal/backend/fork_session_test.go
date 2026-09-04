@@ -41,7 +41,11 @@ func TestForkSessionCopiesActiveHistoryAndArtifactsWithoutUsage(t *testing.T) {
 	appendHistoryMessage(t, be, sourceID, message.Message{
 		Role: message.RoleAssistant, Content: "old answer",
 	})
-	if _, err := be.log.Branch(ctx, sourceID, target, "new route", true, 0); err != nil {
+	preview, err := be.log.Rewind(ctx, sourceID, target, false, 0, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.log.Rewind(ctx, sourceID, target, true, preview.HeadSeq, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	appendHistoryMessage(t, be, sourceID, message.Message{
@@ -210,7 +214,11 @@ func TestForkSessionRejectsInactiveThroughSeq(t *testing.T) {
 	target := appendHistoryMessage(t, be, sourceID, message.Message{
 		Role: message.RoleUser, Content: "old route",
 	})
-	if _, err := be.log.Branch(ctx, sourceID, target, "new route", true, 0); err != nil {
+	preview, err := be.log.Rewind(ctx, sourceID, target, false, 0, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.log.Rewind(ctx, sourceID, target, true, preview.HeadSeq, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 

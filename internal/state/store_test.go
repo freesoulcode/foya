@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -157,7 +158,199 @@ func TestStorePersistsOnlyAttachmentReferences(t *testing.T) {
 	}
 }
 
-func TestStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
+func TestStoreDeduplicatesAndCollectsFileBlobs(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	before := []byte("before\n")
+	after := []byte("after\n")
+	change := message.FileChange{
+		Path:            "/workspace/file.txt",
+		BeforeExists:    true,
+		BeforeMode:      0o644,
+		AfterMode:       0o644,
+		BeforeBlob:      fileBlobHash(before),
+		AfterBlob:       fileBlobHash(after),
+		BeforeContent:   before,
+		AfterContent:    after,
+		ContentCaptured: true,
+	}
+
+	sourceSeq := appendStoreMessage(t, store, "session-1", message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "write-1",
+		Content:    "written",
+		Diff:       "display diff",
+		FileChange: &change,
+	})
+	history, err := store.History(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ImportMessages(
+		context.Background(),
+		"session-2",
+		"session-1",
+		sourceSeq,
+		history,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var blobCount, changeCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_blobs`).Scan(&blobCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_changes`).Scan(&changeCount); err != nil {
+		t.Fatal(err)
+	}
+	if blobCount != 2 || changeCount != 2 {
+		t.Fatalf("blob/change counts = %d/%d, want 2/2", blobCount, changeCount)
+	}
+	restored, err := store.FileBlob(context.Background(), change.BeforeBlob)
+	if err != nil || !bytes.Equal(restored, before) {
+		t.Fatalf("restored blob = %q, err = %v", restored, err)
+	}
+
+	var payload []byte
+	if err := db.QueryRow(`
+		SELECT payload_json
+		FROM events
+		WHERE session_id = ?
+	`, "session-1").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, before) ||
+		bytes.Contains(payload, []byte("before_content")) ||
+		bytes.Contains(payload, []byte("after_content")) {
+		t.Fatalf("event contains inline file snapshot: %s", payload)
+	}
+
+	if err := store.Delete(context.Background(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_blobs`).Scan(&blobCount); err != nil {
+		t.Fatal(err)
+	}
+	if blobCount != 2 {
+		t.Fatalf("shared blobs were collected early: %d", blobCount)
+	}
+	if err := store.Delete(context.Background(), "session-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_blobs`).Scan(&blobCount); err != nil {
+		t.Fatal(err)
+	}
+	if blobCount != 0 {
+		t.Fatalf("unreferenced blobs remain: %d", blobCount)
+	}
+}
+
+func TestStorePrunesExpiredFileCheckpointData(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	ctx := context.Background()
+	sessionID := "session-1"
+	oldTime := time.Now().Add(-fileCheckpointRetention - time.Hour)
+	target := appendStoreEvent(t, store, event.Event{
+		Kind:    event.KindMessageEnd,
+		Session: sessionID,
+		Time:    oldTime,
+		Payload: message.Message{Role: message.RoleUser, Content: "old request"},
+	})
+	before := []byte("before\n")
+	after := []byte("after\n")
+	appendStoreEvent(t, store, event.Event{
+		Kind:    event.KindMessageEnd,
+		Session: sessionID,
+		Time:    oldTime,
+		Payload: message.Message{
+			Role: message.RoleTool,
+			FileChange: &message.FileChange{
+				Path:            "/workspace/file.txt",
+				BeforeExists:    true,
+				BeforeMode:      0o644,
+				AfterMode:       0o644,
+				BeforeBlob:      fileBlobHash(before),
+				AfterBlob:       fileBlobHash(after),
+				BeforeContent:   before,
+				AfterContent:    after,
+				ContentCaptured: true,
+			},
+		},
+	})
+
+	var blobCount, changeCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_blobs`).Scan(&blobCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM file_changes`).Scan(&changeCount); err != nil {
+		t.Fatal(err)
+	}
+	if blobCount != 0 || changeCount != 0 {
+		t.Fatalf("expired blob/change counts = %d/%d, want 0/0", blobCount, changeCount)
+	}
+	preview, err := store.Rewind(ctx, sessionID, target, false, 0, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.FileChanges) != 0 {
+		t.Fatalf("expired file changes = %#v", preview.FileChanges)
+	}
+}
+
+func TestStoreKeepsLatestHundredFileCheckpoints(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	sessionID := "session-1"
+	path := "/workspace/file.txt"
+
+	for index := 0; index < fileCheckpointLimit+1; index++ {
+		before := []byte(fmt.Sprintf("version-%d\n", index))
+		after := []byte(fmt.Sprintf("version-%d\n", index+1))
+		appendStoreMessage(t, store, sessionID, message.Message{
+			Role:    message.RoleUser,
+			Content: fmt.Sprintf("request-%d", index),
+		})
+		appendStoreMessage(t, store, sessionID, message.Message{
+			Role: message.RoleTool,
+			FileChange: &message.FileChange{
+				Path:            path,
+				BeforeExists:    true,
+				BeforeMode:      0o644,
+				AfterMode:       0o644,
+				BeforeBlob:      fileBlobHash(before),
+				AfterBlob:       fileBlobHash(after),
+				BeforeContent:   before,
+				AfterContent:    after,
+				ContentCaptured: true,
+			},
+		})
+	}
+
+	var changeCount int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM file_changes WHERE session_id = ?
+	`, sessionID).Scan(&changeCount); err != nil {
+		t.Fatal(err)
+	}
+	if changeCount != fileCheckpointLimit {
+		t.Fatalf("retained file changes = %d, want %d", changeCount, fileCheckpointLimit)
+	}
+}
+
+func TestStoreRewindsAndInvalidatesCheckpoint(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -203,25 +396,31 @@ func TestStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
 		t.Fatalf("model history = %#v", modelHistory)
 	}
 
-	result, err := store.Branch(ctx, sessionID, target, "new question", false, 0)
+	preview, err := store.Rewind(ctx, sessionID, target, false, 0, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Applied || preview.Message.Content != "old question" {
+		t.Fatalf("rewind preview = %#v", preview)
+	}
+	result, err := store.Rewind(ctx, sessionID, target, true, preview.HeadSeq, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Applied {
-		t.Fatalf("branch = %#v", result)
+		t.Fatalf("rewind = %#v", result)
 	}
 	if _, ok, err := store.Checkpoint(ctx, sessionID); err != nil || ok {
-		t.Fatalf("checkpoint after branch: ok=%v err=%v", ok, err)
+		t.Fatalf("checkpoint after rewind: ok=%v err=%v", ok, err)
 	}
-	appendStoreMessage(t, store, sessionID, message.Message{
-		Role: message.RoleUser, Content: "new question",
-	})
 
 	history, err := store.History(ctx, sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 3 || history[2].Content != "new question" {
+	if len(history) != 2 ||
+		history[0].Content != "first" ||
+		history[1].Content != "answer" {
 		t.Fatalf("active history = %#v", history)
 	}
 	raw, err := store.Read(ctx, sessionID, 0)
@@ -235,7 +434,7 @@ func TestStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
 			(ok && item.Content == "old answer")
 	}
 	if !foundOldAnswer {
-		t.Fatal("branch removed an immutable source event")
+		t.Fatal("rewind removed an immutable source event")
 	}
 }
 
@@ -404,7 +603,7 @@ func TestStoreRollsBackInvalidProjection(t *testing.T) {
 	}
 }
 
-func TestStoreRejectsInactiveBranchTarget(t *testing.T) {
+func TestStoreRejectsInactiveRewindTarget(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -419,15 +618,15 @@ func TestStoreRejectsInactiveBranchTarget(t *testing.T) {
 	appendStoreMessage(t, store, "session-1", message.Message{
 		Role: message.RoleAssistant, Content: "answer",
 	})
-	if _, err := store.Branch(
-		ctx, "session-1", target, "edited", false, 0,
-	); err != nil {
+	preview, err := store.Rewind(ctx, "session-1", target, false, 0, nil, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Branch(
-		ctx, "session-1", target, "edited again", false, 0,
-	); !errors.Is(err, ErrActiveUserMessageNotFound) {
-		t.Fatalf("inactive branch target error = %v", err)
+	if _, err := store.Rewind(ctx, "session-1", target, true, preview.HeadSeq, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rewind(ctx, "session-1", target, false, 0, nil, ""); !errors.Is(err, ErrActiveUserMessageNotFound) {
+		t.Fatalf("inactive rewind target error = %v", err)
 	}
 }
 

@@ -69,6 +69,11 @@ func TestWriteUsesExecutionBoundary(t *testing.T) {
 	if got := call.request.Argv[len(call.request.Argv)-1]; got != filepath.Join(project, "nested/file.txt") {
 		t.Fatalf("boundary target = %q", got)
 	}
+	if result.FileChange == nil ||
+		result.FileChange.Path != filepath.Join(project, "nested/file.txt") ||
+		result.FileChange.BeforeExists {
+		t.Fatalf("file change = %#v", result.FileChange)
+	}
 	assertWorkspaceProfile(t, call.profile, project)
 }
 
@@ -94,6 +99,11 @@ func TestEditUsesExecutionBoundary(t *testing.T) {
 	}
 	if got := call.request.Argv[len(call.request.Argv)-1]; got != path {
 		t.Fatalf("boundary target = %q", got)
+	}
+	if result.FileChange == nil ||
+		result.FileChange.Path != path ||
+		!result.FileChange.BeforeExists {
+		t.Fatalf("file change = %#v", result.FileChange)
 	}
 	assertWorkspaceProfile(t, call.profile, project)
 }

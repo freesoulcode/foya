@@ -47,6 +47,12 @@ import ContextUsage from "./ContextUsage.vue";
 import InlineComposerEditor from "./InlineComposerEditor.vue";
 import QueuedMessages from "./QueuedMessages.vue";
 
+interface RestoreTextSignal {
+  sessionId: string;
+  text: string;
+  nonce: number;
+}
+
 const props = withDefaults(
   defineProps<{
     disabled?: boolean;
@@ -68,6 +74,7 @@ const props = withDefaults(
     projectLocked?: boolean;
     browserElements?: BrowserElementSelection[];
     supportsImage?: boolean;
+    restoreText?: RestoreTextSignal | null;
   }>(),
   {
     disabled: false,
@@ -89,6 +96,7 @@ const props = withDefaults(
     projectLocked: false,
     browserElements: () => [],
     supportsImage: false,
+    restoreText: null,
   }
 );
 
@@ -117,6 +125,7 @@ const emit = defineEmits<{
   (e: "remove-browser-element", index: number): void;
   (e: "clear-browser-elements"): void;
   (e: "restore-browser-elements", elements: BrowserElementSelection[]): void;
+  (e: "restore-consumed", nonce: number): void;
 }>();
 
 const input = ref("");
@@ -125,6 +134,12 @@ const inputFocused = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachmentError = ref("");
 const pendingImages = ref<Array<{ file: File; url: string }>>([]);
+const lastRestoreNonce = ref(0);
+
+function clearPendingImages() {
+  for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
+  pendingImages.value = [];
+}
 
 function addImages(files: File[]) {
   attachmentError.value = "";
@@ -175,9 +190,7 @@ function onDrop(event: DragEvent) {
   addImages(images);
 }
 
-onUnmounted(() => {
-  for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
-});
+onUnmounted(clearPendingImages);
 
 interface SlashCommand {
   value: string;
@@ -245,6 +258,26 @@ watch(input, () => {
   }
   commandMenuDismissed.value = false;
 });
+
+watch(
+  () => props.restoreText?.nonce,
+  (nonce) => {
+    const signal = props.restoreText;
+    if (!signal || !nonce || signal.sessionId !== props.sessionId) return;
+    if (lastRestoreNonce.value === signal.nonce) return;
+    lastRestoreNonce.value = signal.nonce;
+    selectedSlashCommand.value = null;
+    commandError.value = "";
+    commandMenuDismissed.value = true;
+    attachmentError.value = "";
+    clearPendingImages();
+    emit("clear-browser-elements");
+    input.value = signal.text;
+    void nextTick(() => editorRef.value?.focus());
+    emit("restore-consumed", signal.nonce);
+  },
+  { immediate: true }
+);
 
 async function loadCommands() {
   if (!props.sessionId || !props.hasSession) {
@@ -453,8 +486,7 @@ async function submit() {
   const browserElements =
     editorRef.value?.orderedElements() ?? [...props.browserElements];
   input.value = "";
-  for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
-  pendingImages.value = [];
+  clearPendingImages();
   emit("clear-browser-elements");
   emit("send", text, files, browserElements, () => {
     if (!input.value) input.value = text;

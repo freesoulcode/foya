@@ -115,7 +115,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /sessions/{id}/agent-budget", s.handleAgentBudget)
 	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
-	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/edit", s.handleEditTurn)
+	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/rewind", s.handleRewindTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
 	s.mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancelTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/tools/{tool_call_id}/cancel", s.handleCancelTool)
@@ -2065,27 +2065,30 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleEditTurn branches before an active user message and runs its edited
-// replacement. Potential project effects require an explicit second request.
-func (s *Server) handleEditTurn(w http.ResponseWriter, r *http.Request) {
+// handleRewindTurn trims active history from an active user message onward and
+// returns that message so the client can place it back in the composer.
+func (s *Server) handleRewindTurn(w http.ResponseWriter, r *http.Request) {
 	rawSeq := r.PathValue("message_seq")
 	seq, err := strconv.ParseUint(rawSeq, 10, 64)
 	if err != nil || seq == 0 {
 		writeErr(w, http.StatusBadRequest, "invalid_message_seq", "invalid message sequence")
 		return
 	}
-	var req protocol.EditTurnRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var req protocol.RewindTurnRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	result, err := s.backend.EditTurn(
+	result, err := s.backend.RewindTurn(
 		r.Context(),
 		r.PathValue("id"),
 		event.Seq(seq),
-		req.Message,
-		req.ConfirmEffects,
+		req.Confirm,
 		event.Seq(req.ExpectedHeadSeq),
+		req.ExpectedFileState,
+		req.ForceFileKeys,
 	)
 	if err != nil {
 		switch {
@@ -2093,27 +2096,39 @@ func (s *Server) handleEditTurn(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "not_found", err.Error())
 		case errors.Is(err, backend.ErrActiveUserMessageNotFound):
 			writeErr(w, http.StatusNotFound, "message_not_found", err.Error())
-		case errors.Is(err, backend.ErrEmptyMessage):
-			writeErr(w, http.StatusBadRequest, "empty_message", err.Error())
-		case errors.Is(err, backend.ErrMessageUnchanged):
-			writeErr(w, http.StatusConflict, "message_unchanged", err.Error())
-		case errors.Is(err, backend.ErrAttachmentEditUnsupported):
-			writeErr(w, http.StatusConflict, "attachment_edit_unsupported", err.Error())
+		case errors.Is(err, backend.ErrRewindContextUnsupported):
+			writeErr(w, http.StatusConflict, "rewind_context_unsupported", err.Error())
 		case errors.Is(err, backend.ErrSessionBusy):
 			writeErr(w, http.StatusConflict, "session_busy", err.Error())
 		case errors.Is(err, backend.ErrSessionQueueNotEmpty):
 			writeErr(w, http.StatusConflict, "queue_not_empty", err.Error())
 		case errors.Is(err, backend.ErrHistoryChanged):
 			writeErr(w, http.StatusConflict, "history_changed", err.Error())
+		case errors.Is(err, backend.ErrFileRewindConflict):
+			writeErr(w, http.StatusConflict, "file_changed", err.Error())
+		case errors.Is(err, backend.ErrFileStateChanged):
+			writeErr(w, http.StatusConflict, "file_state_changed", err.Error())
+		case errors.Is(err, backend.ErrFileRewindFailed):
+			writeErr(w, http.StatusInternalServerError, "file_rewind_failed", err.Error())
 		default:
-			writeErr(w, http.StatusInternalServerError, "edit_failed", err.Error())
+			writeErr(w, http.StatusInternalServerError, "rewind_failed", err.Error())
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.EditTurnResponse{
-		Status:  result.Status,
-		Effects: result.Effects,
-		HeadSeq: uint64(result.HeadSeq),
+	files := make([]protocol.RewindFilePreview, 0, len(result.Files))
+	for _, file := range result.Files {
+		files = append(files, protocol.RewindFilePreview{
+			Key:    file.Key,
+			Path:   file.Path,
+			Status: file.Status,
+		})
+	}
+	writeJSON(w, http.StatusOK, protocol.RewindTurnResponse{
+		Status:         result.Status,
+		Message:        result.Message,
+		Files:          files,
+		FileStateToken: result.FileStateToken,
+		HeadSeq:        uint64(result.HeadSeq),
 	})
 }
 

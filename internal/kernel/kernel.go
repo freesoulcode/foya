@@ -4,6 +4,7 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -76,6 +77,12 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	log := state.NewStore(database)
+	if err := backend.RecoverFileRewinds(context.Background(), log); err != nil {
+		return nil, fmt.Errorf("recover interrupted file rewind: %w", err)
+	}
+	if err := log.PruneFileCheckpoints(context.Background(), time.Now()); err != nil {
+		return nil, fmt.Errorf("prune file checkpoints: %w", err)
+	}
 	bus := broker.New[event.Event]()
 	artifactStore, err := artifact.NewFileStore(cfg.DataDir)
 	if err != nil {

@@ -59,12 +59,14 @@ const {
   pendingApprovals,
   pendingQuestions,
   pendingBrowserActions,
-  pendingHistoryEdit,
+  pendingHistoryRewind,
+  composerRestore,
   newSession,
   select,
   send,
   ensureSession,
-  editSentMessage,
+  rewindSentMessage,
+  consumeComposerRestore,
   cancelTurn,
   cancelTool,
   backgroundTool,
@@ -199,7 +201,7 @@ const workbarObscured = computed(
   () =>
     sessionDeleteDialogOpen.value ||
     Object.keys(pendingApprovals.value).length > 0 ||
-    pendingHistoryEdit.value !== null
+    pendingHistoryRewind.value !== null
 );
 
 function onOpenDiff(diff: string) {
@@ -437,9 +439,11 @@ const viewContext: ChatWorkspaceContext = {
   composerContextUsage,
   composerContextWindow,
   composerSupportsImage,
+  composerRestore,
   pendingBrowserElements,
   onTurnSelect,
-  editSentMessage,
+  rewindSentMessage,
+  consumeComposerRestore,
   forkSession,
   onOpenDiff,
   cancelTool,

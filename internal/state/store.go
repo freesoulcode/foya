@@ -79,6 +79,7 @@ func (s *store) Delete(ctx context.Context, session string) error {
 	}
 	for _, query := range []string{
 		`DELETE FROM stream_snapshots WHERE session_id = ?`,
+		`DELETE FROM file_rewind_journals WHERE session_id = ?`,
 		`DELETE FROM compaction_checkpoints WHERE session_id = ?`,
 		`DELETE FROM message_projection WHERE session_id = ?`,
 		`DELETE FROM usage_records WHERE session_id = ?`,
@@ -87,6 +88,9 @@ func (s *store) Delete(ctx context.Context, session string) error {
 		if _, err := tx.ExecContext(ctx, query, session); err != nil {
 			return fmt.Errorf("delete session events: %w", err)
 		}
+	}
+	if err := gcFileBlobsTx(ctx, tx); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit session event deletion: %w", err)
@@ -272,23 +276,24 @@ func (s *store) ImportMessages(
 	return events, nil
 }
 
-func (s *store) Branch(
+func (s *store) Rewind(
 	ctx context.Context,
 	session string,
 	targetUserSeq event.Seq,
-	editedContent string,
-	allowEffects bool,
+	confirm bool,
 	expectedHeadSeq event.Seq,
-) (BranchResult, error) {
+	fileResults []event.RewindFileResult,
+	journalID string,
+) (RewindResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return BranchResult{}, fmt.Errorf("begin history branch: %w", err)
+		return RewindResult{}, fmt.Errorf("begin history rewind: %w", err)
 	}
 	defer tx.Rollback()
 
 	active, err := loadActiveMessageEvents(ctx, tx, session)
 	if err != nil {
-		return BranchResult{}, err
+		return RewindResult{}, err
 	}
 	targetIndex := -1
 	var target message.Message
@@ -300,18 +305,19 @@ func (s *store) Branch(
 		if !ok || item.Role != message.RoleUser {
 			break
 		}
+		item.EventSeq = uint64(ev.Seq)
 		targetIndex = i
 		target = item
 		break
 	}
 	if targetIndex < 0 {
-		return BranchResult{}, ErrActiveUserMessageNotFound
-	}
-	if target.Content == editedContent {
-		return BranchResult{}, ErrMessageUnchanged
+		return RewindResult{}, ErrActiveUserMessageNotFound
 	}
 
-	effects := branchEffects(active[targetIndex:])
+	fileChanges, err := loadRewindFileChanges(ctx, tx, session, targetUserSeq)
+	if err != nil {
+		return RewindResult{}, err
+	}
 	firstUser := true
 	for _, ev := range active[:targetIndex] {
 		item, ok := messageFromEvent(ev)
@@ -324,40 +330,52 @@ func (s *store) Branch(
 	if len(active) > 0 {
 		headSeq = active[len(active)-1].Seq
 	}
-	if len(effects) > 0 && !allowEffects {
-		return BranchResult{Effects: effects, HeadSeq: headSeq}, nil
+	result := RewindResult{
+		Message:     target,
+		FileChanges: fileChanges,
+		HeadSeq:     headSeq,
+		FirstUser:   firstUser,
 	}
-	if len(effects) > 0 && expectedHeadSeq != headSeq {
-		return BranchResult{}, ErrBranchChanged
+	if !confirm {
+		return result, nil
+	}
+	if expectedHeadSeq != headSeq {
+		return RewindResult{}, ErrHistoryChanged
 	}
 
 	ev := event.Event{
-		Kind:    event.KindHistoryBranched,
+		Kind:    event.KindHistoryRewound,
 		Session: session,
 		Time:    time.Now(),
-		Payload: event.HistoryBranched{
+		Payload: event.HistoryRewound{
 			TargetUserSeq: targetUserSeq,
-			Effects:       effects,
+			Files:         append([]event.RewindFileResult(nil), fileResults...),
 		},
 	}
 	seq, inserted, err := appendEventTx(ctx, tx, ev)
 	if err != nil {
-		return BranchResult{}, err
+		return RewindResult{}, err
 	}
 	if !inserted {
-		return BranchResult{}, ErrActiveUserMessageNotFound
+		return RewindResult{}, ErrActiveUserMessageNotFound
 	}
 	ev.Seq = seq
-	if err := tx.Commit(); err != nil {
-		return BranchResult{}, fmt.Errorf("commit history branch: %w", err)
+	if err := markFileRewindCommittedTx(
+		ctx,
+		tx,
+		journalID,
+		session,
+		targetUserSeq,
+		expectedHeadSeq,
+	); err != nil {
+		return RewindResult{}, err
 	}
-	return BranchResult{
-		Event:     ev,
-		Effects:   effects,
-		HeadSeq:   headSeq,
-		FirstUser: firstUser,
-		Applied:   true,
-	}, nil
+	if err := tx.Commit(); err != nil {
+		return RewindResult{}, fmt.Errorf("commit history rewind: %w", err)
+	}
+	result.Event = ev
+	result.Applied = true
+	return result, nil
 }
 
 func appendEventTx(
@@ -377,6 +395,10 @@ func appendEventTx(
 		return 0, false, fmt.Errorf("check deleted session: %w", err)
 	}
 
+	ev, err = persistEventFileChangeTx(ctx, tx, ev)
+	if err != nil {
+		return 0, false, err
+	}
 	payload, err := json.Marshal(ev.Payload)
 	if err != nil {
 		return 0, false, fmt.Errorf("marshal event payload: %w", err)
@@ -418,23 +440,43 @@ func applyProjectionTx(
 		`, int64(ev.Seq), ev.Session, string(item.Role)); err != nil {
 			return fmt.Errorf("project message event: %w", err)
 		}
+		if item.FileChange != nil {
+			var beforeBlob any
+			if item.FileChange.BeforeExists {
+				beforeBlob = item.FileChange.BeforeBlob
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO file_changes(
+					event_seq, session_id, path, before_exists, before_mode, after_mode,
+					before_blob_hash, after_blob_hash
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, int64(ev.Seq), ev.Session, item.FileChange.Path,
+				item.FileChange.BeforeExists, item.FileChange.BeforeMode,
+				item.FileChange.AfterMode, beforeBlob,
+				item.FileChange.AfterBlob); err != nil {
+				return fmt.Errorf("project file change: %w", err)
+			}
+			if err := pruneFileChangesTx(ctx, tx, ev.Session, time.Now()); err != nil {
+				return err
+			}
+		}
 		if ev.Kind == event.KindMessageEnd &&
 			(item.Role == message.RoleUser || item.Role == message.RoleAssistant) {
 			if err := incrementMessageLedgerTx(ctx, tx, ev); err != nil {
 				return err
 			}
 		}
-	case event.KindHistoryBranched:
-		branch, ok := historyBranchFromPayload(ev.Payload)
+	case event.KindHistoryRewound:
+		rewind, ok := historyRewindFromPayload(ev.Payload)
 		if !ok {
-			return errors.New("history_branched payload is invalid")
+			return fmt.Errorf("%s payload is invalid", ev.Kind)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE message_projection
 			SET active = 0
 			WHERE session_id = ? AND active = 1 AND event_seq >= ?
-		`, ev.Session, int64(branch.TargetUserSeq)); err != nil {
-			return fmt.Errorf("project history branch: %w", err)
+		`, ev.Session, int64(rewind.TargetUserSeq)); err != nil {
+			return fmt.Errorf("project history update: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM compaction_checkpoints WHERE session_id = ?

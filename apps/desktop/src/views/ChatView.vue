@@ -41,9 +41,10 @@ const {
   composerContextUsage,
   composerContextWindow,
   composerSupportsImage,
+  composerRestore,
   pendingBrowserElements,
   onTurnSelect,
-  editSentMessage,
+  rewindSentMessage,
   forkSession,
   onOpenDiff,
   cancelTool,
@@ -68,6 +69,7 @@ const {
   removeBrowserElement,
   clearBrowserElements,
   restoreBrowserElements,
+  consumeComposerRestore,
 } = props.workspace;
 
 function setMessageListRef(instance: Element | ComponentPublicInstance | null) {
@@ -112,7 +114,7 @@ function forkAtMessage(messageSeq: number) {
         :streaming="streaming"
         :compacting="activeCompacting"
         :editable="queuedMessages.length === 0"
-        @edit-message="editSentMessage"
+        @rewind-message="rewindSentMessage"
         @fork-message="forkAtMessage"
         @open-diff="onOpenDiff"
         @cancel-tool="cancelTool"
@@ -168,6 +170,7 @@ function forkAtMessage(messageSeq: number) {
       :has-session="!isDraft"
       :session-id="activeId"
       :browser-elements="pendingBrowserElements"
+      :restore-text="composerRestore"
       @send="send"
       @command="executeComposerCommand"
       @stop="cancelTurn"
@@ -183,6 +186,7 @@ function forkAtMessage(messageSeq: number) {
       @remove-browser-element="removeBrowserElement"
       @clear-browser-elements="clearBrowserElements"
       @restore-browser-elements="restoreBrowserElements"
+      @restore-consumed="consumeComposerRestore"
     />
   </main>
 </template>

@@ -28,20 +28,24 @@ var (
 	ErrInvalidQueuePosition = errors.New("invalid queue position")
 	// ErrSessionBusy indicates that a mutually exclusive session operation is active.
 	ErrSessionBusy = errors.New("session is busy")
-	// ErrActiveUserMessageNotFound indicates that an edit target is not on the active branch.
+	// ErrActiveUserMessageNotFound indicates that a user-message target is not in active history.
 	ErrActiveUserMessageNotFound = errors.New("active user message not found")
-	// ErrMessageUnchanged rejects edits that do not change the user message.
-	ErrMessageUnchanged = errors.New("edited message is unchanged")
-	// ErrSessionQueueNotEmpty avoids carrying prompts authored against a superseded branch.
+	// ErrSessionQueueNotEmpty avoids carrying prompts authored against superseded history.
 	ErrSessionQueueNotEmpty = errors.New("session has queued messages")
 	// ErrActiveMessageNotFound indicates that a requested fork boundary is not active.
 	ErrActiveMessageNotFound = errors.New("active message not found")
 	// ErrInvalidForkBoundary indicates that the requested fork boundary is not a complete assistant/tool point.
 	ErrInvalidForkBoundary = errors.New("invalid fork boundary")
-	// ErrHistoryChanged rejects a stale side-effect confirmation.
-	ErrHistoryChanged = errors.New("active history changed after edit confirmation")
-	// ErrAttachmentEditUnsupported avoids silently dropping attachments from an edited turn.
-	ErrAttachmentEditUnsupported = errors.New("messages with attachments cannot be edited")
+	// ErrHistoryChanged rejects a stale history-change confirmation.
+	ErrHistoryChanged = errors.New("active history changed after confirmation")
+	// ErrFileStateChanged rejects confirmation against a stale file preview.
+	ErrFileStateChanged = errors.New("file state changed after rewind preview")
+	// ErrFileRewindConflict avoids overwriting files changed after the recorded edit.
+	ErrFileRewindConflict = errors.New("file changed after the recorded edit")
+	// ErrFileRewindFailed indicates that a verified file could not be restored.
+	ErrFileRewindFailed = errors.New("file rewind failed")
+	// ErrRewindContextUnsupported avoids silently dropping non-text user context.
+	ErrRewindContextUnsupported = errors.New("messages with attachments, browser context or commands cannot be moved back to composer")
 	// ErrImageInputUnsupported rejects image input unless the selected connection
 	// explicitly declares visual input support.
 	ErrImageInputUnsupported = errors.New("selected model does not support image input")
@@ -53,8 +57,11 @@ var (
 const (
 	SubmissionStarted        = "started"
 	SubmissionQueued         = "queued"
-	EditStarted              = "started"
-	EditConfirmationRequired = "confirmation_required"
+	RewindApplied            = "rewound"
+	RewindConfirmationNeeded = "confirmation_required"
+	RewindFileReady          = "ready"
+	RewindFileMergeable      = "mergeable"
+	RewindFileModified       = "modified"
 	maxBrowserElements       = 8
 	maxBrowserElementBytes   = 40 * 1024
 	maxBrowserContextBytes   = 96 * 1024
@@ -66,12 +73,20 @@ type Submission struct {
 	Queued *queue.Message
 }
 
-// EditSubmission reports whether an edited turn started or needs explicit
-// confirmation that project effects from the old branch will remain.
-type EditSubmission struct {
-	Status  string
-	Effects []event.BranchEffect
-	HeadSeq event.Seq
+// RewindSubmission reports whether a user message can be moved back to the
+// composer or whether the caller must confirm first.
+type RewindSubmission struct {
+	Status         string
+	Message        string
+	Files          []RewindFilePreview
+	FileStateToken string
+	HeadSeq        event.Seq
+}
+
+type RewindFilePreview struct {
+	Key    string
+	Path   string
+	Status string
 }
 
 type sessionRunner struct {
@@ -162,13 +177,13 @@ func (b *Backend) SubmitInput(
 		runner, turnCtx := b.createRunnerLocked(sessionID)
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx, false)
+		go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx)
 		return Submission{Status: SubmissionQueued, Queued: &item}, nil
 	}
 
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, input, runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, input, runner, turnCtx)
 	return Submission{Status: SubmissionStarted}, nil
 }
 
@@ -468,7 +483,7 @@ func (b *Backend) DispatchQueuedMessage(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, queueInput(selected), runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, queueInput(selected), runner, turnCtx)
 	return selected, nil
 }
 
@@ -525,102 +540,185 @@ func (b *Backend) CompactSession(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx, false)
+	go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx)
 	return checkpoint, err
 }
 
-// EditTurn creates a new active history branch before targetUserSeq and starts
-// the replacement user turn. Superseded events and project changes are kept.
-func (b *Backend) EditTurn(
+// RewindTurn moves an active text-only user message back to the composer by
+// trimming the active history from that message onward. It does not start a turn.
+func (b *Backend) RewindTurn(
 	ctx context.Context,
 	sessionID string,
 	targetUserSeq event.Seq,
-	text string,
-	confirmEffects bool,
+	confirm bool,
 	expectedHeadSeq event.Seq,
-) (EditSubmission, error) {
+	expectedFileState string,
+	forceFileKeys []string,
+) (RewindSubmission, error) {
 	if _, ok := b.sessions.Get(sessionID); !ok {
-		return EditSubmission{}, session.ErrNotFound
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return EditSubmission{}, ErrEmptyMessage
+		return RewindSubmission{}, session.ErrNotFound
 	}
 	history, err := b.log.History(ctx, sessionID)
 	if err != nil {
-		return EditSubmission{}, err
+		return RewindSubmission{}, err
 	}
+	found := false
 	for _, item := range history {
-		if item.EventSeq == uint64(targetUserSeq) &&
-			(len(item.Attachments) > 0 || len(item.BrowserElements) > 0) {
-			return EditSubmission{}, ErrAttachmentEditUnsupported
+		if item.EventSeq != uint64(targetUserSeq) {
+			continue
 		}
+		found = true
+		if item.Role != message.RoleUser {
+			return RewindSubmission{}, ErrActiveUserMessageNotFound
+		}
+		if item.Command != "" ||
+			len(item.Attachments) > 0 ||
+			len(item.BrowserElements) > 0 {
+			return RewindSubmission{}, ErrRewindContextUnsupported
+		}
+		break
+	}
+	if !found {
+		return RewindSubmission{}, ErrActiveUserMessageNotFound
 	}
 
 	b.turns.mu.Lock()
 	if _, deleted := b.turns.deleted[sessionID]; deleted {
 		b.turns.mu.Unlock()
-		return EditSubmission{}, session.ErrNotFound
+		return RewindSubmission{}, session.ErrNotFound
 	}
 	if b.turns.runners[sessionID] != nil || b.turns.compacting[sessionID] {
 		b.turns.mu.Unlock()
-		return EditSubmission{}, ErrSessionBusy
+		return RewindSubmission{}, ErrSessionBusy
 	}
 	if len(b.turns.queues[sessionID]) > 0 {
 		b.turns.mu.Unlock()
-		return EditSubmission{}, ErrSessionQueueNotEmpty
+		return RewindSubmission{}, ErrSessionQueueNotEmpty
 	}
 
-	branch, err := b.log.Branch(
-		ctx,
-		sessionID,
-		targetUserSeq,
-		text,
-		confirmEffects,
-		expectedHeadSeq,
-	)
+	rewind, err := b.log.Rewind(ctx, sessionID, targetUserSeq, false, 0, nil, "")
 	if err != nil {
 		b.turns.mu.Unlock()
 		switch {
 		case errors.Is(err, state.ErrActiveUserMessageNotFound):
-			return EditSubmission{}, ErrActiveUserMessageNotFound
-		case errors.Is(err, state.ErrMessageUnchanged):
-			return EditSubmission{}, ErrMessageUnchanged
-		case errors.Is(err, state.ErrBranchChanged):
-			return EditSubmission{}, ErrHistoryChanged
+			return RewindSubmission{}, ErrActiveUserMessageNotFound
 		default:
-			return EditSubmission{}, err
+			return RewindSubmission{}, err
 		}
 	}
-	if !branch.Applied {
+	candidates, fileStateToken, err := inspectFileRewind(ctx, b.log, rewind.FileChanges)
+	if err != nil {
 		b.turns.mu.Unlock()
-		return EditSubmission{
-			Status:  EditConfirmationRequired,
-			Effects: branch.Effects,
-			HeadSeq: branch.HeadSeq,
+		if errors.Is(err, ErrFileRewindConflict) {
+			return RewindSubmission{}, err
+		}
+		return RewindSubmission{}, fmt.Errorf("%w: %v", ErrFileRewindFailed, err)
+	}
+	files := b.displayRewindFiles(sessionID, candidates)
+	if !confirm {
+		b.turns.mu.Unlock()
+		return RewindSubmission{
+			Status:         RewindConfirmationNeeded,
+			Message:        rewind.Message.Content,
+			Files:          files,
+			FileStateToken: fileStateToken,
+			HeadSeq:        rewind.HeadSeq,
 		}, nil
+	}
+	if expectedHeadSeq != rewind.HeadSeq {
+		b.turns.mu.Unlock()
+		return RewindSubmission{}, ErrHistoryChanged
+	}
+	if expectedFileState != fileStateToken {
+		b.turns.mu.Unlock()
+		return RewindSubmission{}, ErrFileStateChanged
+	}
+
+	fileResults, plans, err := selectFileRewindPlans(candidates, forceFileKeys)
+	if err != nil {
+		b.turns.mu.Unlock()
+		if errors.Is(err, ErrFileRewindConflict) {
+			return RewindSubmission{}, err
+		}
+		return RewindSubmission{}, fmt.Errorf("%w: %v", ErrFileRewindFailed, err)
+	}
+	journalID := ""
+	if len(plans) > 0 {
+		journalID, err = b.log.BeginFileRewind(
+			ctx,
+			sessionID,
+			targetUserSeq,
+			expectedHeadSeq,
+			fileRewindBackups(plans),
+		)
+		if err != nil {
+			b.turns.mu.Unlock()
+			return RewindSubmission{}, fmt.Errorf("%w: %v", ErrFileRewindFailed, err)
+		}
+	}
+	restoreFiles, err := applyFileRewindPlans(plans)
+	if err != nil {
+		if journalID != "" {
+			_ = b.log.FinishFileRewind(context.WithoutCancel(ctx), journalID)
+		}
+		b.turns.mu.Unlock()
+		if errors.Is(err, ErrFileRewindConflict) {
+			return RewindSubmission{}, err
+		}
+		return RewindSubmission{}, fmt.Errorf("%w: %v", ErrFileRewindFailed, err)
+	}
+	committed, err := b.log.Rewind(
+		ctx,
+		sessionID,
+		targetUserSeq,
+		true,
+		expectedHeadSeq,
+		fileResults,
+		journalID,
+	)
+	if err != nil {
+		restoreErr := restoreFiles()
+		if journalID != "" {
+			_ = b.log.FinishFileRewind(context.WithoutCancel(ctx), journalID)
+		}
+		b.turns.mu.Unlock()
+		if restoreErr != nil {
+			return RewindSubmission{}, errors.Join(err, fmt.Errorf("restore files after failed history commit: %w", restoreErr))
+		}
+		switch {
+		case errors.Is(err, state.ErrActiveUserMessageNotFound):
+			return RewindSubmission{}, ErrActiveUserMessageNotFound
+		case errors.Is(err, state.ErrHistoryChanged):
+			return RewindSubmission{}, ErrHistoryChanged
+		default:
+			return RewindSubmission{}, err
+		}
+	}
+	rewind = committed
+	if journalID != "" {
+		_ = b.log.FinishFileRewind(context.WithoutCancel(ctx), journalID)
 	}
 
 	b.engine.InvalidateHistoryEstimate(sessionID)
-	runner, turnCtx := b.createRunnerLocked(sessionID)
 	publishCtx := context.WithoutCancel(ctx)
 	_ = b.bus.PublishMustDeliver(
 		publishCtx,
 		"session:"+sessionID,
-		branch.Event,
+		rewind.Event,
 	)
-	if branch.FirstUser {
+	if rewind.FirstUser {
 		if updated, changed, resetErr := b.sessions.ResetGeneratedTitle(sessionID); resetErr == nil && changed {
 			b.broadcastSession(publishCtx, updated)
 		}
 	}
 	b.turns.mu.Unlock()
 
-	go b.runTurnLoop(sessionID, message.UserInput{Text: text}, runner, turnCtx, true)
-	return EditSubmission{
-		Status:  EditStarted,
-		Effects: branch.Effects,
-		HeadSeq: branch.HeadSeq,
+	return RewindSubmission{
+		Status:         RewindApplied,
+		Message:        rewind.Message.Content,
+		Files:          files,
+		FileStateToken: fileStateToken,
+		HeadSeq:        rewind.HeadSeq,
 	}, nil
 }
 
@@ -657,16 +755,10 @@ func (b *Backend) runTurnLoop(
 	input message.UserInput,
 	runner *sessionRunner,
 	turnCtx context.Context,
-	editedHistory bool,
 ) {
 	defer close(runner.done)
 	for {
-		if editedHistory {
-			_ = b.engine.RunEditedTurn(turnCtx, sessionID, input.Text)
-			editedHistory = false
-		} else {
-			_ = b.engine.RunInput(turnCtx, sessionID, input)
-		}
+		_ = b.engine.RunInput(turnCtx, sessionID, input)
 
 		b.turns.mu.Lock()
 		current, exists := b.turns.runners[sessionID]

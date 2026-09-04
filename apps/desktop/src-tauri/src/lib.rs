@@ -1544,25 +1544,27 @@ async fn subscribe_canvas_events(
         .map_err(|_| "画布事件订阅在连接前意外结束".to_string())?
 }
 
-/// 编辑一条已完成的用户消息并从该位置创建新分支。
+/// 回退一条已完成的用户消息到输入框,并裁剪当前 active history。
 #[cfg(unix)]
 #[tauri::command]
-async fn edit_turn(
+async fn rewind_turn(
     session_id: String,
     message_seq: u64,
-    message: String,
-    confirm_effects: bool,
+    confirm: bool,
     expected_head_seq: u64,
+    expected_file_state: String,
+    force_file_keys: Vec<String>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
-        "message": message,
-        "confirm_effects": confirm_effects,
+        "confirm": confirm,
         "expected_head_seq": expected_head_seq,
+        "expected_file_state": expected_file_state,
+        "force_file_keys": force_file_keys,
     })
     .to_string();
     kernel::request(
         "POST",
-        &format!("/sessions/{session_id}/turns/{message_seq}/edit"),
+        &format!("/sessions/{session_id}/turns/{message_seq}/rewind"),
         Some(&body),
     )
     .await
@@ -1819,12 +1821,7 @@ async fn get_feishu_bot_settings() -> Result<String, String> {
 #[cfg(unix)]
 #[tauri::command]
 async fn update_feishu_bot_settings(settings: serde_json::Value) -> Result<String, String> {
-    kernel::request(
-        "PUT",
-        "/settings/feishu-bot",
-        Some(&settings.to_string()),
-    )
-    .await
+    kernel::request("PUT", "/settings/feishu-bot", Some(&settings.to_string())).await
 }
 
 #[cfg(unix)]
@@ -1841,10 +1838,7 @@ async fn create_channel(settings: serde_json::Value) -> Result<String, String> {
 
 #[cfg(unix)]
 #[tauri::command]
-async fn update_channel(
-    channel_id: String,
-    settings: serde_json::Value,
-) -> Result<String, String> {
+async fn update_channel(channel_id: String, settings: serde_json::Value) -> Result<String, String> {
     kernel::request(
         "PUT",
         &format!("/channels/{channel_id}"),
@@ -3085,12 +3079,13 @@ fn subscribe_canvas_events(_canvas_id: String, _channel: Channel<String>) -> Res
 
 #[cfg(not(unix))]
 #[tauri::command]
-fn edit_turn(
+fn rewind_turn(
     _session_id: String,
     _message_seq: u64,
-    _message: String,
-    _confirm_effects: bool,
+    _confirm: bool,
     _expected_head_seq: u64,
+    _expected_file_state: String,
+    _force_file_keys: Vec<String>,
 ) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -3745,7 +3740,7 @@ pub fn run() {
             generate_canvas_image,
             generate_canvas_video,
             subscribe_canvas_events,
-            edit_turn,
+            rewind_turn,
             compact_session,
             list_queued_messages,
             enqueue_message,

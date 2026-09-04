@@ -61,6 +61,20 @@ type UserInput struct {
 	BrowserElements []BrowserElement `json:"browser_elements,omitempty"`
 }
 
+// FileChange references the content-addressed states around one text-file write.
+// Raw content is transient and stripped before the message enters the event log.
+type FileChange struct {
+	Path            string `json:"path"`
+	BeforeExists    bool   `json:"before_exists"`
+	BeforeMode      uint32 `json:"before_mode,omitempty"`
+	AfterMode       uint32 `json:"after_mode,omitempty"`
+	BeforeBlob      string `json:"before_blob,omitempty"`
+	AfterBlob       string `json:"after_blob"`
+	BeforeContent   []byte `json:"-"`
+	AfterContent    []byte `json:"-"`
+	ContentCaptured bool   `json:"-"`
+}
+
 // Message 是一条对话消息。
 // 纯文本消息:Role + Content。
 // 助手调工具:Role=assistant, Content 可为空, ToolCalls 非空。
@@ -76,6 +90,7 @@ type Message struct {
 	ToolCalls       []ToolCall       `json:"tool_calls,omitempty"`
 	ToolCallID      string           `json:"tool_call_id,omitempty"`
 	Diff            string           `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供 UI 展示,不回灌模型
+	FileChange      *FileChange      `json:"file_change,omitempty"`
 	// 回合生命周期时间仅写入最终 assistant 消息，不回灌模型。
 	TurnStartedAt   *time.Time `json:"turn_started_at,omitempty"`
 	TurnCompletedAt *time.Time `json:"turn_completed_at,omitempty"`

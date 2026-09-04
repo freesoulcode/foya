@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/freesoulcode/foya/internal/approval"
+	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -93,6 +94,10 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult(fmt.Sprintf("读取失败: %v", err)), nil
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return errResult(fmt.Sprintf("读取文件属性失败: %v", err)), nil
+	}
 	content := string(data)
 	original := content
 
@@ -116,8 +121,13 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
 	}
 
+	var change *message.FileChange
+	if original != content {
+		change = trackedFileChange(path, data, true, info.Mode(), []byte(content), info.Mode())
+	}
 	return Result{
-		Content: []ContentPart{{Type: "text", Text: fmt.Sprintf("已对 %s 应用 %d 处替换", path, applied)}},
-		Diff:    unifiedDiff(path, original, content),
+		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已对 %s 应用 %d 处替换", path, applied)}},
+		Diff:       unifiedDiff(path, original, content),
+		FileChange: change,
 	}, nil
 }

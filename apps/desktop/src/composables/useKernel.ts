@@ -10,7 +10,7 @@ import {
   type ConnectionModelGroup,
   type QueuedMessage,
   type ContextUsage,
-  type BranchEffect,
+  type RewindFile,
   type ProjectInfo,
   type AgentRunSnapshot,
   type AgentBudget,
@@ -108,16 +108,20 @@ const pendingApprovals = ref<Record<string, PendingApproval>>({});
 const pendingQuestions = ref<Record<string, PendingQuestionBatch>>({});
 const pendingBrowserActions = ref<Record<string, BrowserActionRequest>>({});
 
-export interface PendingHistoryEdit {
+export interface PendingHistoryRewind {
   sessionId: string;
   messageSeq: number;
   message: string;
-  effects: BranchEffect[];
+  files: RewindFile[];
   headSeq: number;
+  fileStateToken: string;
+  forceFileKeys: string[];
   submitting?: boolean;
   error?: string;
 }
-const pendingHistoryEdit = ref<PendingHistoryEdit | null>(null);
+const pendingHistoryRewind = ref<PendingHistoryRewind | null>(null);
+const composerRestore = ref<{ sessionId: string; text: string; nonce: number } | null>(null);
+let composerRestoreNonce = 0;
 
 const activeMessages = computed<ChatMessage[]>(() => messagesBySession.value[activeId.value] ?? []);
 const activeQueuedMessages = computed<QueuedMessage[]>(
@@ -287,7 +291,7 @@ function handleEvent(sessionId: string, data: string) {
       // tool 结果消息通过 tool_end 事件展示,不重复插入。
       break;
     }
-    case "history_branched": {
+    case "history_rewound": {
       const p = ev.payload as { target_user_seq?: number };
       const target = Number(p?.target_user_seq ?? 0);
       const index = bucket.findIndex(
@@ -1122,55 +1126,80 @@ async function send(
   }
 }
 
-async function editSentMessage(messageSeq: number, text: string) {
+async function rewindSentMessage(messageSeq: number) {
   const id = activeId.value;
-  const message = text.trim();
-  if (!id || !message || streaming.value) return;
+  if (!id || streaming.value) return;
   try {
-    const result = await api.editTurn(id, messageSeq, message);
-    if (result.status === "confirmation_required") {
-      pendingHistoryEdit.value = {
-        sessionId: id,
-        messageSeq,
-        message,
-        effects: result.effects ?? [],
-        headSeq: result.head_seq ?? 0,
-      };
-    }
-  } catch (error) {
-    pendingHistoryEdit.value = {
+    const result = await api.rewindTurn(id, messageSeq);
+    pendingHistoryRewind.value = {
       sessionId: id,
       messageSeq,
-      message,
-      effects: [],
+      message: result.message,
+      files: result.files ?? [],
+      headSeq: result.head_seq,
+      fileStateToken: result.file_state_token,
+      forceFileKeys: [],
+    };
+  } catch (error) {
+    pendingHistoryRewind.value = {
+      sessionId: id,
+      messageSeq,
+      message: "",
+      files: [],
       headSeq: 0,
-      error: `编辑失败：${String(error)}`,
+      fileStateToken: "",
+      forceFileKeys: [],
+      error: `回退失败：${String(error)}`,
     };
   }
 }
 
-async function confirmHistoryEdit() {
-  const pending = pendingHistoryEdit.value;
+async function confirmHistoryRewind() {
+  const pending = pendingHistoryRewind.value;
   if (!pending || pending.submitting) return;
   pending.submitting = true;
   pending.error = "";
   try {
-    await api.editTurn(
+    const result = await api.rewindTurn(
       pending.sessionId,
       pending.messageSeq,
-      pending.message,
       true,
-      pending.headSeq
+      pending.headSeq,
+      pending.fileStateToken,
+      pending.forceFileKeys
     );
-    pendingHistoryEdit.value = null;
+    pendingHistoryRewind.value = null;
+    if (activeId.value !== pending.sessionId) {
+      await select(pending.sessionId);
+    }
+    composerRestore.value = {
+      sessionId: pending.sessionId,
+      text: result.message || pending.message,
+      nonce: ++composerRestoreNonce,
+    };
   } catch (error) {
     pending.submitting = false;
-    pending.error = `编辑失败：${String(error)}`;
+    pending.error = `回退失败：${String(error)}`;
   }
 }
 
-function cancelHistoryEdit() {
-  pendingHistoryEdit.value = null;
+function cancelHistoryRewind() {
+  pendingHistoryRewind.value = null;
+}
+
+function toggleHistoryRewindForceFile(key: string) {
+  const pending = pendingHistoryRewind.value;
+  if (!pending || pending.submitting) return;
+  const selected = new Set(pending.forceFileKeys);
+  if (selected.has(key)) selected.delete(key);
+  else selected.add(key);
+  pending.forceFileKeys = [...selected];
+}
+
+function consumeComposerRestore(nonce: number) {
+  if (composerRestore.value?.nonce === nonce) {
+    composerRestore.value = null;
+  }
 }
 
 async function editQueuedMessage(messageId: string, text: string) {
@@ -1257,14 +1286,17 @@ export function useKernel() {
     pendingApprovals,
     pendingQuestions,
     pendingBrowserActions,
-    pendingHistoryEdit,
+    pendingHistoryRewind,
+    composerRestore,
     connect,
     newSession,
     select,
     send,
-    editSentMessage,
-    confirmHistoryEdit,
-    cancelHistoryEdit,
+    rewindSentMessage,
+    confirmHistoryRewind,
+    cancelHistoryRewind,
+    toggleHistoryRewindForceFile,
+    consumeComposerRestore,
     cancelTurn,
     cancelTool,
     backgroundTool,

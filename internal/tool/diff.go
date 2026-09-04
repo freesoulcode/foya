@@ -1,9 +1,43 @@
 package tool
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"strings"
+
+	"github.com/freesoulcode/foya/internal/message"
 )
+
+func trackedFileChange(
+	path string,
+	before []byte,
+	beforeExists bool,
+	beforeMode fs.FileMode,
+	after []byte,
+	afterMode fs.FileMode,
+) *message.FileChange {
+	change := &message.FileChange{
+		Path:            path,
+		BeforeExists:    beforeExists,
+		BeforeMode:      uint32(beforeMode.Perm()),
+		AfterMode:       uint32(afterMode.Perm()),
+		AfterBlob:       contentSHA256(after),
+		BeforeContent:   append([]byte(nil), before...),
+		AfterContent:    append([]byte(nil), after...),
+		ContentCaptured: true,
+	}
+	if beforeExists {
+		change.BeforeBlob = contentSHA256(before)
+	}
+	return change
+}
+
+func contentSHA256(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
 
 // unifiedDiff 生成 old→new 的统一 diff 文本(供 UI 行内展示)。
 // 采用行级 LCS 计算最小编辑,输出带 @@ hunk 头、以 ' '/'+'/'-' 前缀的行,

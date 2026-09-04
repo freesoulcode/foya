@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:activeTurn": [value: number];
-  "edit-message": [messageSeq: number, text: string];
+  "rewind-message": [messageSeq: number];
   "fork-message": [messageSeq: number];
   "open-diff": [diff: string];
   "cancel-tool": [toolCallId: string];
@@ -194,9 +194,7 @@ onBeforeUnmount(() => {
             :streaming="
               streaming && !compacting && m.role === 'assistant' && i === messages.length - 1
             "
-            @edit="
-              (messageSeq, text) => emit('edit-message', messageSeq, text)
-            "
+            @rewind="(messageSeq) => emit('rewind-message', messageSeq)"
             @fork="(messageSeq) => emit('fork-message', messageSeq)"
             @open-diff="(diff) => emit('open-diff', diff)"
             @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"

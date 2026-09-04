@@ -23,7 +23,7 @@ commands.allow = [
   "generate_canvas_image",
   "generate_canvas_video",
   "subscribe_canvas_events",
-  "edit_turn",
+  "rewind_turn",
   "compact_session",
   "list_queued_messages",
   "enqueue_message",

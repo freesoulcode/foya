@@ -2,8 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -22,7 +26,7 @@ import (
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
-func TestEditTurnRouteRequiresAndAcceptsEffectConfirmation(t *testing.T) {
+func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
 	bus := broker.New[event.Event]()
@@ -51,6 +55,12 @@ func TestEditTurnRouteRequiresAndAcceptsEffectConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	filePath := filepath.Join(t.TempDir(), "main.go")
+	beforeContent := []byte("old\n")
+	afterContent := []byte("new\n")
+	if err := os.WriteFile(filePath, afterContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	target := appendServerHistoryMessage(t, log, sess.ID, message.Message{
 		Role: message.RoleUser, Content: "old request",
@@ -67,58 +77,77 @@ func TestEditTurnRouteRequiresAndAcceptsEffectConfirmation(t *testing.T) {
 		Role:       message.RoleTool,
 		ToolCallID: "write-1",
 		Content:    "written",
-		Diff:       "@@ -0,0 +1 @@\n+new",
+		Diff:       "--- " + filePath + "\n+++ " + filePath + "\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+		FileChange: &message.FileChange{
+			Path:            filePath,
+			BeforeExists:    true,
+			BeforeMode:      0o644,
+			AfterMode:       0o644,
+			BeforeBlob:      rewindTestHash(beforeContent),
+			AfterBlob:       rewindTestHash(afterContent),
+			BeforeContent:   beforeContent,
+			AfterContent:    afterContent,
+			ContentCaptured: true,
+		},
 	})
 
 	handler := New(config.Config{}, be).Handler()
 	path := "/sessions/" + sess.ID + "/turns/" +
-		strconv.FormatUint(uint64(target), 10) + "/edit"
-	var preview protocol.EditTurnResponse
+		strconv.FormatUint(uint64(target), 10) + "/rewind"
+	var preview protocol.RewindTurnResponse
 	code := requestJSON(
 		t,
 		handler,
 		http.MethodPost,
 		path,
-		protocol.EditTurnRequest{Message: "new request"},
+		protocol.RewindTurnRequest{},
 		&preview,
 	)
 	if code != http.StatusOK ||
-		preview.Status != backend.EditConfirmationRequired ||
-		len(preview.Effects) != 1 {
+		preview.Status != backend.RewindConfirmationNeeded ||
+		preview.Message != "old request" ||
+		len(preview.Files) != 1 ||
+		preview.Files[0].Path != filepath.ToSlash(filePath) ||
+		preview.Files[0].Status != backend.RewindFileReady ||
+		preview.FileStateToken == "" {
 		t.Fatalf("preview status=%d body=%#v", code, preview)
 	}
 
-	var started protocol.EditTurnResponse
+	var applied protocol.RewindTurnResponse
 	code = requestJSON(
 		t,
 		handler,
 		http.MethodPost,
 		path,
-		protocol.EditTurnRequest{
-			Message:         "new request",
-			ConfirmEffects:  true,
-			ExpectedHeadSeq: preview.HeadSeq,
+		protocol.RewindTurnRequest{
+			Confirm:           true,
+			ExpectedHeadSeq:   preview.HeadSeq,
+			ExpectedFileState: preview.FileStateToken,
 		},
-		&started,
+		&applied,
 	)
-	if code != http.StatusOK || started.Status != backend.EditStarted {
-		t.Fatalf("confirmed status=%d body=%#v", code, started)
+	if code != http.StatusOK ||
+		applied.Status != backend.RewindApplied ||
+		applied.Message != "old request" {
+		t.Fatalf("confirmed status=%d body=%#v", code, applied)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		history, historyErr := be.History(context.Background(), sess.ID)
-		if historyErr != nil {
-			t.Fatal(historyErr)
-		}
-		if len(history) > 0 && history[0].Content == "new request" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("edited history not projected: %#v", history)
-		}
-		time.Sleep(time.Millisecond)
+	history, err := be.History(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(history) != 0 {
+		t.Fatalf("rewound history = %#v", history)
+	}
+	restored, err := os.ReadFile(filePath)
+	if err != nil || string(restored) != string(beforeContent) {
+		t.Fatalf("restored file = %q, err = %v", restored, err)
+	}
+}
+
+func rewindTestHash(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 func appendServerHistoryMessage(

@@ -4,6 +4,7 @@ package state
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/compaction"
 	"github.com/freesoulcode/foya/internal/event"
@@ -12,17 +13,44 @@ import (
 
 var (
 	ErrActiveUserMessageNotFound = errors.New("active user message not found")
-	ErrMessageUnchanged          = errors.New("edited message is unchanged")
-	ErrBranchChanged             = errors.New("active history changed after branch preview")
+	ErrHistoryChanged            = errors.New("active history changed after rewind preview")
+	ErrFileBlobNotFound          = errors.New("file blob not found")
 )
 
-// BranchResult reports a branch preview or committed history branch.
-type BranchResult struct {
-	Event     event.Event
-	Effects   []event.BranchEffect
-	HeadSeq   event.Seq
-	FirstUser bool
-	Applied   bool
+// RewindResult reports a rewind preview or committed history rewind.
+type RewindResult struct {
+	Event       event.Event
+	Message     message.Message
+	FileChanges []RewindFileChange
+	HeadSeq     event.Seq
+	FirstUser   bool
+	Applied     bool
+}
+
+// RewindFileChange is one completed write/edit operation to reverse.
+type RewindFileChange struct {
+	Change message.FileChange
+}
+
+type FileRewindBackup struct {
+	Path          string
+	BeforeExists  bool
+	BeforeMode    uint32
+	BeforeContent []byte
+	BeforeBlob    string
+	AfterExists   bool
+	AfterMode     uint32
+	AfterContent  []byte
+	AfterBlob     string
+}
+
+type FileRewindJournal struct {
+	ID              string
+	SessionID       string
+	TargetUserSeq   event.Seq
+	ExpectedHeadSeq event.Seq
+	State           string
+	Files           []FileRewindBackup
 }
 
 // Log is the minimal append and replay contract.
@@ -38,6 +66,17 @@ type Store interface {
 	History(ctx context.Context, session string) ([]message.Message, error)
 	ModelHistory(ctx context.Context, session string) ([]message.Message, error)
 	Events(ctx context.Context, session string) ([]event.Event, error)
+	FileBlob(ctx context.Context, hash string) ([]byte, error)
+	BeginFileRewind(
+		ctx context.Context,
+		session string,
+		targetUserSeq event.Seq,
+		expectedHeadSeq event.Seq,
+		files []FileRewindBackup,
+	) (string, error)
+	PendingFileRewinds(ctx context.Context) ([]FileRewindJournal, error)
+	FinishFileRewind(ctx context.Context, id string) error
+	PruneFileCheckpoints(ctx context.Context, now time.Time) error
 	UsageSummary(ctx context.Context, query UsageQuery) (UsageSummary, error)
 	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
 	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)
@@ -48,14 +87,15 @@ type Store interface {
 		throughSeq event.Seq,
 		messages []message.Message,
 	) ([]event.Event, error)
-	Branch(
+	Rewind(
 		ctx context.Context,
 		session string,
 		targetUserSeq event.Seq,
-		editedContent string,
-		allowEffects bool,
+		confirm bool,
 		expectedHeadSeq event.Seq,
-	) (BranchResult, error)
+		fileResults []event.RewindFileResult,
+		journalID string,
+	) (RewindResult, error)
 }
 
 // UsageQuery selects historical usage aggregates by local-date strings.
