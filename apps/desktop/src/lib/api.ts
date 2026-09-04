@@ -173,6 +173,9 @@ export interface RewindFile {
   key: string;
   path: string;
   status: "ready" | "mergeable" | "modified";
+  additions: number;
+  deletions: number;
+  diff: string;
 }
 
 export interface RewindTurnResult {
@@ -181,6 +184,12 @@ export interface RewindTurnResult {
   files?: RewindFile[];
   file_state_token: string;
   head_seq: number;
+}
+
+export interface FileReview {
+  files: RewindFile[];
+  file_state_token: string;
+  through_seq: number;
 }
 
 export interface UpdateQueuedMessagePatch {
@@ -1042,6 +1051,26 @@ export const api = {
       expectedFileState,
       forceFileKeys,
     }).then((r) => JSON.parse(r) as RewindTurnResult),
+
+  loadFileReview: (sessionId: string) =>
+    invoke<string>("load_file_review", { sessionId }).then(
+      (result) => JSON.parse(result) as FileReview
+    ),
+
+  resolveFileReview: (
+    sessionId: string,
+    action: "keep" | "undo",
+    expectedThroughSeq: number,
+    expectedFileState: string,
+    forceFileKeys: string[] = []
+  ) =>
+    invoke<string>("resolve_file_review", {
+      sessionId,
+      action,
+      expectedThroughSeq,
+      expectedFileState,
+      forceFileKeys,
+    }),
 
   compactSession: (sessionId: string) =>
     invoke<string>("compact_session", { sessionId }).then(

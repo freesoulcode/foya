@@ -127,7 +127,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 	return Result{
 		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已对 %s 应用 %d 处替换", path, applied)}},
-		Diff:       unifiedDiff(path, original, content),
+		Diff:       UnifiedDiff(path, original, content),
 		FileChange: change,
 	}, nil
 }

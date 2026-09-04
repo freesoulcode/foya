@@ -10,6 +10,7 @@ import {
   type ConnectionModelGroup,
   type QueuedMessage,
   type ContextUsage,
+  type FileReview,
   type RewindFile,
   type ProjectInfo,
   type AgentRunSnapshot,
@@ -92,6 +93,7 @@ const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
 const agentBudgetBySession = ref<Record<string, AgentBudget>>({});
 const workflowsBySession = ref<Record<string, WorkflowRecord | null>>({});
 const backgroundCommandsBySession = ref<Record<string, BackgroundCommand[]>>({});
+const fileReviewsBySession = ref<Record<string, PendingFileReview>>({});
 
 // 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
 export interface PendingApproval {
@@ -120,6 +122,13 @@ export interface PendingHistoryRewind {
   error?: string;
 }
 const pendingHistoryRewind = ref<PendingHistoryRewind | null>(null);
+
+export interface PendingFileReview extends FileReview {
+  forceFileKeys: string[];
+  submitting: boolean;
+  error: string;
+}
+
 const composerRestore = ref<{ sessionId: string; text: string; nonce: number } | null>(null);
 let composerRestoreNonce = 0;
 
@@ -132,6 +141,9 @@ const activeUsage = computed<ContextUsage | undefined>(
 );
 const activeBackgroundCommands = computed<BackgroundCommand[]>(
   () => backgroundCommandsBySession.value[activeId.value] ?? []
+);
+const activeFileReview = computed<PendingFileReview | undefined>(
+  () => fileReviewsBySession.value[activeId.value]
 );
 const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value));
 const isDraft = computed(() => activeId.value === "");
@@ -300,6 +312,11 @@ function handleEvent(sessionId: string, data: string) {
       if (index >= 0) bucket.splice(index);
       streamingIdx[sessionId] = -1;
       delete usageBySession.value[sessionId];
+      void refreshFileReview(sessionId);
+      break;
+    }
+    case "file_review_resolved": {
+      delete fileReviewsBySession.value[sessionId];
       break;
     }
     case "tool_begin": {
@@ -498,6 +515,7 @@ function handleEvent(sessionId: string, data: string) {
       streamingIdx[sessionId] = -1;
       delete runningSessions.value[sessionId];
       if (sessionId === activeId.value) streaming.value = false;
+      void refreshFileReview(sessionId);
       break;
     }
     case "queue_updated": {
@@ -592,6 +610,29 @@ async function subscribe(sessionId: string) {
   } catch (error) {
     subscribed.delete(sessionId);
     throw error;
+  }
+}
+
+async function refreshFileReview(sessionId: string) {
+  try {
+    const review = await api.loadFileReview(sessionId);
+    if (deletedSessions.has(sessionId)) return;
+    const existing = fileReviewsBySession.value[sessionId];
+    const availableKeys = new Set(
+      review.files
+        .filter((file) => file.status === "modified")
+        .map((file) => file.key)
+    );
+    fileReviewsBySession.value[sessionId] = {
+      ...review,
+      forceFileKeys: (existing?.forceFileKeys ?? []).filter((key) =>
+        availableKeys.has(key)
+      ),
+      submitting: false,
+      error: "",
+    };
+  } catch (error) {
+    console.error("加载待审查文件失败:", error);
   }
 }
 
@@ -814,13 +855,29 @@ async function select(id: string) {
     messagesBySession.value[id] = normalizeHistory(history);
   }
   await subscribe(id);
-  const [queued, usage, agentRuns, agentBudget, workflow, backgroundCommands] = await Promise.all([
+  const [
+    queued,
+    usage,
+    agentRuns,
+    agentBudget,
+    workflow,
+    backgroundCommands,
+    fileReview,
+  ] = await Promise.all([
     api.listQueuedMessages(id),
     api.loadUsage(id),
     api.listAgentRuns(id),
     api.loadAgentBudget(id),
     api.getWorkflow(id),
     api.listBackgroundCommands(id),
+    api.loadFileReview(id).catch((error) => {
+      console.error("加载待审查文件失败:", error);
+      return {
+        files: [],
+        file_state_token: "",
+        through_seq: 0,
+      } satisfies FileReview;
+    }),
   ]);
   queuedBySession.value[id] = queued;
   if (usage) usageBySession.value[id] = usage;
@@ -828,6 +885,12 @@ async function select(id: string) {
   agentBudgetBySession.value[id] = agentBudget;
   workflowsBySession.value[id] = workflow;
   backgroundCommandsBySession.value[id] = backgroundCommands;
+  fileReviewsBySession.value[id] = {
+    ...fileReview,
+    forceFileKeys: [],
+    submitting: false,
+    error: "",
+  };
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
@@ -879,6 +942,7 @@ function removeSession(id: string) {
   delete runningSessions.value[id];
   delete compactingSessions.value[id];
   delete backgroundCommandsBySession.value[id];
+  delete fileReviewsBySession.value[id];
   // 清理该会话的待处理审批。
   for (const [aid, a] of Object.entries(pendingApprovals.value)) {
     if (a.session === id) delete pendingApprovals.value[aid];
@@ -1202,6 +1266,49 @@ function consumeComposerRestore(nonce: number) {
   }
 }
 
+function toggleFileReviewForceFile(key: string) {
+  const review = activeFileReview.value;
+  if (!review || review.submitting) return;
+  const selected = new Set(review.forceFileKeys);
+  if (selected.has(key)) selected.delete(key);
+  else selected.add(key);
+  review.forceFileKeys = [...selected];
+}
+
+async function resolveActiveFileReview(action: "keep" | "undo") {
+  const sessionId = activeId.value;
+  const review = activeFileReview.value;
+  if (!sessionId || !review || review.submitting || review.files.length === 0) return;
+
+  review.submitting = true;
+  review.error = "";
+  try {
+    await api.resolveFileReview(
+      sessionId,
+      action,
+      review.through_seq,
+      review.file_state_token,
+      action === "undo" ? review.forceFileKeys : []
+    );
+    delete fileReviewsBySession.value[sessionId];
+  } catch (error) {
+    await refreshFileReview(sessionId);
+    const current = fileReviewsBySession.value[sessionId];
+    if (current) {
+      current.submitting = false;
+      current.error = `处理失败：${String(error)}`;
+    }
+  }
+}
+
+function keepAllFileChanges() {
+  return resolveActiveFileReview("keep");
+}
+
+function undoAllFileChanges() {
+  return resolveActiveFileReview("undo");
+}
+
 async function editQueuedMessage(messageId: string, text: string) {
   const id = activeId.value;
   if (!id || !text.trim()) return;
@@ -1279,6 +1386,7 @@ export function useKernel() {
     messages: activeMessages,
     queuedMessages: activeQueuedMessages,
     backgroundCommands: activeBackgroundCommands,
+    fileReview: activeFileReview,
     contextUsage: activeUsage,
     agentRunsBySession,
     agentBudgetBySession,
@@ -1297,6 +1405,9 @@ export function useKernel() {
     cancelHistoryRewind,
     toggleHistoryRewindForceFile,
     consumeComposerRestore,
+    keepAllFileChanges,
+    undoAllFileChanges,
+    toggleFileReviewForceFile,
     cancelTurn,
     cancelTool,
     backgroundTool,

@@ -16,6 +16,7 @@ import (
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/message"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/tool"
 )
 
 const maxThreeWayMergeCells = 4_000_000
@@ -36,6 +37,9 @@ type fileRewindCandidate struct {
 	key       string
 	path      string
 	status    string
+	additions int
+	deletions int
+	diff      string
 	current   fileSnapshot
 	safePlan  fileRewindPlan
 	forcePlan fileRewindPlan
@@ -68,9 +72,12 @@ func (b *Backend) displayRewindFiles(
 			}
 		}
 		display = append(display, RewindFilePreview{
-			Key:    candidate.key,
-			Path:   filepath.ToSlash(path),
-			Status: candidate.status,
+			Key:       candidate.key,
+			Path:      filepath.ToSlash(path),
+			Status:    candidate.status,
+			Additions: candidate.additions,
+			Deletions: candidate.deletions,
+			Diff:      candidate.diff,
 		})
 	}
 	return display
@@ -98,18 +105,15 @@ func inspectFileRewind(
 	var token strings.Builder
 	for _, path := range order {
 		items := grouped[path]
-		if err := validateFileChangeChain(items); err != nil {
-			return nil, "", err
-		}
 		current, err := readFileSnapshot(path)
 		if err != nil {
 			return nil, "", err
 		}
-		target, err := beforeFileSnapshot(ctx, blobs, items[0].Change)
+		forceTarget, err := beforeFileSnapshot(ctx, blobs, items[0].Change)
 		if err != nil {
 			return nil, "", err
 		}
-		after, err := afterFileSnapshot(ctx, blobs, items[len(items)-1].Change)
+		recordedAfter, err := afterFileSnapshot(ctx, blobs, items[len(items)-1].Change)
 		if err != nil {
 			return nil, "", err
 		}
@@ -122,21 +126,49 @@ func inspectFileRewind(
 			forcePlan: fileRewindPlan{
 				path:   path,
 				before: current,
-				after:  target,
+				after:  forceTarget,
 			},
 		}
-		switch {
-		case snapshotsEqual(current, after):
+		candidate.diff = tool.UnifiedDiff(
+			path,
+			string(forceTarget.content),
+			string(recordedAfter.content),
+		)
+		candidate.additions, candidate.deletions = unifiedDiffStats(candidate.diff)
+
+		target := current
+		mergedAny := false
+		canRestore := true
+		for index := len(items) - 1; index >= 0; index-- {
+			before, err := beforeFileSnapshot(ctx, blobs, items[index].Change)
+			if err != nil {
+				return nil, "", err
+			}
+			after, err := afterFileSnapshot(ctx, blobs, items[index].Change)
+			if err != nil {
+				return nil, "", err
+			}
+			if snapshotsEqual(target, after) {
+				target = before
+				continue
+			}
+			merged, ok := threeWayRestore(after, target, before)
+			if !ok {
+				canRestore = false
+				break
+			}
+			target = merged
+			mergedAny = true
+		}
+		if canRestore {
 			candidate.status = RewindFileReady
-			candidate.safePlan = candidate.forcePlan
-		default:
-			if merged, ok := threeWayRestore(after, current, target); ok {
+			if mergedAny {
 				candidate.status = RewindFileMergeable
-				candidate.safePlan = fileRewindPlan{
-					path:   path,
-					before: current,
-					after:  merged,
-				}
+			}
+			candidate.safePlan = fileRewindPlan{
+				path:   path,
+				before: current,
+				after:  target,
 			}
 		}
 		candidates = append(candidates, candidate)
@@ -153,21 +185,17 @@ func inspectFileRewind(
 	return candidates, contentHash([]byte(token.String())), nil
 }
 
-func validateFileChangeChain(changes []state.RewindFileChange) error {
-	for i, item := range changes {
-		change := item.Change
-		if change.AfterBlob == "" ||
-			change.BeforeExists && change.BeforeBlob == "" {
-			return fmt.Errorf("%w: incomplete file change for %s", ErrFileRewindConflict, change.Path)
-		}
-		if i > 0 {
-			previous := changes[i-1].Change
-			if !change.BeforeExists || change.BeforeBlob != previous.AfterBlob {
-				return fmt.Errorf("%w: discontinuous file history for %s", ErrFileRewindConflict, change.Path)
-			}
+func unifiedDiffStats(diff string) (additions int, deletions int) {
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
 		}
 	}
-	return nil
+	return additions, deletions
 }
 
 func beforeFileSnapshot(

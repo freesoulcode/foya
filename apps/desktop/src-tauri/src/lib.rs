@@ -1570,6 +1570,38 @@ async fn rewind_turn(
     .await
 }
 
+/// 读取当前会话尚未处理的 Agent 文件变更。
+#[cfg(unix)]
+#[tauri::command]
+async fn load_file_review(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/file-review"), None).await
+}
+
+/// 保留或撤销当前会话尚未处理的 Agent 文件变更。
+#[cfg(unix)]
+#[tauri::command]
+async fn resolve_file_review(
+    session_id: String,
+    action: String,
+    expected_through_seq: u64,
+    expected_file_state: String,
+    force_file_keys: Vec<String>,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "action": action,
+        "expected_through_seq": expected_through_seq,
+        "expected_file_state": expected_file_state,
+        "force_file_keys": force_file_keys,
+    })
+    .to_string();
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/file-review"),
+        Some(&body),
+    )
+    .await
+}
+
 /// 手动压缩会话的已完成历史。
 #[cfg(unix)]
 #[tauri::command]
@@ -3092,6 +3124,24 @@ fn rewind_turn(
 
 #[cfg(not(unix))]
 #[tauri::command]
+fn load_file_review(_session_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
+fn resolve_file_review(
+    _session_id: String,
+    _action: String,
+    _expected_through_seq: u64,
+    _expected_file_state: String,
+    _force_file_keys: Vec<String>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现 (脚手架阶段)".into())
+}
+
+#[cfg(not(unix))]
+#[tauri::command]
 fn compact_session(_session_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现 (脚手架阶段)".into())
 }
@@ -3741,6 +3791,8 @@ pub fn run() {
             generate_canvas_video,
             subscribe_canvas_events,
             rewind_turn,
+            load_file_review,
+            resolve_file_review,
             compact_session,
             list_queued_messages,
             enqueue_message,

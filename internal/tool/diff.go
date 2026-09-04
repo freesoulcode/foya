@@ -39,11 +39,11 @@ func contentSHA256(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// unifiedDiff 生成 old→new 的统一 diff 文本(供 UI 行内展示)。
+// UnifiedDiff 生成 old→new 的统一 diff 文本(供 UI 行内展示)。
 // 采用行级 LCS 计算最小编辑,输出带 @@ hunk 头、以 ' '/'+'/'-' 前缀的行,
 // 与常见 unified diff 兼容,便于前端按前缀着色。path 用于 ---/+++ 文件头。
 // 无变化时返回空串。
-func unifiedDiff(path, oldText, newText string) string {
+func UnifiedDiff(path, oldText, newText string) string {
 	if oldText == newText {
 		return ""
 	}

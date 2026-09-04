@@ -88,9 +88,12 @@ type RewindTurnRequest struct {
 }
 
 type RewindFilePreview struct {
-	Key    string `json:"key"`
-	Path   string `json:"path"`
-	Status string `json:"status"` // ready / mergeable / modified
+	Key       string `json:"key"`
+	Path      string `json:"path"`
+	Status    string `json:"status"` // ready / mergeable / modified
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Diff      string `json:"diff"`
 }
 
 // RewindTurnResponse either asks for confirmation or reports a completed rewind.
@@ -100,6 +103,19 @@ type RewindTurnResponse struct {
 	Files          []RewindFilePreview `json:"files,omitempty"`
 	FileStateToken string              `json:"file_state_token"`
 	HeadSeq        uint64              `json:"head_seq"`
+}
+
+type FileReviewResponse struct {
+	Files          []RewindFilePreview `json:"files"`
+	FileStateToken string              `json:"file_state_token"`
+	ThroughSeq     uint64              `json:"through_seq"`
+}
+
+type ResolveFileReviewRequest struct {
+	Action             string   `json:"action"` // keep / undo
+	ExpectedThroughSeq uint64   `json:"expected_through_seq"`
+	ExpectedFileState  string   `json:"expected_file_state"`
+	ForceFileKeys      []string `json:"force_file_keys,omitempty"`
 }
 
 // QueueMessageRequest 显式向待发送队列追加消息。

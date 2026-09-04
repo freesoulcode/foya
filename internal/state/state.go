@@ -15,6 +15,8 @@ var (
 	ErrActiveUserMessageNotFound = errors.New("active user message not found")
 	ErrHistoryChanged            = errors.New("active history changed after rewind preview")
 	ErrFileBlobNotFound          = errors.New("file blob not found")
+	ErrFileReviewChanged         = errors.New("pending file changes changed after preview")
+	ErrNoPendingFileChanges      = errors.New("no pending file changes")
 )
 
 // RewindResult reports a rewind preview or committed history rewind.
@@ -29,7 +31,13 @@ type RewindResult struct {
 
 // RewindFileChange is one completed write/edit operation to reverse.
 type RewindFileChange struct {
-	Change message.FileChange
+	EventSeq event.Seq
+	Change   message.FileChange
+}
+
+type FileReview struct {
+	Changes    []RewindFileChange
+	ThroughSeq event.Seq
 }
 
 type FileRewindBackup struct {
@@ -77,6 +85,15 @@ type Store interface {
 	PendingFileRewinds(ctx context.Context) ([]FileRewindJournal, error)
 	FinishFileRewind(ctx context.Context, id string) error
 	PruneFileCheckpoints(ctx context.Context, now time.Time) error
+	PendingFileReview(ctx context.Context, session string) (FileReview, error)
+	ResolveFileReview(
+		ctx context.Context,
+		session string,
+		expectedThroughSeq event.Seq,
+		action string,
+		fileResults []event.RewindFileResult,
+		journalID string,
+	) (event.Event, error)
 	UsageSummary(ctx context.Context, query UsageQuery) (UsageSummary, error)
 	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
 	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)

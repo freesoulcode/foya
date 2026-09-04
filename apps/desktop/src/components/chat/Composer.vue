@@ -38,14 +38,12 @@ import {
   type ReasoningEffort,
   type ContextUsage as ContextUsageData,
   type CommandInfo,
-  type QueuedMessage,
   type ProjectInfo,
   type BrowserElementSelection,
   api,
 } from "@/lib/api";
 import ContextUsage from "./ContextUsage.vue";
 import InlineComposerEditor from "./InlineComposerEditor.vue";
-import QueuedMessages from "./QueuedMessages.vue";
 
 interface RestoreTextSignal {
   sessionId: string;
@@ -66,7 +64,6 @@ const props = withDefaults(
     connections?: ConnectionModelGroup[];
     modelsLoading?: boolean;
     modelsError?: string;
-    queuedMessages?: QueuedMessage[];
     contextUsage?: ContextUsageData;
     contextWindow?: number;
     hasSession?: boolean;
@@ -88,7 +85,6 @@ const props = withDefaults(
     connections: () => [],
     modelsLoading: false,
     modelsError: "",
-    queuedMessages: () => [],
     contextUsage: undefined,
     contextWindow: 0,
     hasSession: false,
@@ -110,10 +106,6 @@ const emit = defineEmits<{
   ): void;
   (e: "command", name: string, args: string): void;
   (e: "stop"): void;
-  (e: "edit-queued", id: string, text: string): void;
-  (e: "reorder-queued", id: string, position: number): void;
-  (e: "dispatch-queued", id: string): void;
-  (e: "delete-queued", id: string): void;
   (
     e: "update:model-config",
     value: { connectionID: string; model: string; reasoningEffort: ReasoningEffort }
@@ -539,15 +531,6 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <div class="shrink-0 px-4 pb-4 pt-2">
     <div class="mx-auto max-w-3xl">
-      <QueuedMessages
-        :items="queuedMessages"
-        :streaming="streaming"
-        @edit="(id, text) => emit('edit-queued', id, text)"
-        @reorder="(id, position) => emit('reorder-queued', id, position)"
-        @dispatch="(id) => emit('dispatch-queued', id)"
-        @delete="(id) => emit('delete-queued', id)"
-      />
-
       <!-- 输入卡片 -->
       <div
         class="composer-card relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"

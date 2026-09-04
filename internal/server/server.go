@@ -114,6 +114,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/agents/{run_id}/cancel", s.handleCancelAgent)
 	s.mux.HandleFunc("GET /sessions/{id}/agent-budget", s.handleAgentBudget)
 	s.mux.HandleFunc("GET /sessions/{id}/usage", s.handleUsage)
+	s.mux.HandleFunc("GET /sessions/{id}/file-review", s.handleGetFileReview)
+	s.mux.HandleFunc("POST /sessions/{id}/file-review", s.handleResolveFileReview)
 	s.mux.HandleFunc("POST /sessions/{id}/turns", s.handleSubmitTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/turns/{message_seq}/rewind", s.handleRewindTurn)
 	s.mux.HandleFunc("POST /sessions/{id}/compact", s.handleCompactSession)
@@ -2040,6 +2042,87 @@ func (s *Server) handleUsageStatistics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statistics)
 }
 
+func (s *Server) handleGetFileReview(w http.ResponseWriter, r *http.Request) {
+	review, err := s.backend.PendingFileReview(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, "file_review_failed", err.Error())
+		}
+		return
+	}
+	files := make([]protocol.RewindFilePreview, 0, len(review.Files))
+	for _, file := range review.Files {
+		files = append(files, protocol.RewindFilePreview{
+			Key:       file.Key,
+			Path:      file.Path,
+			Status:    file.Status,
+			Additions: file.Additions,
+			Deletions: file.Deletions,
+			Diff:      file.Diff,
+		})
+	}
+	writeJSON(w, http.StatusOK, protocol.FileReviewResponse{
+		Files:          files,
+		FileStateToken: review.FileStateToken,
+		ThroughSeq:     uint64(review.ThroughSeq),
+	})
+}
+
+func (s *Server) handleResolveFileReview(w http.ResponseWriter, r *http.Request) {
+	var req protocol.ResolveFileReviewRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	sessionID := r.PathValue("id")
+	var err error
+	switch req.Action {
+	case "keep":
+		err = s.backend.KeepFileChanges(
+			r.Context(),
+			sessionID,
+			event.Seq(req.ExpectedThroughSeq),
+		)
+	case "undo":
+		err = s.backend.UndoFileChanges(
+			r.Context(),
+			sessionID,
+			event.Seq(req.ExpectedThroughSeq),
+			req.ExpectedFileState,
+			req.ForceFileKeys,
+		)
+	default:
+		writeErr(w, http.StatusBadRequest, "invalid_action", "file review action must be keep or undo")
+		return
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrNotFound):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, backend.ErrNoPendingFileChanges):
+			writeErr(w, http.StatusConflict, "no_pending_file_changes", err.Error())
+		case errors.Is(err, backend.ErrFileReviewChanged):
+			writeErr(w, http.StatusConflict, "file_review_changed", err.Error())
+		case errors.Is(err, backend.ErrFileStateChanged):
+			writeErr(w, http.StatusConflict, "file_state_changed", err.Error())
+		case errors.Is(err, backend.ErrFileRewindConflict):
+			writeErr(w, http.StatusConflict, "file_changed", err.Error())
+		case errors.Is(err, backend.ErrSessionBusy):
+			writeErr(w, http.StatusConflict, "session_busy", err.Error())
+		case errors.Is(err, backend.ErrSessionQueueNotEmpty):
+			writeErr(w, http.StatusConflict, "queue_not_empty", err.Error())
+		default:
+			writeErr(w, http.StatusInternalServerError, "file_review_failed", err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
 // handleSubmitTurn 原子提交消息:空闲时立即启动,运行时进入 FIFO 队列。
 // Backend 自己持有后台 runner,请求返回不影响回合生命周期。
 func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
@@ -2118,9 +2201,12 @@ func (s *Server) handleRewindTurn(w http.ResponseWriter, r *http.Request) {
 	files := make([]protocol.RewindFilePreview, 0, len(result.Files))
 	for _, file := range result.Files {
 		files = append(files, protocol.RewindFilePreview{
-			Key:    file.Key,
-			Path:   file.Path,
-			Status: file.Status,
+			Key:       file.Key,
+			Path:      file.Path,
+			Status:    file.Status,
+			Additions: file.Additions,
+			Deletions: file.Deletions,
+			Diff:      file.Diff,
 		})
 	}
 	writeJSON(w, http.StatusOK, protocol.RewindTurnResponse{

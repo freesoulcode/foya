@@ -34,6 +34,7 @@ const (
 	KindCompactionCompleted      Kind = "compaction_completed"
 	KindCompactionFailed         Kind = "compaction_failed"
 	KindHistoryRewound           Kind = "history_rewound"
+	KindFileReviewResolved       Kind = "file_review_resolved"
 	KindMessageImported          Kind = "message_imported"
 	KindSessionForked            Kind = "session_forked"
 	KindTurnStarted              Kind = "turn_started"
@@ -76,6 +77,18 @@ type HistoryRewound struct {
 	TargetUserSeq Seq                `json:"target_user_seq"`
 	Files         []RewindFileResult `json:"files,omitempty"`
 }
+
+// FileReviewResolved records one explicit keep-all or undo-all decision.
+type FileReviewResolved struct {
+	Action     string             `json:"action"` // kept / undone
+	ThroughSeq Seq                `json:"through_seq"`
+	Files      []RewindFileResult `json:"files,omitempty"`
+}
+
+const (
+	FileReviewKept   = "kept"
+	FileReviewUndone = "undone"
+)
 
 // SessionForked records that a new session imported the active history of an
 // existing session. The imported messages are copied as independent events.

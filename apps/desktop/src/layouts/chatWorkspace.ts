@@ -20,6 +20,7 @@ type KernelBindings = Pick<
   | "messages"
   | "queuedMessages"
   | "backgroundCommands"
+  | "fileReview"
   | "connectionModels"
   | "modelsLoading"
   | "modelsError"
@@ -30,6 +31,9 @@ type KernelBindings = Pick<
   | "composerRestore"
   | "rewindSentMessage"
   | "consumeComposerRestore"
+  | "keepAllFileChanges"
+  | "undoAllFileChanges"
+  | "toggleFileReviewForceFile"
   | "forkSession"
   | "cancelTool"
   | "backgroundTool"
@@ -66,6 +70,7 @@ export interface ChatWorkspaceContext extends KernelBindings {
   pendingBrowserElements: Ref<BrowserElementSelection[]>;
   onTurnSelect: (index: number) => void;
   onOpenDiff: (diff: string) => void;
+  onOpenReviewFile: (path: string, diff: string) => void;
   onViewToolInWorkbar: (toolCallId: string) => Promise<void>;
   onOpenLink: (url: string) => Promise<void>;
   onOpenBackgroundCommand: (command: BackgroundCommand) => void;

@@ -121,6 +121,7 @@ func loadRewindFileChanges(
 	}
 	rows, err := queryer.QueryContext(ctx, `
 		SELECT
+			f.event_seq,
 			f.path,
 			f.before_exists,
 			f.before_mode,
@@ -142,7 +143,9 @@ func loadRewindFileChanges(
 	changes := make([]RewindFileChange, 0)
 	for rows.Next() {
 		var change RewindFileChange
+		var rawSeq int64
 		if err := rows.Scan(
+			&rawSeq,
 			&change.Change.Path,
 			&change.Change.BeforeExists,
 			&change.Change.BeforeMode,
@@ -152,12 +155,65 @@ func loadRewindFileChanges(
 		); err != nil {
 			return nil, fmt.Errorf("scan rewind file change: %w", err)
 		}
+		change.EventSeq = event.Seq(rawSeq)
 		changes = append(changes, change)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate rewind file changes: %w", err)
 	}
 	return changes, nil
+}
+
+func (s *store) PendingFileReview(
+	ctx context.Context,
+	session string,
+) (FileReview, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			f.event_seq,
+			f.path,
+			f.before_exists,
+			f.before_mode,
+			f.after_mode,
+			COALESCE(f.before_blob_hash, ''),
+			f.after_blob_hash
+		FROM file_changes AS f
+		JOIN message_projection AS p ON p.event_seq = f.event_seq
+		WHERE f.session_id = ?
+		  AND f.review_state = 'pending'
+		  AND p.active = 1
+		ORDER BY f.event_seq
+	`, session)
+	if err != nil {
+		return FileReview{}, fmt.Errorf("read pending file review: %w", err)
+	}
+	defer rows.Close()
+
+	review := FileReview{Changes: make([]RewindFileChange, 0)}
+	for rows.Next() {
+		var (
+			change RewindFileChange
+			rawSeq int64
+		)
+		if err := rows.Scan(
+			&rawSeq,
+			&change.Change.Path,
+			&change.Change.BeforeExists,
+			&change.Change.BeforeMode,
+			&change.Change.AfterMode,
+			&change.Change.BeforeBlob,
+			&change.Change.AfterBlob,
+		); err != nil {
+			return FileReview{}, fmt.Errorf("scan pending file review: %w", err)
+		}
+		change.EventSeq = event.Seq(rawSeq)
+		review.Changes = append(review.Changes, change)
+		review.ThroughSeq = change.EventSeq
+	}
+	if err := rows.Err(); err != nil {
+		return FileReview{}, fmt.Errorf("iterate pending file review: %w", err)
+	}
+	return review, nil
 }
 
 func pruneFileChangesTx(

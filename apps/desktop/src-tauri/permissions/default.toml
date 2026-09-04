@@ -24,6 +24,8 @@ commands.allow = [
   "generate_canvas_video",
   "subscribe_canvas_events",
   "rewind_turn",
+  "load_file_review",
+  "resolve_file_review",
   "compact_session",
   "list_queued_messages",
   "enqueue_message",

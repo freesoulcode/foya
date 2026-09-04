@@ -106,7 +106,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 	return Result{
 		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
-		Diff:       unifiedDiff(path, string(oldData), params.Content),
+		Diff:       UnifiedDiff(path, string(oldData), params.Content),
 		FileChange: change,
 	}, nil
 }

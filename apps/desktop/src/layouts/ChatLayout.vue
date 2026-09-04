@@ -55,6 +55,7 @@ const {
   messages,
   queuedMessages,
   backgroundCommands,
+  fileReview,
   contextUsage,
   pendingApprovals,
   pendingQuestions,
@@ -67,6 +68,9 @@ const {
   ensureSession,
   rewindSentMessage,
   consumeComposerRestore,
+  keepAllFileChanges,
+  undoAllFileChanges,
+  toggleFileReviewForceFile,
   cancelTurn,
   cancelTool,
   backgroundTool,
@@ -208,6 +212,11 @@ function onOpenDiff(diff: string) {
   if (!projectPath.value) return;
   const path = diffFilePath(diff, projectPath.value);
   if (path) openWorkbarFile(projectPath.value, path, "diff", diff);
+}
+
+function onOpenReviewFile(path: string, diff: string) {
+  if (!projectPath.value || path.startsWith("/")) return;
+  openWorkbarFile(projectPath.value, path, "diff", diff);
 }
 
 function onOpenBackgroundCommand(command: BackgroundCommand) {
@@ -414,6 +423,7 @@ const viewContext: ChatWorkspaceContext = {
   messages,
   queuedMessages,
   backgroundCommands,
+  fileReview,
   connectionModels,
   modelsLoading,
   modelsError,
@@ -444,8 +454,12 @@ const viewContext: ChatWorkspaceContext = {
   onTurnSelect,
   rewindSentMessage,
   consumeComposerRestore,
+  keepAllFileChanges,
+  undoAllFileChanges,
+  toggleFileReviewForceFile,
   forkSession,
   onOpenDiff,
+  onOpenReviewFile,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,

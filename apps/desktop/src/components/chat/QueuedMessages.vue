@@ -4,8 +4,6 @@ import {
   CheckIcon,
   GripVerticalIcon,
   ImageIcon,
-  ListOrderedIcon,
-  LoaderCircleIcon,
   MousePointer2Icon,
   PencilIcon,
   SendIcon,
@@ -133,63 +131,29 @@ watch(
 </script>
 
 <template>
-  <Transition
+  <TransitionGroup
+    tag="ol"
+    class="no-scrollbar max-h-72 divide-y divide-border/60 overflow-y-auto"
     enter-active-class="transition duration-200 ease-out"
-    enter-from-class="translate-y-1.5 opacity-0"
+    enter-from-class="-translate-y-1 opacity-0"
     enter-to-class="translate-y-0 opacity-100"
     leave-active-class="transition duration-150 ease-in"
-    leave-from-class="translate-y-0 opacity-100"
-    leave-to-class="translate-y-1.5 opacity-0"
+    leave-from-class="opacity-100"
+    leave-to-class="translate-x-2 opacity-0"
+    move-class="transition-transform duration-200"
   >
-    <section
-      v-if="items.length > 0"
-      class="mb-1.5 overflow-hidden rounded-lg border border-border/80 bg-card shadow-xs"
-      aria-label="待发送消息"
+    <li
+      v-for="(item, index) in items"
+      :key="item.id"
+      class="group relative flex min-w-0 flex-wrap items-start gap-1.5 px-2 py-1.5 transition-colors hover:bg-muted/30 sm:flex-nowrap"
+      :class="[
+        index === 0 ? 'bg-muted/20' : '',
+        draggingId === item.id ? 'opacity-40' : '',
+        dragOverId === item.id ? 'bg-primary/5' : '',
+      ]"
+      @dragover.prevent="markDragTarget($event, item)"
+      @drop.prevent="dropAt($event, index)"
     >
-      <div
-        class="flex h-8 items-center justify-between border-b border-border/70 bg-muted/25 px-2.5"
-      >
-        <div class="flex min-w-0 items-center gap-1.5">
-          <ListOrderedIcon class="size-3 shrink-0 text-muted-foreground" />
-          <span class="text-[11px] font-medium text-foreground">待发送</span>
-          <span class="text-[11px] tabular-nums text-muted-foreground">
-            {{ items.length }}
-          </span>
-        </div>
-        <div class="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
-          <LoaderCircleIcon v-if="streaming" class="size-3 animate-spin text-primary" />
-          <span
-            v-else
-            class="size-1.5 rounded-full bg-muted-foreground/45"
-            aria-hidden="true"
-          />
-          <span>{{ streaming ? "等待中" : "已暂停" }}</span>
-        </div>
-      </div>
-
-      <TransitionGroup
-        tag="ol"
-        class="no-scrollbar max-h-44 divide-y divide-border/60 overflow-y-auto"
-        enter-active-class="transition duration-200 ease-out"
-        enter-from-class="-translate-y-1 opacity-0"
-        enter-to-class="translate-y-0 opacity-100"
-        leave-active-class="transition duration-150 ease-in"
-        leave-from-class="opacity-100"
-        leave-to-class="translate-x-2 opacity-0"
-        move-class="transition-transform duration-200"
-      >
-        <li
-          v-for="(item, index) in items"
-          :key="item.id"
-          class="group relative flex min-w-0 flex-wrap items-start gap-1.5 px-2 py-1.5 transition-colors hover:bg-muted/30 sm:flex-nowrap"
-          :class="[
-            index === 0 ? 'bg-muted/20' : '',
-            draggingId === item.id ? 'opacity-40' : '',
-            dragOverId === item.id ? 'bg-primary/5' : '',
-          ]"
-          @dragover.prevent="markDragTarget($event, item)"
-          @drop.prevent="dropAt($event, index)"
-        >
           <span
             v-if="dragOverId === item.id"
             class="absolute inset-x-2 h-0.5 bg-primary"
@@ -301,8 +265,6 @@ watch(
               <Trash2Icon class="size-3.5" />
             </button>
           </div>
-        </li>
-      </TransitionGroup>
-    </section>
-  </Transition>
+    </li>
+  </TransitionGroup>
 </template>

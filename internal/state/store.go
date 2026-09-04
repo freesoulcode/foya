@@ -445,15 +445,19 @@ func applyProjectionTx(
 			if item.FileChange.BeforeExists {
 				beforeBlob = item.FileChange.BeforeBlob
 			}
+			reviewState := "pending"
+			if ev.Kind == event.KindMessageImported {
+				reviewState = event.FileReviewKept
+			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO file_changes(
 					event_seq, session_id, path, before_exists, before_mode, after_mode,
-					before_blob_hash, after_blob_hash
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+					before_blob_hash, after_blob_hash, review_state
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`, int64(ev.Seq), ev.Session, item.FileChange.Path,
 				item.FileChange.BeforeExists, item.FileChange.BeforeMode,
 				item.FileChange.AfterMode, beforeBlob,
-				item.FileChange.AfterBlob); err != nil {
+				item.FileChange.AfterBlob, reviewState); err != nil {
 				return fmt.Errorf("project file change: %w", err)
 			}
 			if err := pruneFileChangesTx(ctx, tx, ev.Session, time.Now()); err != nil {
@@ -482,6 +486,25 @@ func applyProjectionTx(
 			DELETE FROM compaction_checkpoints WHERE session_id = ?
 		`, ev.Session); err != nil {
 			return fmt.Errorf("invalidate compaction checkpoint: %w", err)
+		}
+	case event.KindFileReviewResolved:
+		resolved, ok := fileReviewResolvedFromPayload(ev.Payload)
+		if !ok {
+			return errors.New("file_review_resolved payload is invalid")
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE file_changes
+			SET review_state = ?
+			WHERE session_id = ?
+			  AND review_state = 'pending'
+			  AND event_seq <= ?
+			  AND event_seq IN (
+				SELECT event_seq
+				FROM message_projection
+				WHERE session_id = ? AND active = 1
+			  )
+		`, resolved.Action, ev.Session, int64(resolved.ThroughSeq), ev.Session); err != nil {
+			return fmt.Errorf("project file review resolution: %w", err)
 		}
 	case event.KindUsageUpdated:
 		usage, ok := usageFromPayload(ev.Payload)

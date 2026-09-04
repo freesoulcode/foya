@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import {
   CheckIcon,
-  ChevronDownIcon,
   CircleIcon,
   LoaderCircleIcon,
 } from "@lucide/vue";
@@ -11,21 +10,17 @@ import { cn } from "@/lib/utils";
 
 const props = defineProps<{
   tasks?: SessionTask[];
-  running?: boolean;
 }>();
 
-const expanded = ref(false);
 const visibleTasks = computed(() => props.tasks ?? []);
-const incompleteTasks = computed(() =>
-  visibleTasks.value.filter((task) => task.status !== "completed")
-);
 const completed = computed(
   () => visibleTasks.value.filter((task) => task.status === "completed").length
 );
-const current = computed(
-  () => visibleTasks.value.find((task) => task.status === "in_progress") ?? null
+const progress = computed(() =>
+  visibleTasks.value.length > 0
+    ? (completed.value / visibleTasks.value.length) * 100
+    : 0
 );
-const hasTasks = computed(() => visibleTasks.value.length > 0);
 
 function taskIconClass(status: SessionTask["status"]) {
   if (status === "completed") return "text-emerald-600";
@@ -35,34 +30,20 @@ function taskIconClass(status: SessionTask["status"]) {
 </script>
 
 <template>
-  <div
-    v-if="hasTasks"
-    class="mx-auto w-full max-w-3xl border-x border-t border-border bg-background/95 px-4 py-2"
-  >
-    <button
-      type="button"
-      class="flex w-full min-w-0 items-center gap-2 text-left text-sm"
-      @click="expanded = !expanded"
-    >
-      <LoaderCircleIcon
-        v-if="current && running"
-        class="size-4 shrink-0 animate-spin text-primary"
-      />
-      <CheckIcon
-        v-else-if="incompleteTasks.length === 0"
-        class="size-4 shrink-0 text-emerald-600"
-      />
-      <CircleIcon v-else class="size-4 shrink-0 text-muted-foreground" />
-      <span class="shrink-0 font-medium">Tasks {{ completed }}/{{ visibleTasks.length }}</span>
-      <span v-if="current" class="min-w-0 flex-1 truncate text-muted-foreground">
-        {{ current.content }}
+  <div class="min-h-0">
+    <div class="flex h-9 items-center gap-3 border-b border-border px-3">
+      <div class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+        <div
+          class="h-full bg-primary transition-[width]"
+          :style="{ width: `${progress}%` }"
+        />
+      </div>
+      <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+        {{ completed }}/{{ visibleTasks.length }}
       </span>
-      <ChevronDownIcon
-        :class="cn('ml-auto size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')"
-      />
-    </button>
+    </div>
 
-    <div v-if="expanded" class="mt-2 space-y-1.5">
+    <div class="no-scrollbar max-h-72 space-y-1.5 overflow-y-auto p-3">
       <div
         v-for="(task, index) in visibleTasks"
         :key="`${index}:${task.content}`"
@@ -74,7 +55,7 @@ function taskIconClass(status: SessionTask["status"]) {
         />
         <LoaderCircleIcon
           v-else-if="task.status === 'in_progress'"
-          :class="cn('mt-0.5 size-4 shrink-0', taskIconClass(task.status), running && 'animate-spin')"
+          :class="cn('mt-0.5 size-4 shrink-0 animate-spin', taskIconClass(task.status))"
         />
         <CircleIcon
           v-else

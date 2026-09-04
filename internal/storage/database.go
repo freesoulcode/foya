@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS file_changes (
     after_mode INTEGER NOT NULL,
     before_blob_hash TEXT,
     after_blob_hash TEXT NOT NULL,
+    review_state TEXT NOT NULL DEFAULT 'pending',
     FOREIGN KEY(event_seq) REFERENCES events(seq) ON DELETE CASCADE,
     FOREIGN KEY(before_blob_hash) REFERENCES file_blobs(hash),
     FOREIGN KEY(after_blob_hash) REFERENCES file_blobs(hash)

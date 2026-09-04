@@ -21,6 +21,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 		target = &compaction.Checkpoint{}
 	case event.KindHistoryRewound:
 		target = &event.HistoryRewound{}
+	case event.KindFileReviewResolved:
+		target = &event.FileReviewResolved{}
 	case event.KindSessionForked:
 		target = &event.SessionForked{}
 	case event.KindUsageUpdated:
@@ -41,6 +43,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 	case *compaction.Checkpoint:
 		return *value
 	case *event.HistoryRewound:
+		return *value
+	case *event.FileReviewResolved:
 		return *value
 	case *event.SessionForked:
 		return *value
@@ -103,4 +107,26 @@ func historyRewindFromPayload(payload any) (event.HistoryRewound, bool) {
 		return event.HistoryRewound{}, false
 	}
 	return rewind, true
+}
+
+func fileReviewResolvedFromPayload(payload any) (event.FileReviewResolved, bool) {
+	switch value := payload.(type) {
+	case event.FileReviewResolved:
+		return value, true
+	case *event.FileReviewResolved:
+		if value != nil {
+			return *value, true
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return event.FileReviewResolved{}, false
+	}
+	var resolved event.FileReviewResolved
+	if err := json.Unmarshal(data, &resolved); err != nil ||
+		resolved.ThroughSeq == 0 ||
+		resolved.Action == "" {
+		return event.FileReviewResolved{}, false
+	}
+	return resolved, true
 }

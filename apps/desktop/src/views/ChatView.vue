@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import type { ComponentPublicInstance } from "vue";
 import MessageList from "@/components/chat/MessageList.vue";
-import TaskProgress from "@/components/chat/TaskProgress.vue";
 import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import AskUserPanel from "@/components/chat/AskUserPanel.vue";
-import BackgroundCommandsPanel from "@/components/chat/BackgroundCommandsPanel.vue";
+import ActivityBar from "@/components/chat/ActivityBar.vue";
 import { Button } from "@/components/ui/button";
 import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
 
@@ -16,6 +15,7 @@ const {
   messages,
   queuedMessages,
   backgroundCommands,
+  fileReview,
   connectionModels,
   modelsLoading,
   modelsError,
@@ -45,8 +45,12 @@ const {
   pendingBrowserElements,
   onTurnSelect,
   rewindSentMessage,
+  keepAllFileChanges,
+  undoAllFileChanges,
+  toggleFileReviewForceFile,
   forkSession,
   onOpenDiff,
+  onOpenReviewFile,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,
@@ -124,14 +128,24 @@ function forkAtMessage(messageSeq: number) {
         @update:active-turn="updateActiveTurn"
       />
     </div>
-    <TaskProgress
+    <ActivityBar
       :tasks="activeSession?.tasks"
-      :running="Boolean(activeId && runningSessions[activeId])"
-    />
-    <BackgroundCommandsPanel
+      :task-running="Boolean(activeId && runningSessions[activeId])"
       :commands="backgroundCommands"
-      @stop="stopBackgroundCommand"
-      @open="onOpenBackgroundCommand"
+      :review="fileReview"
+      :review-disabled="streaming || queuedMessages.length > 0"
+      :queued-messages="queuedMessages"
+      :streaming="streaming"
+      @stop-command="stopBackgroundCommand"
+      @open-command="onOpenBackgroundCommand"
+      @keep-files="keepAllFileChanges"
+      @undo-files="undoAllFileChanges"
+      @toggle-force-file="toggleFileReviewForceFile"
+      @open-file="onOpenReviewFile"
+      @edit-queued="editQueuedMessage"
+      @reorder-queued="reorderQueuedMessage"
+      @dispatch-queued="dispatchQueuedMessage"
+      @delete-queued="deleteQueuedMessage"
     />
     <div
       v-if="activeWorkflow?.status === 'ready'"
@@ -163,7 +177,6 @@ function forkAtMessage(messageSeq: number) {
       :connections="connectionModels"
       :models-loading="modelsLoading"
       :models-error="modelsError"
-      :queued-messages="queuedMessages"
       :context-usage="composerContextUsage"
       :context-window="composerContextWindow"
       :supports-image="composerSupportsImage"
@@ -174,10 +187,6 @@ function forkAtMessage(messageSeq: number) {
       @send="send"
       @command="executeComposerCommand"
       @stop="cancelTurn"
-      @edit-queued="editQueuedMessage"
-      @reorder-queued="reorderQueuedMessage"
-      @dispatch-queued="dispatchQueuedMessage"
-      @delete-queued="deleteQueuedMessage"
       @update:model-config="onModelConfigChange"
       @update:project-id="onProjectChange"
       @add-project="onAddProject"

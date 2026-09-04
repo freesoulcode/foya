@@ -40,6 +40,10 @@ var (
 	ErrHistoryChanged = errors.New("active history changed after confirmation")
 	// ErrFileStateChanged rejects confirmation against a stale file preview.
 	ErrFileStateChanged = errors.New("file state changed after rewind preview")
+	// ErrFileReviewChanged rejects an action against a stale pending-review set.
+	ErrFileReviewChanged = errors.New("pending file changes changed after review preview")
+	// ErrNoPendingFileChanges indicates that the review queue is empty.
+	ErrNoPendingFileChanges = errors.New("no pending file changes")
 	// ErrFileRewindConflict avoids overwriting files changed after the recorded edit.
 	ErrFileRewindConflict = errors.New("file changed after the recorded edit")
 	// ErrFileRewindFailed indicates that a verified file could not be restored.
@@ -84,9 +88,12 @@ type RewindSubmission struct {
 }
 
 type RewindFilePreview struct {
-	Key    string
-	Path   string
-	Status string
+	Key       string
+	Path      string
+	Status    string
+	Additions int
+	Deletions int
+	Diff      string
 }
 
 type sessionRunner struct {
