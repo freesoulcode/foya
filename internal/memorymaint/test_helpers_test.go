@@ -10,12 +10,12 @@ import (
 
 func newTestStore(t testing.TB) state.Store {
 	t.Helper()
-	return state.NewSQLiteStore(testkit.OpenSQLite(t))
+	return state.NewStore(testkit.OpenDatabase(t))
 }
 
 func newTestSessionManager(t testing.TB) session.Manager {
 	t.Helper()
-	manager, err := session.NewSQLiteManager(testkit.OpenSQLite(t))
+	manager, err := session.NewManager(testkit.OpenDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}

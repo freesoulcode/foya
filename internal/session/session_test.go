@@ -12,7 +12,7 @@ func stringPointer(value string) *string {
 }
 
 func TestUpdateLocksBoundProject(t *testing.T) {
-	manager := newSQLiteTestManager(t)
+	manager := newTestManager(t)
 	created, err := manager.Create(CreateOptions{
 		Model:     "model-a",
 		ProjectID: "project-alpha",
@@ -58,7 +58,7 @@ func TestUpdateLocksBoundProject(t *testing.T) {
 }
 
 func TestUpdateAllowsFirstProjectBinding(t *testing.T) {
-	manager := newSQLiteTestManager(t)
+	manager := newTestManager(t)
 	created, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestUpdateAllowsFirstProjectBinding(t *testing.T) {
 }
 
 func TestUpdateReasoningEffort(t *testing.T) {
-	manager := newSQLiteTestManager(t)
+	manager := newTestManager(t)
 	created, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestUpdateReasoningEffort(t *testing.T) {
 }
 
 func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
-	manager := newSQLiteTestManager(t)
+	manager := newTestManager(t)
 	parent, err := manager.Create(CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestCreatePreservesChildAgentSnapshot(t *testing.T) {
 }
 
 func TestApprovalModesRejectLegacyValues(t *testing.T) {
-	manager := newSQLiteTestManager(t)
+	manager := newTestManager(t)
 	for _, mode := range []string{"explore", "ask", "bypass"} {
 		if _, err := manager.Create(CreateOptions{ApprovalMode: mode}); !errors.Is(err, ErrInvalidApprovalMode) {
 			t.Fatalf("Create mode %q error = %v", mode, err)

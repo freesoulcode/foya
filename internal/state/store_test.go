@@ -15,7 +15,7 @@ import (
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
-func newSQLiteTestStore(t testing.TB) *SQLiteStore {
+func newTestStore(t testing.TB) Store {
 	t.Helper()
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
@@ -26,16 +26,16 @@ func newSQLiteTestStore(t testing.TB) *SQLiteStore {
 			t.Errorf("close test database: %v", err)
 		}
 	})
-	return NewSQLiteStore(db)
+	return NewStore(db)
 }
 
-func TestSQLiteStorePersistsTypedEventsAndUsageProjection(t *testing.T) {
+func TestStorePersistsTypedEventsAndUsageProjection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "foya.db")
 	db, err := storage.OpenPath(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	ctx := context.Background()
 
 	messageSeq := appendStoreMessage(t, store, "session-1", message.Message{
@@ -64,7 +64,7 @@ func TestSQLiteStorePersistsTypedEventsAndUsageProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store = NewSQLiteStore(db)
+	store = NewStore(db)
 
 	history, err := store.History(ctx, "session-1")
 	if err != nil {
@@ -98,15 +98,35 @@ func TestSQLiteStorePersistsTypedEventsAndUsageProjection(t *testing.T) {
 	if model != usage.Model || total != usage.TotalTokens {
 		t.Fatalf("usage projection = %q/%d", model, total)
 	}
+	summary, err := store.UsageSummary(ctx, UsageQuery{
+		RangeStart:    time.Now().AddDate(0, 0, -1).Format(time.DateOnly),
+		RangeEnd:      time.Now().AddDate(0, 0, 1).Format(time.DateOnly),
+		ActivityStart: time.Now().AddDate(0, 0, -1).Format(time.DateOnly),
+		Today:         time.Now().Format(time.DateOnly),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalTokens != usage.TotalTokens ||
+		summary.InputTokens != usage.InputTokens ||
+		summary.OutputTokens != usage.OutputTokens ||
+		summary.CachedTokens != usage.CachedTokens ||
+		summary.MessageCount != 1 ||
+		summary.SessionCount != 1 ||
+		len(summary.ModelUsage) != 1 ||
+		summary.ModelUsage[0].Model != usage.Model ||
+		summary.ModelUsage[0].RequestCount != 1 {
+		t.Fatalf("usage ledger summary = %#v", summary)
+	}
 }
 
-func TestSQLiteStorePersistsOnlyAttachmentReferences(t *testing.T) {
+func TestStorePersistsOnlyAttachmentReferences(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	ref := message.AttachmentRef{
 		ID: "artifact-1", Name: "screen.png", Kind: "image",
 		MediaType: "image/png", Bytes: 123, Width: 10, Height: 8,
@@ -137,13 +157,13 @@ func TestSQLiteStorePersistsOnlyAttachmentReferences(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
+func TestStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	ctx := context.Background()
 	sessionID := "session-1"
 
@@ -219,13 +239,13 @@ func TestSQLiteStoreBranchesAndInvalidatesCheckpoint(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreDeleteRejectsLateEventsWithoutReusingSequence(t *testing.T) {
+func TestStoreDeleteRejectsLateEventsWithoutReusingSequence(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	ctx := context.Background()
 
 	first := appendStoreMessage(t, store, "deleted", message.Message{
@@ -263,13 +283,55 @@ func TestSQLiteStoreDeleteRejectsLateEventsWithoutReusingSequence(t *testing.T) 
 	}
 }
 
-func TestSQLiteStoreRollsBackInvalidProjection(t *testing.T) {
+func TestStoreDeletePreservesHistoricalUsageLedger(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.Local)
+
+	appendStoreEvent(t, store, event.Event{
+		Kind: event.KindMessageEnd, Session: "session-1", Time: now,
+		Payload: message.Message{Role: message.RoleUser, Content: "hello"},
+	})
+	appendStoreEvent(t, store, event.Event{
+		Kind: event.KindUsageUpdated, Session: "session-1", Time: now,
+		Payload: provider.Usage{
+			Model: "model-a", InputTokens: 75, OutputTokens: 25, TotalTokens: 100,
+		},
+	})
+	before := loadUsageSummaryForTest(t, store, now)
+	if err := store.Delete(ctx, "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	after := loadUsageSummaryForTest(t, store, now)
+	if after.TotalTokens != before.TotalTokens ||
+		after.MessageCount != before.MessageCount ||
+		after.SessionCount != before.SessionCount ||
+		len(after.ModelUsage) != 1 ||
+		after.ModelUsage[0] != before.ModelUsage[0] {
+		t.Fatalf("usage ledger changed after deletion: before=%#v after=%#v", before, after)
+	}
+
+	var usageRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM usage_records`).Scan(&usageRows); err != nil {
+		t.Fatal(err)
+	}
+	if usageRows != 0 {
+		t.Fatalf("usage_records rows after deletion = %d, want 0", usageRows)
+	}
+}
+
+func TestStoreRollsBackInvalidProjection(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
 
 	_, err = store.Append(context.Background(), event.Event{
 		Kind: event.KindMessageEnd, Session: "session-1",
@@ -287,13 +349,13 @@ func TestSQLiteStoreRollsBackInvalidProjection(t *testing.T) {
 	}
 }
 
-func TestSQLiteStoreRejectsInactiveBranchTarget(t *testing.T) {
+func TestStoreRejectsInactiveBranchTarget(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	store := NewSQLiteStore(db)
+	store := NewStore(db)
 	ctx := context.Background()
 
 	target := appendStoreMessage(t, store, "session-1", message.Message{
@@ -314,6 +376,19 @@ func TestSQLiteStoreRejectsInactiveBranchTarget(t *testing.T) {
 	}
 }
 
+func appendStoreEvent(
+	t *testing.T,
+	store Store,
+	ev event.Event,
+) event.Seq {
+	t.Helper()
+	seq, err := store.Append(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seq
+}
+
 func appendStoreMessage(
 	t *testing.T,
 	store Store,
@@ -329,4 +404,22 @@ func appendStoreMessage(
 		t.Fatal(err)
 	}
 	return seq
+}
+
+func loadUsageSummaryForTest(
+	t *testing.T,
+	store Store,
+	now time.Time,
+) UsageSummary {
+	t.Helper()
+	summary, err := store.UsageSummary(context.Background(), UsageQuery{
+		RangeStart:    now.AddDate(0, 0, -6).Format(time.DateOnly),
+		RangeEnd:      now.AddDate(0, 0, 1).Format(time.DateOnly),
+		ActivityStart: now.AddDate(0, 0, -6).Format(time.DateOnly),
+		Today:         now.Format(time.DateOnly),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return summary
 }

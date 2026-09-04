@@ -14,7 +14,7 @@ import (
 
 func TestBranchKeepsSourceEventsAndProjectsOnlyActiveHistory(t *testing.T) {
 	ctx := context.Background()
-	log := newSQLiteTestStore(t)
+	log := newTestStore(t)
 	sessionID := "session-1"
 
 	firstUser := appendMessage(t, log, sessionID, message.Message{
@@ -169,7 +169,7 @@ func TestBranchKeepsSourceEventsAndProjectsOnlyActiveHistory(t *testing.T) {
 
 func TestBranchWithoutSideEffectsAppliesWithoutConfirmation(t *testing.T) {
 	ctx := context.Background()
-	log := newSQLiteTestStore(t)
+	log := newTestStore(t)
 	sessionID := "session-1"
 	target := appendMessage(t, log, sessionID, message.Message{
 		Role: message.RoleUser, Content: "question",
@@ -189,7 +189,7 @@ func TestBranchWithoutSideEffectsAppliesWithoutConfirmation(t *testing.T) {
 
 func TestBranchRejectsStaleEffectConfirmation(t *testing.T) {
 	ctx := context.Background()
-	log := newSQLiteTestStore(t)
+	log := newTestStore(t)
 	sessionID := "session-1"
 	target := appendMessage(t, log, sessionID, message.Message{
 		Role: message.RoleUser, Content: "run a command",

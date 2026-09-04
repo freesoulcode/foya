@@ -11,8 +11,8 @@ import (
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
-// OpenSQLite returns an isolated database which is closed with the test.
-func OpenSQLite(t testing.TB) *storage.Database {
+// OpenDatabase returns an isolated database which is closed with the test.
+func OpenDatabase(t testing.TB) *storage.Database {
 	t.Helper()
 	db, err := storage.Open(t.TempDir())
 	if err != nil {

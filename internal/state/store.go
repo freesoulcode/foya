@@ -15,17 +15,17 @@ import (
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
-// SQLiteStore persists canonical events and rebuildable projections.
-type SQLiteStore struct {
+// store persists canonical events and rebuildable projections.
+type store struct {
 	db *storage.Database
 }
 
-// NewSQLiteStore creates an event store backed by the shared database.
-func NewSQLiteStore(db *storage.Database) *SQLiteStore {
-	return &SQLiteStore{db: db}
+// NewStore creates an event store backed by the shared database.
+func NewStore(db *storage.Database) Store {
+	return &store{db: db}
 }
 
-func (s *SQLiteStore) Append(
+func (s *store) Append(
 	ctx context.Context,
 	ev event.Event,
 ) (event.Seq, error) {
@@ -45,7 +45,7 @@ func (s *SQLiteStore) Append(
 	return seq, nil
 }
 
-func (s *SQLiteStore) Read(
+func (s *store) Read(
 	ctx context.Context,
 	session string,
 	after event.Seq,
@@ -63,7 +63,7 @@ func (s *SQLiteStore) Read(
 	return scanEvents(rows)
 }
 
-func (s *SQLiteStore) Delete(ctx context.Context, session string) error {
+func (s *store) Delete(ctx context.Context, session string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin delete session events: %w", err)
@@ -94,7 +94,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, session string) error {
 	return nil
 }
 
-func (s *SQLiteStore) History(
+func (s *store) History(
 	ctx context.Context,
 	session string,
 ) ([]message.Message, error) {
@@ -114,7 +114,7 @@ func (s *SQLiteStore) History(
 	return messages, nil
 }
 
-func (s *SQLiteStore) ModelHistory(
+func (s *store) ModelHistory(
 	ctx context.Context,
 	session string,
 ) ([]message.Message, error) {
@@ -141,21 +141,41 @@ func (s *SQLiteStore) ModelHistory(
 	return compaction.Project(events, checkpoint), nil
 }
 
-func (s *SQLiteStore) Events(
+func (s *store) Events(
 	ctx context.Context,
 	session string,
 ) ([]event.Event, error) {
 	return loadActiveMessageEvents(ctx, s.db, session)
 }
 
-func (s *SQLiteStore) Checkpoint(
+func (s *store) UsageSummary(
+	ctx context.Context,
+	query UsageQuery,
+) (UsageSummary, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return UsageSummary{}, fmt.Errorf("begin usage summary: %w", err)
+	}
+	defer tx.Rollback()
+
+	summary, err := loadUsageSummary(ctx, tx, query)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return UsageSummary{}, fmt.Errorf("commit usage summary read: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *store) Checkpoint(
 	ctx context.Context,
 	session string,
 ) (*compaction.Checkpoint, bool, error) {
 	return loadCheckpoint(ctx, s.db, session)
 }
 
-func (s *SQLiteStore) RecordCheckpoint(
+func (s *store) RecordCheckpoint(
 	ctx context.Context,
 	checkpoint compaction.Checkpoint,
 ) (event.Event, error) {
@@ -192,7 +212,7 @@ func (s *SQLiteStore) RecordCheckpoint(
 	return ev, nil
 }
 
-func (s *SQLiteStore) Branch(
+func (s *store) Branch(
 	ctx context.Context,
 	session string,
 	targetUserSeq event.Seq,
@@ -338,6 +358,11 @@ func applyProjectionTx(
 		`, int64(ev.Seq), ev.Session, string(item.Role)); err != nil {
 			return fmt.Errorf("project message event: %w", err)
 		}
+		if item.Role == message.RoleUser || item.Role == message.RoleAssistant {
+			if err := incrementMessageLedgerTx(ctx, tx, ev); err != nil {
+				return err
+			}
+		}
 	case event.KindHistoryBranched:
 		branch, ok := historyBranchFromPayload(ev.Payload)
 		if !ok {
@@ -370,6 +395,9 @@ func applyProjectionTx(
 			ev.Time.UnixNano()); err != nil {
 			return fmt.Errorf("project usage event: %w", err)
 		}
+		if err := incrementUsageLedgerTx(ctx, tx, ev, usage); err != nil {
+			return err
+		}
 	case event.KindCompactionCompleted:
 		_, ok := checkpointFromPayload(ev.Payload)
 		if !ok {
@@ -386,6 +414,121 @@ func applyProjectionTx(
 		}
 	}
 	return nil
+}
+
+func incrementMessageLedgerTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	ev event.Event,
+) error {
+	date := ledgerDate(ev.Time)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO usage_message_daily_ledger(date, message_count)
+		VALUES (?, 1)
+		ON CONFLICT(date) DO UPDATE SET
+			message_count = usage_message_daily_ledger.message_count + 1
+	`, date); err != nil {
+		return fmt.Errorf("update message usage ledger: %w", err)
+	}
+	if err := recordUsageSessionDayTx(ctx, tx, ev.Session, date); err != nil {
+		return err
+	}
+	return nil
+}
+
+func incrementUsageLedgerTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	ev event.Event,
+	usage provider.Usage,
+) error {
+	date := ledgerDate(ev.Time)
+	total := usage.TotalTokens
+	if total <= 0 {
+		total = usage.InputTokens + usage.OutputTokens
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO usage_daily_ledger(
+			date, model, input_tokens, output_tokens,
+			total_tokens, cached_tokens, request_count
+		) VALUES (?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(date, model) DO UPDATE SET
+			input_tokens = usage_daily_ledger.input_tokens + excluded.input_tokens,
+			output_tokens = usage_daily_ledger.output_tokens + excluded.output_tokens,
+			total_tokens = usage_daily_ledger.total_tokens + excluded.total_tokens,
+			cached_tokens = usage_daily_ledger.cached_tokens + excluded.cached_tokens,
+			request_count = usage_daily_ledger.request_count + excluded.request_count
+	`, date, usage.Model, usage.InputTokens, usage.OutputTokens,
+		total, usage.CachedTokens); err != nil {
+		return fmt.Errorf("update token usage ledger: %w", err)
+	}
+	if total > 0 {
+		if err := recordUsageSessionDayTx(ctx, tx, ev.Session, date); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordUsageSessionDayTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	sessionID, date string,
+) error {
+	rootID, err := rootSessionIDForLedger(ctx, tx, sessionID)
+	if err != nil {
+		return err
+	}
+	if rootID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO usage_session_days(date, root_session_id)
+		VALUES (?, ?)
+	`, date, rootID); err != nil {
+		return fmt.Errorf("record usage session day: %w", err)
+	}
+	return nil
+}
+
+func rootSessionIDForLedger(
+	ctx context.Context,
+	tx *sql.Tx,
+	sessionID string,
+) (string, error) {
+	current := sessionID
+	root := sessionID
+	seen := make(map[string]struct{})
+	for current != "" {
+		if _, exists := seen[current]; exists {
+			return root, nil
+		}
+		seen[current] = struct{}{}
+
+		var parentID string
+		err := tx.QueryRowContext(ctx, `
+			SELECT parent_id FROM sessions WHERE id = ?
+		`, current).Scan(&parentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return root, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("resolve root session for usage ledger: %w", err)
+		}
+		root = current
+		if parentID == "" {
+			return root, nil
+		}
+		current = parentID
+	}
+	return root, nil
+}
+
+func ledgerDate(value time.Time) string {
+	if value.IsZero() {
+		value = time.Now()
+	}
+	return value.In(time.Local).Format(time.DateOnly)
 }
 
 type eventQueryer interface {
@@ -523,4 +666,4 @@ func checkpointFromPayload(payload any) (compaction.Checkpoint, bool) {
 	return checkpoint, true
 }
 
-var _ Store = (*SQLiteStore)(nil)
+var _ Store = (*store)(nil)

@@ -9,7 +9,7 @@ import (
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
-func newSQLiteTestManager(t testing.TB) Manager {
+func newTestManager(t testing.TB) Manager {
 	t.Helper()
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
@@ -20,20 +20,20 @@ func newSQLiteTestManager(t testing.TB) Manager {
 			t.Errorf("close test database: %v", err)
 		}
 	})
-	manager, err := NewSQLiteManager(db)
+	manager, err := NewManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return manager
 }
 
-func TestSQLiteManagerPersistsSessionState(t *testing.T) {
+func TestManagerPersistsSessionState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "foya.db")
 	db, err := storage.OpenPath(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := NewSQLiteManager(db)
+	manager, err := NewManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestSQLiteManagerPersistsSessionState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	manager, err = NewSQLiteManager(db)
+	manager, err = NewManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,13 +116,13 @@ func TestSQLiteManagerPersistsSessionState(t *testing.T) {
 	}
 }
 
-func TestSQLiteManagerPreservesValidationAndTitleSemantics(t *testing.T) {
+func TestManagerPreservesValidationAndTitleSemantics(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	manager, err := NewSQLiteManager(db)
+	manager, err := NewManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,13 +164,13 @@ func TestSQLiteManagerPreservesValidationAndTitleSemantics(t *testing.T) {
 	}
 }
 
-func TestSQLiteManagerDeleteIsDurable(t *testing.T) {
+func TestManagerDeleteIsDurable(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	manager, err := NewSQLiteManager(db)
+	manager, err := NewManager(db)
 	if err != nil {
 		t.Fatal(err)
 	}

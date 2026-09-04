@@ -71,11 +71,11 @@ func New(cfg config.Config) (*App, error) {
 			_ = database.Close()
 		}
 	}()
-	sessions, err := session.NewSQLiteManager(database)
+	sessions, err := session.NewManager(database)
 	if err != nil {
 		return nil, err
 	}
-	log := state.NewSQLiteStore(database)
+	log := state.NewStore(database)
 	bus := broker.New[event.Event]()
 	artifactStore, err := artifact.NewFileStore(cfg.DataDir)
 	if err != nil {

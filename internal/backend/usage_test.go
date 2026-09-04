@@ -10,12 +10,12 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 func TestUsageStatisticsAggregatesRecentActivity(t *testing.T) {
 	ctx := context.Background()
-	sessions := newTestSessionManager(t)
-	log := newTestStore(t)
+	sessions, log := newUsageTestRuntime(t)
 	root, err := sessions.Create(session.CreateOptions{Model: "model-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +104,53 @@ func TestUsageStatisticsAggregatesRecentActivity(t *testing.T) {
 	}
 }
 
+func TestUsageStatisticsRetainsHistoricalCountsAfterSessionDeletion(t *testing.T) {
+	ctx := context.Background()
+	sessions, log := newUsageTestRuntime(t)
+	item, err := sessions.Create(session.CreateOptions{Model: "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, time.September, 4, 15, 0, 0, 0, time.Local)
+	appendUsageEvent(t, log, item.ID, now, event.KindMessageEnd, message.Message{
+		Role: message.RoleUser, Content: "question",
+	})
+	appendUsageEvent(t, log, item.ID, now, event.KindMessageEnd, message.Message{
+		Role: message.RoleAssistant, Content: "answer",
+	})
+	appendUsageEvent(t, log, item.ID, now, event.KindUsageUpdated, provider.Usage{
+		Model: "model-a", InputTokens: 90, OutputTokens: 30, TotalTokens: 120,
+	})
+
+	be := &Backend{sessions: sessions, log: log}
+	before, err := be.usageStatisticsAt(ctx, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.Delete(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Delete(ctx, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := be.usageStatisticsAt(ctx, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TotalTokens != before.TotalTokens ||
+		after.InputTokens != before.InputTokens ||
+		after.OutputTokens != before.OutputTokens ||
+		after.SessionCount != before.SessionCount ||
+		after.MessageCount != before.MessageCount ||
+		after.ActiveDays != before.ActiveDays ||
+		after.CurrentStreak != before.CurrentStreak ||
+		len(after.ModelUsage) != 1 ||
+		after.ModelUsage[0] != before.ModelUsage[0] {
+		t.Fatalf("usage changed after deletion: before=%#v after=%#v", before, after)
+	}
+}
+
 func appendUsageEvent(
 	t *testing.T,
 	log state.Store,
@@ -118,6 +165,16 @@ func appendUsageEvent(
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newUsageTestRuntime(t testing.TB) (session.Manager, state.Store) {
+	t.Helper()
+	db := testkit.OpenDatabase(t)
+	manager, err := session.NewManager(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, state.NewStore(db)
 }
 
 func TestUsageStatisticsReturnsZeroValuesWithoutActivity(t *testing.T) {

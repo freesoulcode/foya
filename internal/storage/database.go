@@ -79,7 +79,7 @@ func (db *Database) applySchema() error {
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(schemaV1); err != nil {
+	if _, err := tx.Exec(schema); err != nil {
 		return fmt.Errorf("apply sqlite schema: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -88,12 +88,7 @@ func (db *Database) applySchema() error {
 	return nil
 }
 
-const schemaV1 = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at_ns INTEGER NOT NULL
-);
-
+const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     parent_id TEXT NOT NULL DEFAULT '',
@@ -201,6 +196,31 @@ CREATE TABLE IF NOT EXISTS cleanup_jobs (
     updated_at_ns INTEGER NOT NULL
 );
 
-INSERT OR IGNORE INTO schema_migrations(version, applied_at_ns)
-VALUES (1, unixepoch('subsec') * 1000000000);
+CREATE TABLE IF NOT EXISTS usage_daily_ledger (
+    date TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(date, model)
+);
+
+CREATE INDEX IF NOT EXISTS usage_daily_ledger_model_date_idx
+    ON usage_daily_ledger(model, date);
+
+CREATE TABLE IF NOT EXISTS usage_message_daily_ledger (
+    date TEXT PRIMARY KEY,
+    message_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS usage_session_days (
+    date TEXT NOT NULL,
+    root_session_id TEXT NOT NULL,
+    PRIMARY KEY(date, root_session_id)
+);
+
+CREATE INDEX IF NOT EXISTS usage_session_days_session_idx
+    ON usage_session_days(root_session_id, date);
 `

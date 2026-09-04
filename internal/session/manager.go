@@ -12,14 +12,14 @@ import (
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
-// sqliteManager persists session metadata in the shared Foya database.
-type sqliteManager struct {
+// manager persists session metadata in the shared Foya database.
+type manager struct {
 	db *storage.Database
 }
 
-// NewSQLiteManager creates a session manager backed by SQLite. Runtime phases
+// NewManager creates a session manager backed by SQLite. Runtime phases
 // are reset because in-flight turns are recovered separately.
-func NewSQLiteManager(db *storage.Database) (Manager, error) {
+func NewManager(db *storage.Database) (Manager, error) {
 	if _, err := db.Exec(`
 		UPDATE sessions
 		SET phase = ?,
@@ -27,10 +27,10 @@ func NewSQLiteManager(db *storage.Database) (Manager, error) {
 	`, string(PhaseIdle), string(AgentModeExecute)); err != nil {
 		return nil, fmt.Errorf("reset session runtime state: %w", err)
 	}
-	return &sqliteManager{db: db}, nil
+	return &manager{db: db}, nil
 }
 
-func (m *sqliteManager) Create(opts CreateOptions) (*Session, error) {
+func (m *manager) Create(opts CreateOptions) (*Session, error) {
 	if err := validateCreateOptions(opts); err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (m *sqliteManager) Create(opts CreateOptions) (*Session, error) {
 	return cloneSession(item), nil
 }
 
-func (m *sqliteManager) Get(id string) (*Session, bool) {
+func (m *manager) Get(id string) (*Session, bool) {
 	item, err := readSession(context.Background(), m.db, id)
 	if err != nil {
 		return nil, false
@@ -69,7 +69,7 @@ func (m *sqliteManager) Get(id string) (*Session, bool) {
 	return item, true
 }
 
-func (m *sqliteManager) List() []*Session {
+func (m *manager) List() []*Session {
 	rows, err := m.db.QueryContext(context.Background(), `
 		SELECT `+sessionColumns+`
 		FROM sessions
@@ -94,7 +94,7 @@ func (m *sqliteManager) List() []*Session {
 	return items
 }
 
-func (m *sqliteManager) Update(
+func (m *manager) Update(
 	id string,
 	connectionID, model, reasoningEffort, projectID, approvalMode *string,
 ) (*Session, error) {
@@ -129,14 +129,14 @@ func (m *sqliteManager) Update(
 	})
 }
 
-func (m *sqliteManager) SetPhase(id string, phase Phase) (*Session, error) {
+func (m *manager) SetPhase(id string, phase Phase) (*Session, error) {
 	return m.mutate(id, func(item *Session) error {
 		item.Phase = phase
 		return nil
 	})
 }
 
-func (m *sqliteManager) SetAgentMode(
+func (m *manager) SetAgentMode(
 	id string,
 	mode, prePlanMode AgentMode,
 ) (*Session, error) {
@@ -152,14 +152,14 @@ func (m *sqliteManager) SetAgentMode(
 	})
 }
 
-func (m *sqliteManager) SetTasks(id string, tasks []Task) (*Session, error) {
+func (m *manager) SetTasks(id string, tasks []Task) (*Session, error) {
 	return m.mutate(id, func(item *Session) error {
 		item.Tasks = append([]Task(nil), tasks...)
 		return nil
 	})
 }
 
-func (m *sqliteManager) SetGeneratedTitle(id, title string) (bool, error) {
+func (m *manager) SetGeneratedTitle(id, title string) (bool, error) {
 	changed := false
 	_, err := m.mutate(id, func(item *Session) error {
 		if item.Title != "" || item.TitleIsManual {
@@ -175,7 +175,7 @@ func (m *sqliteManager) SetGeneratedTitle(id, title string) (bool, error) {
 	return changed, err
 }
 
-func (m *sqliteManager) ResetGeneratedTitle(
+func (m *manager) ResetGeneratedTitle(
 	id string,
 ) (*Session, bool, error) {
 	changed := false
@@ -197,7 +197,7 @@ func (m *sqliteManager) ResetGeneratedTitle(
 	return item, changed, err
 }
 
-func (m *sqliteManager) Rename(id, title string) error {
+func (m *manager) Rename(id, title string) error {
 	_, err := m.mutate(id, func(item *Session) error {
 		item.Title = title
 		item.TitleIsManual = true
@@ -206,7 +206,7 @@ func (m *sqliteManager) Rename(id, title string) error {
 	return err
 }
 
-func (m *sqliteManager) SetPinned(id string, pinned bool) (*Session, error) {
+func (m *manager) SetPinned(id string, pinned bool) (*Session, error) {
 	return m.mutate(id, func(item *Session) error {
 		item.Pinned = pinned
 		if pinned {
@@ -219,7 +219,7 @@ func (m *sqliteManager) SetPinned(id string, pinned bool) (*Session, error) {
 	})
 }
 
-func (m *sqliteManager) Delete(id string) error {
+func (m *manager) Delete(id string) error {
 	result, err := m.db.ExecContext(
 		context.Background(),
 		`DELETE FROM sessions WHERE id = ?`,
@@ -238,11 +238,11 @@ func (m *sqliteManager) Delete(id string) error {
 	return nil
 }
 
-func (m *sqliteManager) Close(id string) error {
+func (m *manager) Close(id string) error {
 	return m.Delete(id)
 }
 
-func (m *sqliteManager) mutate(
+func (m *manager) mutate(
 	id string,
 	change func(*Session) error,
 ) (*Session, error) {
@@ -480,4 +480,4 @@ func boolInt(value bool) int {
 
 var errSessionUnchanged = errors.New("session unchanged")
 
-var _ Manager = (*sqliteManager)(nil)
+var _ Manager = (*manager)(nil)

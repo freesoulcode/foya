@@ -41,4 +41,17 @@ func TestOpenCreatesPrivateDatabaseWithRequiredPragmas(t *testing.T) {
 	if autoVacuum != 2 {
 		t.Fatalf("auto_vacuum = %d, want incremental (2)", autoVacuum)
 	}
+
+	for _, table := range []string{
+		"usage_daily_ledger",
+		"usage_message_daily_ledger",
+		"usage_session_days",
+	} {
+		var name string
+		if err := db.QueryRow(`
+			SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?
+		`, table).Scan(&name); err != nil {
+			t.Fatalf("missing table %s: %v", table, err)
+		}
+	}
 }

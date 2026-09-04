@@ -38,6 +38,7 @@ type Store interface {
 	History(ctx context.Context, session string) ([]message.Message, error)
 	ModelHistory(ctx context.Context, session string) ([]message.Message, error)
 	Events(ctx context.Context, session string) ([]event.Event, error)
+	UsageSummary(ctx context.Context, query UsageQuery) (UsageSummary, error)
 	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
 	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)
 	Branch(
@@ -48,6 +49,42 @@ type Store interface {
 		allowEffects bool,
 		expectedHeadSeq event.Seq,
 	) (BranchResult, error)
+}
+
+// UsageQuery selects historical usage aggregates by local-date strings.
+type UsageQuery struct {
+	RangeStart    string
+	RangeEnd      string
+	ActivityStart string
+	Today         string
+}
+
+// UsageDay is one day of historical activity.
+type UsageDay struct {
+	Date         string
+	MessageCount int
+	TokenCount   int64
+}
+
+// UsageModelTotal is one model's historical usage in a query range.
+type UsageModelTotal struct {
+	Model        string
+	TokenCount   int64
+	RequestCount int
+}
+
+// UsageSummary is the historical usage projection retained after session deletion.
+type UsageSummary struct {
+	TotalTokens   int64
+	InputTokens   int64
+	OutputTokens  int64
+	CachedTokens  int64
+	SessionCount  int
+	MessageCount  int
+	ActiveDays    int
+	CurrentStreak int
+	Activity      []UsageDay
+	ModelUsage    []UsageModelTotal
 }
 
 // Projection 从事件日志派生某种视图。
