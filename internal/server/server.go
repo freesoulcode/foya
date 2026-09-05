@@ -58,6 +58,9 @@ type ChannelManager interface {
 	Create(feishu.UpdateInput) (feishu.State, error)
 	Update(string, feishu.UpdateInput) (feishu.State, error)
 	Delete(string) error
+	StartRegistration(feishu.RegistrationInput) (feishu.RegistrationState, error)
+	GetRegistration(string) (feishu.RegistrationState, bool)
+	CancelRegistration(string) error
 }
 
 type AutomationManager interface {
@@ -145,6 +148,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /settings/memory", s.handleUpdateMemorySettings)
 	s.mux.HandleFunc("GET /channels", s.handleListChannels)
 	s.mux.HandleFunc("POST /channels", s.handleCreateChannel)
+	s.mux.HandleFunc("POST /channels/feishu/registrations", s.handleStartFeishuRegistration)
+	s.mux.HandleFunc("GET /channels/feishu/registrations/{id}", s.handleGetFeishuRegistration)
+	s.mux.HandleFunc("DELETE /channels/feishu/registrations/{id}", s.handleCancelFeishuRegistration)
 	s.mux.HandleFunc("GET /channels/{id}", s.handleGetChannel)
 	s.mux.HandleFunc("PUT /channels/{id}", s.handleUpdateChannel)
 	s.mux.HandleFunc("DELETE /channels/{id}", s.handleDeleteChannel)
@@ -472,6 +478,51 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, state)
+}
+
+func (s *Server) handleStartFeishuRegistration(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	var input feishu.RegistrationInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	state, err := s.channels.StartRegistration(input)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "feishu_registration_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, state)
+}
+
+func (s *Server) handleGetFeishuRegistration(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	state, ok := s.channels.GetRegistration(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "feishu_registration_not_found", "registration not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleCancelFeishuRegistration(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	if err := s.channels.CancelRegistration(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, "feishu_registration_not_found", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleGetChannel(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,45 @@ pub(crate) async fn create_channel(settings: serde_json::Value) -> Result<String
 }
 
 #[tauri::command]
+pub(crate) async fn start_feishu_registration(
+    settings: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        "/channels/feishu/registrations",
+        Some(&settings.to_string()),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn get_feishu_registration(registration_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!(
+            "/channels/feishu/registrations/{}",
+            encode_query_component(&registration_id)
+        ),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_feishu_registration(registration_id: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!(
+            "/channels/feishu/registrations/{}",
+            encode_query_component(&registration_id)
+        ),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tauri::command]
 pub(crate) async fn update_channel(
     channel_id: String,
     settings: serde_json::Value,

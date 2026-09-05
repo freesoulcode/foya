@@ -112,8 +112,8 @@ onMounted(() => {
             class="flex h-11 w-full items-center rounded-md bg-muted px-2.5 text-left"
           >
             <span>
-              <span class="block text-sm font-medium">新建飞书 Bot</span>
-              <span class="block text-xs text-muted-foreground">未保存</span>
+              <span class="block text-sm font-medium">添加飞书 Bot</span>
+              <span class="block text-xs text-muted-foreground">选择接入方式</span>
             </span>
           </button>
         </div>
@@ -124,7 +124,7 @@ onMounted(() => {
           @click="createFeishuBot"
         >
           <PlusIcon class="size-4" />
-          新建 Bot
+          添加 Bot
         </Button>
       </nav>
 
@@ -145,7 +145,7 @@ onMounted(() => {
           <p class="text-sm text-muted-foreground">尚未配置消息渠道</p>
           <Button size="sm" variant="outline" @click="createFeishuBot">
             <PlusIcon class="size-4" />
-            新建飞书 Bot
+            添加飞书 Bot
           </Button>
         </div>
         <p v-if="error" class="text-sm text-destructive">{{ error }}</p>

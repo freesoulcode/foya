@@ -451,6 +451,23 @@ pub(crate) async fn create_channel(_settings: serde_json::Value) -> Result<Strin
 }
 
 #[tauri::command]
+pub(crate) async fn start_feishu_registration(
+    _settings: serde_json::Value,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn get_feishu_registration(_registration_id: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_feishu_registration(_registration_id: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
 pub(crate) async fn update_channel(
     _channel_id: String,
     _settings: serde_json::Value,

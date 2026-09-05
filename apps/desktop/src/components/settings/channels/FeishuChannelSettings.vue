@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import QRCode from "qrcode";
 import {
+  ArrowLeftIcon,
+  ChevronRightIcon,
   ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
+  KeyRoundIcon,
+  LoaderCircleIcon,
+  QrCodeIcon,
   RefreshCwIcon,
   SaveIcon,
   Trash2Icon,
@@ -13,6 +19,8 @@ import {
   api,
   type ConnectionConfig,
   type FeishuBotSettings,
+  type FeishuRegistrationInput,
+  type FeishuRegistrationState,
   type FeishuBotUpdate,
   type ProjectInfo,
 } from "@/lib/api";
@@ -22,6 +30,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -79,6 +88,41 @@ const saving = ref(false);
 const deleting = ref(false);
 const deleteConfirmOpen = ref(false);
 const error = ref("");
+const creationMode = ref<"choose" | "manual">("choose");
+const registrationOpen = ref(false);
+const registration = ref<FeishuRegistrationState>();
+const registrationQRCode = ref("");
+const registrationError = ref("");
+let registrationPollTimer: ReturnType<typeof setTimeout> | undefined;
+let registrationGeneration = 0;
+
+const registrationActive = computed(() =>
+  ["starting", "pending", "completing"].includes(
+    registration.value?.status ?? ""
+  )
+);
+
+const registrationStatusLabel = computed(() => {
+  if (!registration.value && registrationError.value) return "无法开始创建";
+  switch (registration.value?.status) {
+    case "pending":
+      return "等待扫码确认";
+    case "completing":
+      return "正在创建并连接 Bot";
+    case "completed":
+      return "Bot 已创建";
+    case "denied":
+      return "已拒绝授权";
+    case "expired":
+      return "二维码已过期";
+    case "cancelled":
+      return "已取消";
+    case "error":
+      return "创建失败";
+    default:
+      return "正在生成二维码";
+  }
+});
 
 const languageConnections = computed(() =>
   connections.value.filter(
@@ -138,6 +182,116 @@ function buildUpdate(): FeishuBotUpdate {
     allowed_chats: parseIDs(allowedChats.value),
     allow_all: settings.value.allow_all,
   };
+}
+
+function buildRegistrationInput(): FeishuRegistrationInput {
+  const update = buildUpdate();
+  return {
+    name: update.name,
+    connection_id: update.connection_id,
+    model: update.model,
+    project_id: update.project_id,
+    approval_mode: update.approval_mode,
+    allowed_users: update.allowed_users,
+    allowed_chats: update.allowed_chats,
+    allow_all: update.allow_all,
+  };
+}
+
+function clearRegistrationPoll() {
+  if (registrationPollTimer) clearTimeout(registrationPollTimer);
+  registrationPollTimer = undefined;
+}
+
+async function applyRegistrationState(
+  next: FeishuRegistrationState,
+  generation: number
+) {
+  if (generation !== registrationGeneration) return;
+  registration.value = next;
+  registrationError.value = next.error ?? "";
+
+  if (!next.qr_code_url) registrationQRCode.value = "";
+  if (next.qr_code_url && !registrationQRCode.value) {
+    try {
+      const dataURL = await QRCode.toDataURL(next.qr_code_url, {
+        width: 224,
+        margin: 1,
+        errorCorrectionLevel: "M",
+        color: { dark: "#111827", light: "#ffffff" },
+      });
+      if (generation === registrationGeneration) {
+        registrationQRCode.value = dataURL;
+      }
+    } catch (cause) {
+      registrationError.value = `无法生成二维码：${String(cause)}`;
+    }
+  }
+
+  if (next.status === "completed" && next.channel) {
+    clearRegistrationPoll();
+    registrationOpen.value = false;
+    emit("saved", next.channel);
+  }
+}
+
+function scheduleRegistrationPoll(generation: number, delay = 800) {
+  clearRegistrationPoll();
+  registrationPollTimer = setTimeout(() => {
+    void pollRegistration(generation);
+  }, delay);
+}
+
+async function pollRegistration(generation: number) {
+  const id = registration.value?.id;
+  if (!id || generation !== registrationGeneration) return;
+  try {
+    const next = await api.getFeishuRegistration(id);
+    await applyRegistrationState(next, generation);
+    if (generation === registrationGeneration && registrationActive.value) {
+      scheduleRegistrationPoll(generation);
+    }
+  } catch (cause) {
+    if (generation !== registrationGeneration) return;
+    registrationError.value = String(cause);
+    scheduleRegistrationPoll(generation, 2_000);
+  }
+}
+
+async function cancelRegistration(stopCompleting = false) {
+  const current = registration.value;
+  if (current?.status === "completing" && !stopCompleting) return;
+  registrationGeneration += 1;
+  clearRegistrationPoll();
+  if (current?.id && ["starting", "pending"].includes(current.status)) {
+    await api.cancelFeishuRegistration(current.id).catch(() => undefined);
+  }
+}
+
+async function startRegistration() {
+  await cancelRegistration();
+  const generation = ++registrationGeneration;
+  registration.value = undefined;
+  registrationQRCode.value = "";
+  registrationError.value = "";
+  registrationOpen.value = true;
+  try {
+    const started = await api.startFeishuRegistration(
+      buildRegistrationInput()
+    );
+    await applyRegistrationState(started, generation);
+    if (generation === registrationGeneration && registrationActive.value) {
+      scheduleRegistrationPoll(generation, 300);
+    }
+  } catch (cause) {
+    if (generation !== registrationGeneration) return;
+    registrationError.value = String(cause);
+  }
+}
+
+function openRegistrationURL() {
+  const url = registration.value?.qr_code_url;
+  if (url) void openUrl(url);
 }
 
 async function save() {
@@ -206,6 +360,10 @@ watch(
   { immediate: true }
 );
 
+watch(registrationOpen, (open) => {
+  if (!open) void cancelRegistration();
+});
+
 onMounted(async () => {
   loading.value = true;
   try {
@@ -219,24 +377,44 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+onBeforeUnmount(() => {
+  void cancelRegistration(true);
+});
 </script>
 
 <template>
   <div class="w-full space-y-5 pb-5">
     <header class="flex flex-wrap items-center justify-between gap-3">
-      <div class="min-w-0">
-        <Input
-          v-model="settings.name"
-          class="h-8 max-w-64 border-transparent px-0 text-base font-semibold shadow-none hover:border-input focus-visible:px-2.5"
-          aria-label="Bot 名称"
-          :disabled="loading || saving"
-        />
-        <div class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span :class="['size-1.5 rounded-full', statusClass]" />
-          <span>{{ statusLabel }}</span>
+      <div v-if="creating && creationMode === 'choose'" class="min-w-0">
+        <h3 class="text-base font-semibold">添加飞书 Bot</h3>
+      </div>
+      <div v-else class="flex min-w-0 items-start gap-1">
+        <Button
+          v-if="creating"
+          size="icon-sm"
+          variant="ghost"
+          class="mt-0.5 shrink-0"
+          title="返回接入方式"
+          aria-label="返回接入方式"
+          @click="creationMode = 'choose'"
+        >
+          <ArrowLeftIcon class="size-4" />
+        </Button>
+        <div class="min-w-0">
+          <Input
+            v-model="settings.name"
+            class="h-8 max-w-64 border-transparent px-0 text-base font-semibold shadow-none hover:border-input focus-visible:px-2.5"
+            aria-label="Bot 名称"
+            :disabled="loading || saving"
+          />
+          <div class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span :class="['size-1.5 rounded-full', statusClass]" />
+            <span>{{ statusLabel }}</span>
+          </div>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div v-if="!creating" class="flex items-center gap-2">
         <Tooltip>
           <TooltipTrigger as-child>
             <Button
@@ -275,9 +453,64 @@ onMounted(async () => {
           />
         </label>
       </div>
+      <label
+        v-else-if="creationMode === 'manual'"
+        class="flex items-center gap-2 text-sm font-medium"
+      >
+        <span>{{ settings.enabled ? "已启用" : "未启用" }}</span>
+        <Checkbox
+          :model-value="settings.enabled"
+          :disabled="loading || saving"
+          aria-label="启用飞书"
+          @update:model-value="settings.enabled = $event === true"
+        />
+      </label>
     </header>
 
-    <section>
+    <section
+      v-if="creating && creationMode === 'choose'"
+      class="max-w-2xl"
+    >
+      <h4 class="mb-3 text-sm font-semibold">选择接入方式</h4>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          class="flex min-h-24 items-center gap-3 rounded-md border border-border bg-muted/20 px-4 text-left transition-colors hover:bg-muted/60"
+          :disabled="loading || registrationActive"
+          @click="startRegistration"
+        >
+          <span class="flex size-9 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
+            <QrCodeIcon class="size-5" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-semibold">扫码创建</span>
+            <span class="mt-1 block text-xs text-muted-foreground">
+              自动创建应用并配置权限
+            </span>
+          </span>
+          <ChevronRightIcon class="size-4 shrink-0 text-muted-foreground" />
+        </button>
+        <button
+          type="button"
+          class="flex min-h-24 items-center gap-3 rounded-md border border-border px-4 text-left transition-colors hover:bg-muted/60"
+          :disabled="loading"
+          @click="creationMode = 'manual'"
+        >
+          <span class="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <KeyRoundIcon class="size-5" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-sm font-semibold">手动配置</span>
+            <span class="mt-1 block text-xs text-muted-foreground">
+              使用已有企业自建应用
+            </span>
+          </span>
+          <ChevronRightIcon class="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </div>
+    </section>
+
+    <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3 flex items-center justify-between gap-3">
         <div>
           <h4 class="text-sm font-semibold">应用凭证</h4>
@@ -330,7 +563,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section>
+    <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3">
         <h4 class="text-sm font-semibold">运行配置</h4>
         <p class="mt-0.5 text-xs text-muted-foreground">为飞书会话选择模型、项目和工具权限</p>
@@ -420,7 +653,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section>
+    <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3 flex items-center justify-between gap-4">
         <div>
           <h4 class="text-sm font-semibold">访问范围</h4>
@@ -465,12 +698,69 @@ onMounted(async () => {
     </p>
     <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
 
-    <div class="flex justify-end">
+    <div
+      v-if="!creating || creationMode === 'manual'"
+      class="flex justify-end"
+    >
       <Button :disabled="loading || saving" @click="save">
         <SaveIcon class="size-4" />
         {{ saving ? "保存中..." : settings.enabled ? "保存并启动" : "保存" }}
       </Button>
     </div>
+
+    <Dialog v-model:open="registrationOpen">
+      <DialogContent class="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>扫码添加飞书 Bot</DialogTitle>
+          <DialogDescription>{{ registrationStatusLabel }}</DialogDescription>
+        </DialogHeader>
+
+        <div class="flex min-h-56 items-center justify-center">
+          <img
+            v-if="registrationQRCode && registration?.status === 'pending'"
+            :src="registrationQRCode"
+            alt="飞书授权二维码"
+            class="size-56 bg-white object-contain"
+          />
+          <LoaderCircleIcon
+            v-else-if="registrationActive"
+            class="size-6 animate-spin text-muted-foreground"
+          />
+          <QrCodeIcon v-else class="size-12 text-muted-foreground/50" />
+        </div>
+
+        <p
+          v-if="registrationError"
+          class="text-center text-xs text-destructive"
+        >
+          {{ registrationError }}
+        </p>
+
+        <DialogFooter>
+          <Button
+            v-if="registration?.qr_code_url"
+            variant="outline"
+            @click="openRegistrationURL"
+          >
+            <ExternalLinkIcon class="size-4" />
+            在浏览器打开
+          </Button>
+          <Button
+            v-if="!registrationActive && registration?.status !== 'completed'"
+            @click="startRegistration"
+          >
+            <RefreshCwIcon class="size-4" />
+            重新生成
+          </Button>
+          <Button
+            variant="ghost"
+            @click="registrationOpen = false"
+          >
+            取消
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Dialog v-model:open="deleteConfirmOpen">
       <DialogContent class="sm:max-w-md">

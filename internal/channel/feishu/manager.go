@@ -94,6 +94,8 @@ type Manager struct {
 	settings       map[string]Settings
 	order          []string
 	runs           map[string]*managedRun
+	registrations  map[string]*registrationRun
+	registerApp    appRegistrar
 }
 
 type persistedCatalog struct {
@@ -147,6 +149,8 @@ func newManager(
 		channelFactory: factory,
 		settings:       make(map[string]Settings, len(items)),
 		runs:           make(map[string]*managedRun),
+		registrations:  make(map[string]*registrationRun),
+		registerApp:    defaultAppRegistrar,
 	}
 	for _, item := range items {
 		manager.settings[item.ID] = item
@@ -317,9 +321,18 @@ func (m *Manager) Delete(id string) error {
 func (m *Manager) Close() {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	m.mu.RLock()
+	m.mu.Lock()
 	ids := append([]string(nil), m.order...)
-	m.mu.RUnlock()
+	registrationCancels := make([]context.CancelFunc, 0, len(m.registrations))
+	for _, run := range m.registrations {
+		if run.cancel != nil {
+			registrationCancels = append(registrationCancels, run.cancel)
+		}
+	}
+	m.mu.Unlock()
+	for _, cancel := range registrationCancels {
+		cancel()
+	}
 	for _, id := range ids {
 		m.stopCurrent(id)
 	}

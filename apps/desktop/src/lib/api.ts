@@ -619,6 +619,36 @@ export interface FeishuBotUpdate {
 
 export type ChannelCreate = FeishuBotUpdate & { kind: "feishu" };
 
+export type FeishuRegistrationStatus =
+  | "starting"
+  | "pending"
+  | "completing"
+  | "completed"
+  | "denied"
+  | "expired"
+  | "cancelled"
+  | "error";
+
+export interface FeishuRegistrationInput {
+  name: string;
+  connection_id?: string;
+  model?: string;
+  project_id?: string;
+  approval_mode: "auto" | "full_access";
+  allowed_users: string[];
+  allowed_chats: string[];
+  allow_all: boolean;
+}
+
+export interface FeishuRegistrationState {
+  id: string;
+  status: FeishuRegistrationStatus;
+  qr_code_url?: string;
+  expires_at?: string;
+  channel?: FeishuBotSettings;
+  error?: string;
+}
+
 export type AutomationRunStatus =
   | "idle"
   | "running"
@@ -1351,6 +1381,19 @@ export const api = {
     invoke<string>("create_channel", { settings }).then(
       (r) => JSON.parse(r) as FeishuBotSettings
     ),
+
+  startFeishuRegistration: (settings: FeishuRegistrationInput) =>
+    invoke<string>("start_feishu_registration", { settings }).then(
+      (r) => JSON.parse(r) as FeishuRegistrationState
+    ),
+
+  getFeishuRegistration: (registrationId: string) =>
+    invoke<string>("get_feishu_registration", { registrationId }).then(
+      (r) => JSON.parse(r) as FeishuRegistrationState
+    ),
+
+  cancelFeishuRegistration: (registrationId: string) =>
+    invoke("cancel_feishu_registration", { registrationId }),
 
   updateChannel: (channelId: string, settings: FeishuBotUpdate) =>
     invoke<string>("update_channel", { channelId, settings }).then(
