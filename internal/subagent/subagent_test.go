@@ -243,6 +243,50 @@ Return evidence-backed findings.
 	}
 }
 
+func TestLifecycleCallbacksCanRejectSubagentCompletion(t *testing.T) {
+	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	sessions := newTestSessionManager(t)
+	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	log := newTestStore(t)
+	manager := NewManager(
+		definitions,
+		sessions,
+		recordingRunner{log: log},
+		log,
+		log,
+		broker.New[event.Event](),
+		nil,
+		Limits{},
+	)
+	var started Lifecycle
+	var stopped Lifecycle
+	manager.SetLifecycleCallbacks(
+		func(_ context.Context, lifecycle Lifecycle) {
+			started = lifecycle
+		},
+		func(_ context.Context, lifecycle Lifecycle) (bool, string) {
+			stopped = lifecycle
+			return true, "validation failed"
+		},
+	)
+
+	result, err := manager.Spawn(context.Background(), SpawnRequest{
+		ParentSessionID: parent.ID,
+		RootRunID:       "root-run",
+		Task:            "check",
+	})
+	if err == nil || result.Status != string(StatusFailed) ||
+		result.Error != "validation failed" {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+	if started.ChildSessionID == "" || started.ParentSessionID != parent.ID {
+		t.Fatalf("started lifecycle = %+v", started)
+	}
+	if stopped.Status != "completed" || stopped.Output != "done: check" {
+		t.Fatalf("stopped lifecycle = %+v", stopped)
+	}
+}
+
 type blockingRunner struct {
 	active    atomic.Int32
 	maxActive atomic.Int32

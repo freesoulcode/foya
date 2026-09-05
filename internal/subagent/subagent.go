@@ -23,7 +23,10 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
 	"github.com/freesoulcode/foya/internal/tool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -61,6 +64,18 @@ type Result struct {
 	AgentName      string `json:"agent_name"`
 	Output         string `json:"output,omitempty"`
 	Error          string `json:"error,omitempty"`
+}
+
+type Lifecycle struct {
+	RunID           string
+	ParentSessionID string
+	ChildSessionID  string
+	AgentID         string
+	AgentType       string
+	Task            string
+	Status          string
+	Output          string
+	Error           string
 }
 
 type Status string
@@ -151,6 +166,8 @@ type Manager struct {
 	limits          Limits
 	globalActive    int
 	rootActive      map[string]int
+	onStart         func(context.Context, Lifecycle)
+	onStop          func(context.Context, Lifecycle) (blocked bool, reason string)
 }
 
 func NewManager(
@@ -186,6 +203,18 @@ func NewManager(
 		limits:          limits,
 		rootActive:      make(map[string]int),
 	}
+}
+
+// SetLifecycleCallbacks installs optional callbacks for child-agent lifecycle
+// hooks and telemetry. Callbacks are set during application construction.
+func (m *Manager) SetLifecycleCallbacks(
+	onStart func(context.Context, Lifecycle),
+	onStop func(context.Context, Lifecycle) (blocked bool, reason string),
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onStart = onStart
+	m.onStop = onStop
 }
 
 // Limits returns the scheduler's current runtime configuration.
@@ -247,7 +276,9 @@ func (m *Manager) Start(ctx context.Context, request SpawnRequest) (Snapshot, er
 		return Snapshot{}, fmt.Errorf("internal safety limit reached: too many children per root run")
 	}
 	jobID := newID()
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(
+		trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(ctx)),
+	)
 	state := &runState{
 		snapshot: Snapshot{
 			ID: jobID, Status: StatusQueued, RootSessionID: rootSessionID,
@@ -611,7 +642,7 @@ func (m *Manager) Spawn(ctx context.Context, request SpawnRequest) (Result, erro
 	return m.spawnNow(ctx, request)
 }
 
-func (m *Manager) spawnNow(ctx context.Context, request SpawnRequest) (Result, error) {
+func (m *Manager) spawnNow(ctx context.Context, request SpawnRequest) (result Result, resultErr error) {
 	parent, ok := m.sessions.Get(request.ParentSessionID)
 	if !ok {
 		return Result{}, ErrParentSessionNotFound
@@ -660,6 +691,60 @@ func (m *Manager) spawnNow(ctx context.Context, request SpawnRequest) (Result, e
 		Task:           strings.TrimSpace(request.Task),
 		ToolCallID:     request.ParentToolCallID,
 	}
+	lifecycle := Lifecycle{
+		RunID:           request.RootRunID,
+		ParentSessionID: parent.ID,
+		ChildSessionID:  child.ID,
+		AgentID:         request.RunID,
+		AgentType:       definition.Ref,
+		Task:            strings.TrimSpace(request.Task),
+	}
+	if lifecycle.AgentID == "" {
+		lifecycle.AgentID = child.ID
+	}
+	rootSessionID, _ := m.rootAndDepth(parent.ID)
+	ctx, subagentSpan := foyatelemetry.StartSpan(
+		ctx,
+		"foya.subagent",
+		trace.SpanKindInternal,
+		attribute.String("session.id", child.ID),
+		attribute.String("langfuse.session.id", rootSessionID),
+		attribute.String("langfuse.trace.name", "foya.turn"),
+		attribute.String("langfuse.observation.type", "agent"),
+		attribute.String("foya.parent.session.id", parent.ID),
+		attribute.String("foya.run.id", lifecycle.RunID),
+		attribute.String("foya.agent.id", lifecycle.AgentID),
+		attribute.String("foya.agent.type", definition.Ref),
+	)
+	m.notifyLifecycleStart(context.WithoutCancel(ctx), lifecycle)
+	defer func() {
+		lifecycle.Status = result.Status
+		lifecycle.Output = result.Output
+		lifecycle.Error = result.Error
+		if resultErr != nil && lifecycle.Error == "" {
+			lifecycle.Error = resultErr.Error()
+		}
+		if lifecycle.Status == "" && resultErr != nil {
+			lifecycle.Status = string(StatusFailed)
+		}
+		if blocked, reason := m.notifyLifecycleStop(context.WithoutCancel(ctx), lifecycle); blocked {
+			lifecycle.Status = string(StatusFailed)
+			lifecycle.Error = reason
+			result.Status = lifecycle.Status
+			result.Error = reason
+			resultErr = errors.New(reason)
+		}
+		finalAttrs := []attribute.KeyValue{
+			attribute.String("foya.subagent.status", lifecycle.Status),
+		}
+		if foyatelemetry.CaptureContent() {
+			finalAttrs = append(finalAttrs,
+				attribute.String("foya.subagent.task", lifecycle.Task),
+				attribute.String("foya.subagent.output", lifecycle.Output),
+			)
+		}
+		foyatelemetry.EndSpan(subagentSpan, lifecycle.Status, resultErr, finalAttrs...)
+	}()
 
 	if request.RunID == "" {
 		m.emit(context.WithoutCancel(ctx), parent.ID, event.KindSubAgentStarted, started)
@@ -678,7 +763,7 @@ func (m *Manager) spawnNow(ctx context.Context, request SpawnRequest) (Result, e
 	}
 	err = m.runner.RunTurn(runCtx, child.ID, task)
 	output := m.finalOutput(context.WithoutCancel(ctx), child.ID)
-	result := Result{
+	result = Result{
 		Status: "completed", ChildSessionID: child.ID,
 		AgentRef: definition.Ref, AgentName: definition.Name, Output: output,
 	}
@@ -707,6 +792,28 @@ func (m *Manager) spawnNow(ctx context.Context, request SpawnRequest) (Result, e
 		m.emit(context.WithoutCancel(ctx), parent.ID, event.KindSubAgentCompleted, result)
 	}
 	return result, nil
+}
+
+func (m *Manager) notifyLifecycleStart(ctx context.Context, lifecycle Lifecycle) {
+	m.mu.RLock()
+	callback := m.onStart
+	m.mu.RUnlock()
+	if callback != nil {
+		callback(ctx, lifecycle)
+	}
+}
+
+func (m *Manager) notifyLifecycleStop(
+	ctx context.Context,
+	lifecycle Lifecycle,
+) (bool, string) {
+	m.mu.RLock()
+	callback := m.onStop
+	m.mu.RUnlock()
+	if callback != nil {
+		return callback(ctx, lifecycle)
+	}
+	return false, ""
 }
 
 func (m *Manager) attachChild(runID, childID string, definition agentdef.Definition) {
@@ -976,6 +1083,7 @@ func (t *agentTool) Run(ctx context.Context, call tool.Call) (tool.Result, error
 	result, err := t.manager.Spawn(ctx, SpawnRequest{
 		ParentSessionID:  parentID,
 		ParentToolCallID: call.ID,
+		RootRunID:        tool.RunIDFromContext(ctx),
 		Task:             params.Task,
 		AgentRef:         strings.TrimSpace(params.Agent),
 		Context:          params.Context,

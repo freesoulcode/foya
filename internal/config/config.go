@@ -35,6 +35,7 @@ type Config struct {
 	Addr       string // 监听地址(TransportTCP 时)
 	DataDir    string // 事件日志、SQLite 索引所在目录
 	Agents     AgentLimits
+	Telemetry  Telemetry
 	// DisableExternalIntegrations prevents short-lived CLI commands from
 	// starting persisted long-running transports such as the Feishu bot.
 	DisableExternalIntegrations bool
@@ -51,6 +52,18 @@ type AgentLimits struct {
 	MaxGlobalConcurrency int   `json:"max_global_concurrency"`
 	MaxPerRoot           int   `json:"max_per_root"`
 	MaxTreeTokens        int64 `json:"max_tree_tokens"`
+}
+
+// Telemetry configures the optional OpenTelemetry exporters. Exporter
+// endpoints, protocols, headers, and TLS settings use the standard OTEL_*
+// environment variables understood by the Go SDK.
+type Telemetry struct {
+	Enabled        bool
+	TracesEnabled  bool
+	MetricsEnabled bool
+	CaptureContent bool
+	ServiceName    string
+	Environment    string
 }
 
 var ErrInvalidAgentLimits = errors.New("invalid agent limits")
@@ -155,8 +168,35 @@ func Default() Config {
 			MaxPerRoot:           envInt("FOYA_AGENT_MAX_PER_ROOT", 4),
 			MaxTreeTokens:        int64(envInt("FOYA_AGENT_MAX_TREE_TOKENS", 0)),
 		},
+		Telemetry: Telemetry{
+			Enabled:        envBool("FOYA_OTEL_ENABLED", false),
+			TracesEnabled:  envBool("FOYA_OTEL_TRACES_ENABLED", true),
+			MetricsEnabled: envBool("FOYA_OTEL_METRICS_ENABLED", false),
+			CaptureContent: envBool("FOYA_OTEL_CAPTURE_CONTENT", false),
+			ServiceName:    envString("OTEL_SERVICE_NAME", "foya"),
+			Environment:    envString("FOYA_OTEL_ENVIRONMENT", "development"),
+		},
 		Provider: providerFromEnv(),
 	}
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envString(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func envInt(name string, fallback int) int {

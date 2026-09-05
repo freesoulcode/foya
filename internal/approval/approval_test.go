@@ -61,6 +61,27 @@ func TestGatewayUsesGuardianInAutoMode(t *testing.T) {
 	}
 }
 
+func TestGatewayPermissionHookCanResolveRequest(t *testing.T) {
+	called := false
+	ctx := WithRequestHook(
+		WithMode(context.Background(), ModeManual),
+		func(_ context.Context, request Request) (Decision, bool) {
+			called = true
+			if request.ToolName != "bash" {
+				t.Fatalf("request = %+v", request)
+			}
+			return DecisionDenied, true
+		},
+	)
+	decision, err := newTestGateway(t).Request(ctx, Request{
+		ToolName: "bash",
+		Action:   "execute",
+	})
+	if err != nil || decision != DecisionDenied || !called {
+		t.Fatalf("decision = %q, called = %v, err = %v", decision, called, err)
+	}
+}
+
 func TestGuardianApprovalIsNotCached(t *testing.T) {
 	gateway := newTestGateway(t)
 	request := Request{

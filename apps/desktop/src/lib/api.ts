@@ -695,10 +695,17 @@ export interface AutomationInput {
 
 export type HookEvent =
   | "SessionStart"
+  | "SessionEnd"
   | "UserPromptSubmit"
   | "PreToolUse"
   | "PostToolUse"
+  | "PermissionRequest"
+  | "SubagentStart"
+  | "SubagentStop"
+  | "PreCompact"
+  | "PostCompact"
   | "Stop"
+  | "TurnComplete"
   | "Notification";
 
 export interface HookConfig {
@@ -708,6 +715,7 @@ export interface HookConfig {
   matcher?: string;
   command: string;
   timeout?: number;
+  async?: boolean;
   enabled?: boolean;
 }
 

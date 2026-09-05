@@ -16,24 +16,36 @@ import (
 type Event string
 
 const (
-	EventSessionStart     Event = "SessionStart"
-	EventUserPromptSubmit Event = "UserPromptSubmit"
-	EventPreToolUse       Event = "PreToolUse"
-	EventPostToolUse      Event = "PostToolUse"
-	EventStop             Event = "Stop"
-	EventNotification     Event = "Notification"
+	EventSessionStart      Event = "SessionStart"
+	EventSessionEnd        Event = "SessionEnd"
+	EventUserPromptSubmit  Event = "UserPromptSubmit"
+	EventPreToolUse        Event = "PreToolUse"
+	EventPostToolUse       Event = "PostToolUse"
+	EventPermissionRequest Event = "PermissionRequest"
+	EventSubagentStart     Event = "SubagentStart"
+	EventSubagentStop      Event = "SubagentStop"
+	EventPreCompact        Event = "PreCompact"
+	EventPostCompact       Event = "PostCompact"
+	EventStop              Event = "Stop"
+	EventTurnComplete      Event = "TurnComplete"
+	EventNotification      Event = "Notification"
 )
 
 // IsAsync reports whether this event is observational and cannot block the
 // agent lifecycle.
 func (e Event) IsAsync() bool {
-	return e == EventNotification
+	switch e {
+	case EventSessionEnd, EventPostCompact, EventTurnComplete, EventNotification:
+		return true
+	default:
+		return false
+	}
 }
 
 // SupportsControlEffects reports whether a handler may block or modify the
 // agent lifecycle.
 func (e Event) SupportsControlEffects() bool {
-	return e != EventNotification
+	return !e.IsAsync()
 }
 
 // Config is one user-configured command executed for an Event.
@@ -44,6 +56,7 @@ type Config struct {
 	Matcher string `json:"matcher,omitempty"`
 	Command string `json:"command"`
 	Timeout int    `json:"timeout,omitempty"` // seconds; defaults to 30
+	Async   bool   `json:"async,omitempty"`
 	Enabled *bool  `json:"enabled,omitempty"`
 }
 
@@ -101,10 +114,17 @@ func Validate(items []Config) error {
 
 		switch item.Event {
 		case EventSessionStart,
+			EventSessionEnd,
 			EventUserPromptSubmit,
 			EventPreToolUse,
 			EventPostToolUse,
+			EventPermissionRequest,
+			EventSubagentStart,
+			EventSubagentStop,
+			EventPreCompact,
+			EventPostCompact,
 			EventStop,
+			EventTurnComplete,
 			EventNotification:
 		default:
 			return fmt.Errorf("%w: hooks[%d].event %q: %w", ErrInvalidHooksConfig, index, item.Event, ErrInvalidEvent)

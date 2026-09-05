@@ -24,9 +24,12 @@ import (
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/state"
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
 	"github.com/freesoulcode/foya/internal/title"
 	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/workflow"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxToolStepsUnlimited 表示不设步数上限(交互式桌面默认)。
@@ -40,6 +43,7 @@ var (
 	ErrTurnCancelledByUser          = errors.New("turn cancelled by user")
 	ErrTurnCancelledBySessionDelete = errors.New("turn cancelled by session deletion")
 	ErrTurnCancelledByQueueDispatch = errors.New("turn cancelled by queued message dispatch")
+	ErrCompactionBlockedByHook      = errors.New("context compaction blocked by hook")
 )
 
 const toolCancelledByUserResult = `{"status":"cancelled","initiated_by":"user","message":"The user cancelled this tool execution. Do not treat it as an infrastructure failure."}`
@@ -755,7 +759,7 @@ func (e *Engine) compactHistory(
 	sessionID, model string,
 	phase compaction.Phase,
 	trigger string,
-) (*compaction.Checkpoint, error) {
+) (checkpointResult *compaction.Checkpoint, resultErr error) {
 	events, err := e.log.Events(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -792,6 +796,91 @@ func (e *Engine) compactHistory(
 	if planningPrevious == nil && previous != nil {
 		plan.PreviousCheckpointID = previous.CheckpointID
 	}
+	compactionStartedAt := time.Now()
+	compactionAttrs := []attribute.KeyValue{
+		attribute.String("session.id", sessionID),
+		attribute.String("langfuse.session.id", e.rootSessionID(sessionID)),
+		attribute.String("langfuse.trace.name", "foya.turn"),
+		attribute.String("langfuse.observation.type", "span"),
+		attribute.String("foya.run.id", tool.RunIDFromContext(ctx)),
+		attribute.String("foya.compaction.trigger", trigger),
+		attribute.String("foya.compaction.phase", string(plan.Phase)),
+		attribute.Int64("foya.compaction.through_seq", int64(plan.ThroughSeq)),
+		attribute.Int("foya.compaction.covered_messages", plan.CoveredMessages),
+		attribute.Int64("foya.compaction.estimated_tokens_before", plan.EstimatedTokens),
+	}
+	ctx, compactionSpan := foyatelemetry.StartSpan(
+		ctx,
+		"foya.compaction",
+		trace.SpanKindInternal,
+		compactionAttrs...,
+	)
+	defer func() {
+		finalAttrs := append([]attribute.KeyValue(nil), compactionAttrs...)
+		status := "completed"
+		if checkpointResult != nil {
+			finalAttrs = append(finalAttrs,
+				attribute.String("foya.compaction.checkpoint_id", checkpointResult.CheckpointID),
+				attribute.Int64("foya.compaction.estimated_tokens_after", checkpointResult.EstimatedTokensAfter),
+			)
+		}
+		if resultErr != nil {
+			status = "failed"
+		}
+		foyatelemetry.EndSpan(compactionSpan, status, resultErr, finalAttrs...)
+		foyatelemetry.RecordCompaction(
+			context.WithoutCancel(ctx),
+			time.Since(compactionStartedAt),
+			attribute.String("foya.compaction.trigger", trigger),
+			attribute.String("foya.compaction.phase", string(plan.Phase)),
+			attribute.String("foya.compaction.status", status),
+		)
+	}()
+	preCompact := e.runHook(ctx, sessionID, hooks.Request{
+		Event:             hooks.EventPreCompact,
+		RunID:             tool.RunIDFromContext(ctx),
+		CompactionTrigger: trigger,
+		CompactionPhase:   string(plan.Phase),
+		Metadata: map[string]any{
+			"through_seq":      plan.ThroughSeq,
+			"covered_messages": plan.CoveredMessages,
+			"estimated_tokens": plan.EstimatedTokens,
+		},
+	})
+	if preCompact.Decision == hooks.DecisionDeny || preCompact.Halt {
+		reason := hookFeedback(preCompact, ErrCompactionBlockedByHook.Error())
+		return nil, fmt.Errorf("%w: %s", ErrCompactionBlockedByHook, reason)
+	}
+	defer func() {
+		completedAt := time.Now()
+		status := "completed"
+		errorText := ""
+		metadata := map[string]any{
+			"trigger": trigger,
+			"phase":   plan.Phase,
+		}
+		if checkpointResult != nil {
+			metadata["checkpoint_id"] = checkpointResult.CheckpointID
+			metadata["estimated_tokens_before"] = checkpointResult.EstimatedTokensBefore
+			metadata["estimated_tokens_after"] = checkpointResult.EstimatedTokensAfter
+		}
+		if resultErr != nil {
+			status = "failed"
+			errorText = resultErr.Error()
+		}
+		e.observeHook(context.WithoutCancel(ctx), sessionID, hooks.Request{
+			Event:             hooks.EventPostCompact,
+			RunID:             tool.RunIDFromContext(ctx),
+			CompactionTrigger: trigger,
+			CompactionPhase:   string(plan.Phase),
+			Status:            status,
+			Error:             errorText,
+			StartedAt:         &compactionStartedAt,
+			CompletedAt:       &completedAt,
+			DurationMS:        completedAt.Sub(compactionStartedAt).Milliseconds(),
+			Metadata:          metadata,
+		})
+	}()
 	fingerprint := compactionFingerprint(plan, route)
 	if e.compactionFailureSeen(sessionID, fingerprint) {
 		e.emitCompactionDiagnostic(ctx, sessionID, compactionDiagnostic{
@@ -1235,7 +1324,42 @@ func (e *Engine) runTurn(
 	defer cancel(nil)
 	ctx = turnCtx
 	ctx = tool.WithRunID(ctx, runID)
+	model := e.currentModel(sessionID)
+	prov := e.currentProvider(sessionID)
+	userText := input.Text
+	reasoningEffort := e.resolveReasoningEffort(sessionID)
+	projectPath := e.resolveProjectPath(sessionID)
+	turnAttrs := []attribute.KeyValue{
+		attribute.String("session.id", sessionID),
+		attribute.String("langfuse.session.id", e.rootSessionID(sessionID)),
+		attribute.String("langfuse.trace.name", "foya.turn"),
+		attribute.String("foya.run.id", runID),
+		attribute.String("foya.project.id", e.resolveProjectID(sessionID)),
+		attribute.String("gen_ai.request.model", model),
+	}
+	if prov != nil {
+		turnAttrs = append(turnAttrs, attribute.String("gen_ai.system", prov.Name()))
+	}
+	if foyatelemetry.CaptureContent() {
+		turnAttrs = append(turnAttrs,
+			attribute.String("foya.turn.input", foyatelemetry.Content(userText)),
+			attribute.String("langfuse.trace.input", foyatelemetry.Content(userText)),
+		)
+	}
+	ctx, turnSpan := foyatelemetry.StartSpan(ctx, "foya.turn", trace.SpanKindInternal, turnAttrs...)
+	turnSpanEnded := false
+	defer func() {
+		if !turnSpanEnded {
+			foyatelemetry.EndSpan(
+				turnSpan,
+				turnStatusFailed,
+				errors.New("turn exited without completion"),
+			)
+		}
+	}()
 	terminalAssistantRecorded := false
+	finalAssistantMessage := ""
+	turnUsage := provider.Usage{Model: model}
 	recordPartialAssistant := func(content, reasoning, status, reason string) {
 		if terminalAssistantRecorded ||
 			strings.TrimSpace(content) == "" && strings.TrimSpace(reasoning) == "" {
@@ -1251,6 +1375,7 @@ func (e *Engine) runTurn(
 			TurnStatus:      status,
 			TurnReason:      reason,
 		}, true)
+		finalAssistantMessage = content
 		terminalAssistantRecorded = true
 	}
 	completeTurn := func(status, reason string) {
@@ -1280,6 +1405,19 @@ func (e *Engine) runTurn(
 			Status:      status,
 			Reason:      reason,
 		}, true)
+		e.observeHook(persistCtx, sessionID, hooks.Request{
+			Event:            hooks.EventTurnComplete,
+			RunID:            runID,
+			Status:           status,
+			Reason:           reason,
+			StartedAt:        &turnStartedAt,
+			CompletedAt:      &completedAt,
+			DurationMS:       completedAt.Sub(turnStartedAt).Milliseconds(),
+			AssistantMessage: finalAssistantMessage,
+			Metadata: map[string]any{
+				"usage": turnUsage,
+			},
+		})
 		e.notifyHook(persistCtx, sessionID, hookRequest(
 			hooks.EventNotification,
 			runID,
@@ -1289,15 +1427,33 @@ func (e *Engine) runTurn(
 			"",
 			"turn_complete",
 		))
+		finalAttrs := append([]attribute.KeyValue(nil), turnAttrs...)
+		finalAttrs = append(finalAttrs,
+			attribute.String("foya.turn.status", status),
+			attribute.String("foya.turn.reason", reason),
+			attribute.Int64("gen_ai.usage.input_tokens", turnUsage.InputTokens),
+			attribute.Int64("gen_ai.usage.output_tokens", turnUsage.OutputTokens),
+			attribute.Int64("foya.usage.cached_input_tokens", turnUsage.CachedTokens),
+		)
+		if foyatelemetry.CaptureContent() {
+			finalAttrs = append(finalAttrs,
+				attribute.String("foya.turn.output", foyatelemetry.Content(finalAssistantMessage)),
+				attribute.String("langfuse.trace.output", foyatelemetry.Content(finalAssistantMessage)),
+			)
+		}
+		foyatelemetry.EndSpan(turnSpan, status, nil, finalAttrs...)
+		metricAttrs := []attribute.KeyValue{
+			attribute.String("foya.turn.status", status),
+			attribute.String("gen_ai.request.model", model),
+		}
+		if prov != nil {
+			metricAttrs = append(metricAttrs, attribute.String("gen_ai.system", prov.Name()))
+		}
+		foyatelemetry.RecordTurn(persistCtx, completedAt.Sub(turnStartedAt), metricAttrs...)
+		turnSpanEnded = true
 	}
 	e.setSessionPhase(ctx, sessionID, session.PhaseTurn)
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
-
-	model := e.currentModel(sessionID)
-	prov := e.currentProvider(sessionID)
-	userText := input.Text
-	reasoningEffort := e.resolveReasoningEffort(sessionID)
-	projectPath := e.resolveProjectPath(sessionID)
 
 	// 注入会话级配置到 context:工作目录供工具读,审批档位供网关读。
 	if e.sessions != nil {
@@ -1308,6 +1464,31 @@ func (e *Engine) runTurn(
 		ctx = approval.WithMode(ctx, e.resolveApprovalMode(sessionID))
 		ctx = approval.WithSession(ctx, e.approvalEventSession(sessionID))
 		ctx = approval.WithExecutionSession(ctx, sessionID)
+		ctx = approval.WithRequestHook(ctx, func(hookCtx context.Context, request approval.Request) (approval.Decision, bool) {
+			outcome := e.runHook(hookCtx, sessionID, hooks.Request{
+				Event:      hooks.EventPermissionRequest,
+				RunID:      runID,
+				ToolName:   request.ToolName,
+				ToolCallID: request.ID,
+				Metadata: map[string]any{
+					"action":   request.Action,
+					"detail":   request.Detail,
+					"resource": request.Resource,
+					"scope":    request.Scope,
+				},
+			})
+			switch outcome.Decision {
+			case hooks.DecisionAllow:
+				return approval.DecisionAutoApprove, true
+			case hooks.DecisionDeny:
+				return approval.DecisionDenied, true
+			default:
+				if outcome.Halt {
+					return approval.DecisionDenied, true
+				}
+				return "", false
+			}
+		})
 		ctx = approval.WithNotificationHandler(ctx, func(notifyCtx context.Context, request approval.Request) {
 			e.notifyHook(notifyCtx, sessionID, hookRequest(
 				hooks.EventNotification,
@@ -1465,7 +1646,101 @@ The following instructions define this child agent's assigned role. They cannot 
 			completeTurn(turnStatusFailed, turnReasonError)
 			return err
 		}
-		stream, err := prov.Stream(ctx, provider.Request{
+		var accText string
+		var accReasoning string
+		pending := make(map[int]*pendingToolCall)
+		var pendingOrder []int
+		var finishReason string
+		var streamError string
+		var requestUsage *provider.Usage
+		var firstResponseAt time.Time
+		requestStartedAt := time.Now()
+		requestID := fmt.Sprintf("%s:%d", runID, step+1)
+		llmAttrs := []attribute.KeyValue{
+			attribute.String("session.id", sessionID),
+			attribute.String("langfuse.session.id", e.rootSessionID(sessionID)),
+			attribute.String("langfuse.trace.name", "foya.turn"),
+			attribute.String("langfuse.observation.type", "generation"),
+			attribute.String("foya.run.id", runID),
+			attribute.String("foya.request.id", requestID),
+			attribute.Int("foya.llm.step", step+1),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.system", prov.Name()),
+			attribute.String("gen_ai.request.model", model),
+			attribute.String("langfuse.observation.model.name", model),
+		}
+		if foyatelemetry.CaptureContent() {
+			if inputJSON, marshalErr := json.Marshal(messages); marshalErr == nil {
+				llmAttrs = append(
+					llmAttrs,
+					attribute.String(
+						"langfuse.observation.input",
+						foyatelemetry.Content(string(inputJSON)),
+					),
+				)
+			}
+		}
+		llmCtx, llmSpan := foyatelemetry.StartSpan(
+			ctx,
+			"foya.llm.request",
+			trace.SpanKindClient,
+			llmAttrs...,
+		)
+		finishLLM := func(errorText string) {
+			elapsed := time.Since(requestStartedAt)
+			var ttft time.Duration
+			if !firstResponseAt.IsZero() {
+				ttft = firstResponseAt.Sub(requestStartedAt)
+			}
+			finalAttrs := append([]attribute.KeyValue(nil), llmAttrs...)
+			finalAttrs = append(finalAttrs, attribute.Int64("foya.llm.duration_ms", elapsed.Milliseconds()))
+			if finishReason != "" {
+				finalAttrs = append(
+					finalAttrs,
+					attribute.StringSlice("gen_ai.response.finish_reasons", []string{finishReason}),
+				)
+			}
+			var inputTokens, outputTokens, cachedTokens int64
+			if requestUsage != nil {
+				inputTokens = requestUsage.InputTokens
+				outputTokens = requestUsage.OutputTokens
+				cachedTokens = requestUsage.CachedTokens
+				finalAttrs = append(finalAttrs,
+					attribute.Int64("gen_ai.usage.input_tokens", inputTokens),
+					attribute.Int64("gen_ai.usage.output_tokens", outputTokens),
+					attribute.Int64("foya.usage.cached_input_tokens", cachedTokens),
+				)
+			}
+			if ttft > 0 {
+				finalAttrs = append(finalAttrs, attribute.Int64("foya.llm.ttft_ms", ttft.Milliseconds()))
+			}
+			if foyatelemetry.CaptureContent() {
+				finalAttrs = append(finalAttrs,
+					attribute.String("gen_ai.response.text", foyatelemetry.Content(accText)),
+					attribute.String("foya.llm.reasoning", foyatelemetry.Content(accReasoning)),
+					attribute.String("langfuse.observation.output", foyatelemetry.Content(accText)),
+				)
+			}
+			var spanErr error
+			if errorText != "" {
+				spanErr = errors.New(errorText)
+			}
+			foyatelemetry.EndSpan(llmSpan, "completed", spanErr, finalAttrs...)
+			foyatelemetry.RecordLLM(
+				llmCtx,
+				elapsed,
+				ttft,
+				inputTokens,
+				outputTokens,
+				cachedTokens,
+				spanErr != nil,
+				attribute.String("gen_ai.system", prov.Name()),
+				attribute.String("gen_ai.request.model", model),
+				attribute.String("langfuse.observation.model.name", model),
+				attribute.Bool("foya.llm.failed", spanErr != nil),
+			)
+		}
+		stream, err := prov.Stream(llmCtx, provider.Request{
 			Model:           model,
 			ReasoningEffort: reasoningEffort,
 			MaxOutputTokens: e.modelTokenLimits(sessionID, model).MaxOutputTokens,
@@ -1474,6 +1749,7 @@ The following instructions define this child agent's assigned role. They cannot 
 			ContextState:    contextState,
 		})
 		if err != nil {
+			finishLLM(err.Error())
 			// ctx 取消(用户点停止)不算错误,只安静结束回合。
 			if ctx.Err() != nil {
 				completeTurn(turnCompletionFromContext(ctx))
@@ -1497,20 +1773,22 @@ The following instructions define this child agent's assigned role. They cannot 
 			return err
 		}
 
-		var accText string
-		var accReasoning string
-		pending := make(map[int]*pendingToolCall)
-		var pendingOrder []int
-		var finishReason string
-		var streamError string
-		var requestUsage *provider.Usage
-
 		for ev := range stream {
+			if firstResponseAt.IsZero() {
+				switch ev.Type {
+				case "text_delta", "reasoning_delta", "tool_call_delta":
+					firstResponseAt = time.Now()
+				}
+			}
 			switch ev.Type {
 			case "usage":
 				if ev.Usage != nil {
 					usage := *ev.Usage
 					requestUsage = &usage
+					turnUsage.InputTokens += usage.InputTokens
+					turnUsage.OutputTokens += usage.OutputTokens
+					turnUsage.TotalTokens += usage.TotalTokens
+					turnUsage.CachedTokens += usage.CachedTokens
 					e.emit(ctx, sessionID, event.KindUsageUpdated, *ev.Usage, true)
 					e.observeUsage(sessionID, usage)
 				}
@@ -1564,6 +1842,7 @@ The following instructions define this child agent's assigned role. They cannot 
 				finishReason = ev.FinishReason
 			}
 		}
+		finishLLM(streamError)
 		if requestUsage != nil && requestUsage.InputTokens > 0 {
 			e.requestBudgets.Store(sessionID, requestBudgetState{
 				route:        e.modelRouteKey(sessionID, model),
@@ -1623,6 +1902,7 @@ The following instructions define this child agent's assigned role. They cannot 
 			asstMsg.TurnCompletedAt = &turnCompletedAt
 			asstMsg.TurnStatus = status
 			asstMsg.TurnReason = reason
+			finalAssistantMessage = accText
 			terminalAssistantRecorded = true
 		}
 		messageCtx := ctx
@@ -1763,18 +2043,63 @@ func (e *Engine) executeToolCalls(
 			item.output = "已中断"
 			return
 		}
+		spanStartedAt := time.Now()
+		spanAttrs := []attribute.KeyValue{
+			attribute.String("session.id", sessionID),
+			attribute.String("langfuse.session.id", e.rootSessionID(sessionID)),
+			attribute.String("langfuse.trace.name", "foya.turn"),
+			attribute.String("langfuse.observation.type", "tool"),
+			attribute.String("foya.run.id", tool.RunIDFromContext(ctx)),
+			attribute.String("gen_ai.tool.name", item.call.Name),
+			attribute.String("gen_ai.tool.call.id", item.call.ID),
+		}
+		if foyatelemetry.CaptureContent() {
+			spanAttrs = append(spanAttrs,
+				attribute.String("gen_ai.tool.call.arguments", foyatelemetry.Content(string(item.call.Input))),
+				attribute.String("langfuse.observation.input", foyatelemetry.Content(string(item.call.Input))),
+			)
+		}
+		toolCtx, toolSpan := foyatelemetry.StartSpan(
+			ctx,
+			"foya.tool",
+			trace.SpanKindInternal,
+			spanAttrs...,
+		)
+		defer func() {
+			status := "completed"
+			var spanErr error
+			if item.isErr {
+				status = "failed"
+				spanErr = errors.New("tool execution failed")
+			}
+			finalAttrs := append([]attribute.KeyValue(nil), spanAttrs...)
+			finalAttrs = append(finalAttrs, attribute.String("foya.tool.status", status))
+			if foyatelemetry.CaptureContent() {
+				finalAttrs = append(finalAttrs,
+					attribute.String("gen_ai.tool.call.result", foyatelemetry.Content(item.output)),
+					attribute.String("langfuse.observation.output", foyatelemetry.Content(item.output)),
+				)
+			}
+			foyatelemetry.EndSpan(toolSpan, status, spanErr, finalAttrs...)
+			foyatelemetry.RecordTool(
+				toolCtx,
+				time.Since(spanStartedAt),
+				attribute.String("gen_ai.tool.name", item.call.Name),
+				attribute.String("foya.tool.status", status),
+			)
+		}()
 		if guard.blockBeforeExec(item.sig) {
 			item.output = loopGateText(item.call.Name)
 			item.isErr = true
-			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+			e.emit(toolCtx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: item.call.ID, Name: item.call.Name, Output: item.output,
 				IsError: true, Status: "error",
 			}, true)
 			return
 		}
-		preHook := e.runHook(ctx, sessionID, hookRequest(
+		preHook := e.runHook(toolCtx, sessionID, hookRequest(
 			hooks.EventPreToolUse,
-			tool.RunIDFromContext(ctx),
+			tool.RunIDFromContext(toolCtx),
 			"",
 			item.call,
 			"",
@@ -1787,7 +2112,7 @@ func (e *Engine) executeToolCalls(
 		if preHook.Decision == hooks.DecisionDeny {
 			item.output = "工具调用被 hook 拦截: " + hookFeedback(preHook, "操作不被允许")
 			item.isErr = true
-			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+			e.emit(toolCtx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: item.call.ID, Name: item.call.Name, Output: item.output,
 				IsError: true, Status: "error",
 			}, true)
@@ -1796,20 +2121,32 @@ func (e *Engine) executeToolCalls(
 		if len(preHook.UpdatedInput) > 0 {
 			item.call.Input = preHook.UpdatedInput
 		}
-		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+		e.emit(toolCtx, sessionID, event.KindToolUpdate, toolCallPayload{
 			ID: item.call.ID, Name: item.call.Name, Input: string(item.call.Input), Status: "running",
 		}, true)
-		result := e.executeTool(ctx, sessionID, item.call)
+		toolStartedAt := time.Now()
+		result := e.executeTool(toolCtx, sessionID, item.call)
+		toolCompletedAt := time.Now()
 		appendHookText(&result, preHook.Context)
-		postHook := e.runHook(ctx, sessionID, hookRequest(
+		postRequest := hookRequest(
 			hooks.EventPostToolUse,
-			tool.RunIDFromContext(ctx),
+			tool.RunIDFromContext(toolCtx),
 			"",
 			item.call,
 			resultText(result),
 			"",
 			"",
-		))
+		)
+		postRequest.Status = "completed"
+		postRequest.StartedAt = &toolStartedAt
+		postRequest.CompletedAt = &toolCompletedAt
+		postRequest.DurationMS = toolCompletedAt.Sub(toolStartedAt).Milliseconds()
+		postRequest.ToolIsError = result.IsError
+		if result.IsError {
+			postRequest.Status = "failed"
+			postRequest.Error = resultText(result)
+		}
+		postHook := e.runHook(toolCtx, sessionID, postRequest)
 		appendHookText(&result, postHook.Context)
 		if postHook.Decision == hooks.DecisionDeny {
 			result.IsError = true
@@ -1821,11 +2158,11 @@ func (e *Engine) executeToolCalls(
 			item.terminate = true
 		}
 		item.output = resultText(result)
-		item.attachments = e.persistToolImages(ctx, sessionID, item.call.Name, result)
+		item.attachments = e.persistToolImages(toolCtx, sessionID, item.call.Name, result)
 		item.isErr = result.IsError
 		item.diff = result.Diff
 		item.fileChange = result.FileChange
-		if ctx.Err() != nil {
+		if toolCtx.Err() != nil {
 			item.output = "已中断"
 			item.isErr = false
 		}
@@ -1833,7 +2170,7 @@ func (e *Engine) executeToolCalls(
 		if item.isErr {
 			status = "error"
 		}
-		e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
+		e.emit(toolCtx, sessionID, event.KindToolUpdate, toolCallPayload{
 			ID: item.call.ID, Name: item.call.Name, Output: item.output,
 			Attachments: item.attachments, IsError: item.isErr, Diff: item.diff, Status: status,
 		}, true)
@@ -2315,6 +2652,21 @@ func (e *Engine) resolveProjectID(sessionID string) string {
 	return ""
 }
 
+func (e *Engine) rootSessionID(sessionID string) string {
+	if e.sessions == nil {
+		return sessionID
+	}
+	rootID := sessionID
+	for rootID != "" {
+		item, ok := e.sessions.Get(rootID)
+		if !ok || item.ParentID == "" {
+			return rootID
+		}
+		rootID = item.ParentID
+	}
+	return sessionID
+}
+
 func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
 	if s, ok := e.sessions.Get(sessionID); ok && s.ApprovalMode != "" {
 		return approval.Mode(s.ApprovalMode)
@@ -2323,10 +2675,7 @@ func (e *Engine) resolveApprovalMode(sessionID string) approval.Mode {
 }
 
 func (e *Engine) approvalEventSession(sessionID string) string {
-	if s, ok := e.sessions.Get(sessionID); ok && s.ParentID != "" {
-		return s.ParentID
-	}
-	return sessionID
+	return e.rootSessionID(sessionID)
 }
 
 // resolveReasoningEffort returns the Session-level override. The empty value

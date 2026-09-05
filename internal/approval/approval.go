@@ -17,6 +17,9 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/state"
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Mode 是审批档位。
@@ -93,6 +96,7 @@ const (
 	ctxKeyExecutionSession
 	ctxKeyReviewer
 	ctxKeyNotification
+	ctxKeyRequestHook
 )
 
 // WithMode 把审批档位注入上下文。
@@ -124,6 +128,14 @@ type NotificationHandler func(context.Context, Request)
 // current tool execution.
 func WithNotificationHandler(ctx context.Context, handler NotificationHandler) context.Context {
 	return context.WithValue(ctx, ctxKeyNotification, handler)
+}
+
+// RequestHook can resolve an approval before the built-in reviewer or user
+// prompt runs. Returning handled=false preserves the normal approval flow.
+type RequestHook func(context.Context, Request) (decision Decision, handled bool)
+
+func WithRequestHook(ctx context.Context, hook RequestHook) context.Context {
+	return context.WithValue(ctx, ctxKeyRequestHook, hook)
 }
 
 type pendingRequest struct {
@@ -158,7 +170,7 @@ func NewGateway(bus *broker.Broker[event.Event], log state.Log) Gateway {
 }
 
 // Request 由工具内部调用。根据审批档位决定自动放行/拒绝/等待用户。
-func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
+func (g *gateway) Request(ctx context.Context, req Request) (decision Decision, resultErr error) {
 	mode := ModeFromContext(ctx)
 	if !ValidMode(mode) {
 		return DecisionDenied, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
@@ -178,6 +190,49 @@ func (g *gateway) Request(ctx context.Context, req Request) (Decision, error) {
 	}
 	if g.hasGrant(req) {
 		return DecisionApprovedForSession, nil
+	}
+	startedAt := time.Now()
+	approvalAttrs := []attribute.KeyValue{
+		attribute.String("session.id", req.ExecutionSession),
+		attribute.String("langfuse.session.id", req.Session),
+		attribute.String("langfuse.trace.name", "foya.turn"),
+		attribute.String("langfuse.observation.type", "span"),
+		attribute.String("foya.approval.id", req.ID),
+		attribute.String("foya.approval.tool", req.ToolName),
+		attribute.String("foya.approval.action", req.Action),
+	}
+	ctx, approvalSpan := foyatelemetry.StartSpan(
+		ctx,
+		"foya.approval.wait",
+		trace.SpanKindInternal,
+		approvalAttrs...,
+	)
+	defer func() {
+		finalAttrs := append(
+			[]attribute.KeyValue(nil),
+			approvalAttrs...,
+		)
+		finalAttrs = append(finalAttrs, attribute.String("foya.approval.decision", string(decision)))
+		status := "completed"
+		if resultErr != nil || decision == DecisionDenied {
+			status = "failed"
+		}
+		foyatelemetry.EndSpan(approvalSpan, status, resultErr, finalAttrs...)
+		foyatelemetry.RecordApproval(
+			ctx,
+			time.Since(startedAt),
+			attribute.String("foya.approval.tool", req.ToolName),
+			attribute.String("foya.approval.action", req.Action),
+			attribute.String("foya.approval.decision", string(decision)),
+		)
+	}()
+	if hook, ok := ctx.Value(ctxKeyRequestHook).(RequestHook); ok && hook != nil {
+		if decision, handled := hook(ctx, req); handled {
+			if decision != DecisionAutoApprove && decision != DecisionDenied {
+				return DecisionDenied, fmt.Errorf("%w from permission hook: %q", ErrInvalidDecision, decision)
+			}
+			return decision, nil
+		}
 	}
 
 	if mode == ModeAuto {

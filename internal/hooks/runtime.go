@@ -6,6 +6,8 @@ package hooks
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,10 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -25,20 +31,39 @@ const (
 // Request is the stable input contract delivered to hook commands.
 // Fields irrelevant to an event are omitted.
 type Request struct {
-	Version          int             `json:"version"`
-	Event            Event           `json:"event"`
-	SessionID        string          `json:"session_id,omitempty"`
-	RunID            string          `json:"run_id,omitempty"`
-	CWD              string          `json:"cwd,omitempty"`
-	ProjectPath      string          `json:"project_path,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	UserPrompt       string          `json:"user_prompt,omitempty"`
-	ToolName         string          `json:"tool_name,omitempty"`
-	ToolCallID       string          `json:"tool_call_id,omitempty"`
-	ToolInput        json.RawMessage `json:"tool_input,omitempty"`
-	ToolOutput       string          `json:"tool_output,omitempty"`
-	AssistantMessage string          `json:"assistant_message,omitempty"`
-	Notification     string          `json:"notification,omitempty"`
+	Version           int             `json:"version"`
+	EventID           string          `json:"event_id"`
+	Event             Event           `json:"event"`
+	OccurredAt        time.Time       `json:"occurred_at"`
+	SessionID         string          `json:"session_id,omitempty"`
+	RootSessionID     string          `json:"root_session_id,omitempty"`
+	RunID             string          `json:"run_id,omitempty"`
+	CWD               string          `json:"cwd,omitempty"`
+	ProjectID         string          `json:"project_id,omitempty"`
+	ProjectPath       string          `json:"project_path,omitempty"`
+	Model             string          `json:"model,omitempty"`
+	Source            string          `json:"source,omitempty"`
+	Status            string          `json:"status,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	StartedAt         *time.Time      `json:"started_at,omitempty"`
+	CompletedAt       *time.Time      `json:"completed_at,omitempty"`
+	DurationMS        int64           `json:"duration_ms,omitempty"`
+	UserPrompt        string          `json:"user_prompt,omitempty"`
+	ToolName          string          `json:"tool_name,omitempty"`
+	ToolCallID        string          `json:"tool_call_id,omitempty"`
+	ToolInput         json.RawMessage `json:"tool_input,omitempty"`
+	ToolOutput        string          `json:"tool_output,omitempty"`
+	ToolIsError       bool            `json:"tool_is_error,omitempty"`
+	AssistantMessage  string          `json:"assistant_message,omitempty"`
+	AgentID           string          `json:"agent_id,omitempty"`
+	AgentType         string          `json:"agent_type,omitempty"`
+	ParentSessionID   string          `json:"parent_session_id,omitempty"`
+	ChildSessionID    string          `json:"child_session_id,omitempty"`
+	CompactionTrigger string          `json:"compaction_trigger,omitempty"`
+	CompactionPhase   string          `json:"compaction_phase,omitempty"`
+	Notification      string          `json:"notification,omitempty"`
+	Metadata          map[string]any  `json:"metadata,omitempty"`
 }
 
 // Decision is a control decision returned by a hook.
@@ -53,6 +78,7 @@ const (
 // Result is the normalized outcome of one configured command.
 type Result struct {
 	ID           string          `json:"id,omitempty"`
+	EventID      string          `json:"event_id"`
 	Name         string          `json:"name"`
 	Event        Event           `json:"event"`
 	Decision     Decision        `json:"decision"`
@@ -88,32 +114,60 @@ func NewRuntime(homeDir string) *Runtime {
 	return &Runtime{homeDir: homeDir}
 }
 
-// Run invokes matching synchronous hooks. Notification is intentionally
-// rejected here because callers must use Notify for its fire-and-forget
-// semantics.
+// Run invokes matching synchronous lifecycle hooks. Observational events are
+// rejected here because callers must use Observe or Notify.
 func (r *Runtime) Run(ctx context.Context, request Request) Outcome {
+	return r.RunWithCompletion(ctx, request, nil)
+}
+
+// RunWithCompletion dispatches synchronous handlers inline and reports each
+// handler configured with async=true through completed after it finishes.
+func (r *Runtime) RunWithCompletion(
+	ctx context.Context,
+	request Request,
+	completed func(Outcome),
+) Outcome {
 	if request.Event.IsAsync() {
 		return Outcome{Decision: DecisionNone}
 	}
-	return r.dispatch(ctx, request)
+	return r.dispatch(ctx, request, false, func(result Result) {
+		if completed != nil {
+			completed(Outcome{Decision: DecisionNone, Results: []Result{result}})
+		}
+	})
 }
 
 // Notify invokes Notification hooks asynchronously. Their output cannot
 // affect the caller; completed receives it only for audit recording.
 func (r *Runtime) Notify(ctx context.Context, request Request, completed func(Outcome)) {
-	if request.Event != EventNotification {
-		request.Event = EventNotification
-	}
+	request.Event = EventNotification
+	r.Observe(ctx, request, completed)
+}
+
+// Observe invokes an observational lifecycle event asynchronously. Hook output
+// cannot alter the operation that produced the event.
+func (r *Runtime) Observe(ctx context.Context, request Request, completed func(Outcome)) {
 	go func() {
-		outcome := r.dispatch(context.WithoutCancel(ctx), request)
+		outcome := r.dispatch(context.WithoutCancel(ctx), request, true, nil)
 		if completed != nil {
 			completed(outcome)
 		}
 	}()
 }
 
-func (r *Runtime) dispatch(ctx context.Context, request Request) Outcome {
+func (r *Runtime) dispatch(
+	ctx context.Context,
+	request Request,
+	forceInline bool,
+	asyncCompleted func(Result),
+) Outcome {
 	request.Version = 1
+	if request.EventID == "" {
+		request.EventID = newEventID()
+	}
+	if request.OccurredAt.IsZero() {
+		request.OccurredAt = time.Now().UTC()
+	}
 	hooks, err := LoadForProject(r.homeDir, request.ProjectPath)
 	if err != nil {
 		return Outcome{
@@ -130,10 +184,21 @@ func (r *Runtime) dispatch(ctx context.Context, request Request) Outcome {
 	originalInput := cloneJSON(request.ToolInput)
 	currentInput := cloneJSON(request.ToolInput)
 	for _, hook := range hooks {
-		if hook.Event != request.Event || !matches(hook, request.ToolName) {
+		if hook.Event != request.Event || !matches(hook, request) {
 			continue
 		}
 		request.ToolInput = currentInput
+		if hook.Async && !forceInline {
+			hookCopy := hook
+			requestCopy := request
+			go func() {
+				result := runCommand(context.WithoutCancel(ctx), hookCopy, requestCopy)
+				if asyncCompleted != nil {
+					asyncCompleted(result)
+				}
+			}()
+			continue
+		}
 		result := runCommand(ctx, hook, request)
 		outcome.Results = append(outcome.Results, result)
 
@@ -172,19 +237,75 @@ func (r *Runtime) dispatch(ctx context.Context, request Request) Outcome {
 	return outcome
 }
 
-func matches(hook Config, toolName string) bool {
+func newEventID() string {
+	data := make([]byte, 12)
+	if _, err := rand.Read(data); err != nil {
+		return fmt.Sprintf("hook-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(data)
+}
+
+func matches(hook Config, request Request) bool {
 	switch hook.Event {
-	case EventPreToolUse, EventPostToolUse:
-		return hook.MatchesTool(toolName)
+	case EventPreToolUse, EventPostToolUse, EventPermissionRequest:
+		return hook.MatchesTool(request.ToolName)
+	case EventSessionStart, EventSessionEnd:
+		return hook.MatchesTool(request.Source)
+	case EventSubagentStart, EventSubagentStop:
+		return hook.MatchesTool(request.AgentType)
+	case EventPreCompact, EventPostCompact:
+		return hook.MatchesTool(request.CompactionTrigger)
 	default:
 		return hook.IsEnabled()
 	}
 }
 
-func runCommand(parent context.Context, hook Config, request Request) Result {
+func runCommand(parent context.Context, hook Config, request Request) (result Result) {
 	started := time.Now()
-	result := Result{
+	traceName := "foya.turn"
+	if request.RunID == "" {
+		traceName = "foya.session"
+	}
+	langfuseSessionID := request.RootSessionID
+	if langfuseSessionID == "" {
+		langfuseSessionID = request.SessionID
+	}
+	parent, span := foyatelemetry.StartSpan(
+		parent,
+		"foya.hook",
+		trace.SpanKindInternal,
+		attribute.String("foya.hook.event", string(request.Event)),
+		attribute.String("foya.hook.id", hook.ID),
+		attribute.String("foya.hook.name", displayName(hook)),
+		attribute.String("session.id", request.SessionID),
+		attribute.String("langfuse.session.id", langfuseSessionID),
+		attribute.String("langfuse.trace.name", traceName),
+		attribute.String("langfuse.observation.type", "span"),
+		attribute.String("foya.run.id", request.RunID),
+	)
+	defer func() {
+		failed := result.Error != ""
+		var resultErr error
+		if failed {
+			resultErr = errors.New(result.Error)
+		}
+		attrs := []attribute.KeyValue{
+			attribute.String("foya.hook.decision", string(result.Decision)),
+			attribute.Bool("foya.hook.halt", result.Halt),
+		}
+		foyatelemetry.EndSpan(span, "completed", resultErr, attrs...)
+		foyatelemetry.RecordHook(
+			parent,
+			time.Since(started),
+			failed,
+			attribute.String("foya.hook.event", string(request.Event)),
+			attribute.String("foya.hook.name", displayName(hook)),
+			attribute.String("foya.hook.decision", string(result.Decision)),
+		)
+	}()
+	result = Result{
 		ID:       hook.ID,
+		EventID:  request.EventID,
 		Name:     displayName(hook),
 		Event:    request.Event,
 		Decision: DecisionNone,
@@ -315,20 +436,33 @@ func hookEnvironment(request Request) []string {
 	env := make([]string, 0, len(os.Environ())+8)
 	for _, item := range os.Environ() {
 		name, _, _ := strings.Cut(item, "=")
-		if strings.Contains(strings.ToUpper(name), "API_KEY") {
+		if sensitiveEnvironmentName(name) {
 			continue
 		}
 		env = append(env, item)
 	}
 	env = append(env,
 		"FOYA_HOOK_EVENT="+string(request.Event),
+		"FOYA_HOOK_EVENT_ID="+request.EventID,
 		"FOYA_HOOK_SESSION_ID="+request.SessionID,
 		"FOYA_HOOK_RUN_ID="+request.RunID,
+		"FOYA_HOOK_PROJECT_ID="+request.ProjectID,
 		"FOYA_HOOK_PROJECT_PATH="+request.ProjectPath,
 		"FOYA_HOOK_TOOL_NAME="+request.ToolName,
 		"FOYA_HOOK_TOOL_CALL_ID="+request.ToolCallID,
 	)
 	return env
+}
+
+func sensitiveEnvironmentName(name string) bool {
+	name = strings.ToUpper(strings.TrimSpace(name))
+	for _, marker := range []string{"API_KEY", "SECRET", "TOKEN", "PASSWORD"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return name == "LANGFUSE_AUTH" ||
+		strings.HasPrefix(name, "OTEL_EXPORTER_OTLP_") && strings.HasSuffix(name, "_HEADERS")
 }
 
 func displayName(hook Config) string {

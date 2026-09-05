@@ -212,7 +212,7 @@ void initialize();
         spellcheck="false"
       />
       <p class="text-xs text-muted-foreground">
-        支持 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop、Notification。
+        支持 Session、请求、工具、审批、子 Agent、压缩和回合完成事件。
       </p>
     </div>
 

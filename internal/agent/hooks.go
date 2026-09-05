@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/event"
 	"github.com/freesoulcode/foya/internal/hooks"
@@ -21,13 +22,52 @@ func (e *Engine) runHook(ctx context.Context, sessionID string, request hooks.Re
 	if runtime == nil {
 		return hooks.Outcome{Decision: hooks.DecisionNone}
 	}
-	request.SessionID = sessionID
-	request.CWD = tool.CWDFromContext(ctx)
-	request.ProjectPath = e.resolveProjectPath(sessionID)
-	request.Model = e.currentModel(sessionID)
-	outcome := runtime.Run(ctx, request)
+	request = e.prepareHookRequest(ctx, sessionID, request)
+	outcome := runtime.RunWithCompletion(ctx, request, func(asyncOutcome hooks.Outcome) {
+		e.recordHookResults(hookAuditContext(request.RunID), sessionID, asyncOutcome.Results)
+	})
 	e.recordHookResults(context.WithoutCancel(ctx), sessionID, outcome.Results)
 	return outcome
+}
+
+func (e *Engine) observeHook(ctx context.Context, sessionID string, request hooks.Request) {
+	e.mu.RLock()
+	runtime := e.hooks
+	e.mu.RUnlock()
+	if runtime == nil {
+		return
+	}
+	request = e.prepareHookRequest(ctx, sessionID, request)
+	runtime.Observe(context.WithoutCancel(ctx), request, func(outcome hooks.Outcome) {
+		e.recordHookResults(hookAuditContext(request.RunID), sessionID, outcome.Results)
+	})
+}
+
+func (e *Engine) prepareHookRequest(
+	ctx context.Context,
+	sessionID string,
+	request hooks.Request,
+) hooks.Request {
+	if request.EventID == "" {
+		request.EventID = newRunID()
+	}
+	if request.OccurredAt.IsZero() {
+		request.OccurredAt = time.Now().UTC()
+	}
+	request.SessionID = sessionID
+	request.RootSessionID = e.rootSessionID(sessionID)
+	request.CWD = tool.CWDFromContext(ctx)
+	request.ProjectID = e.resolveProjectID(sessionID)
+	request.ProjectPath = e.resolveProjectPath(sessionID)
+	if request.CWD == "" {
+		request.CWD = request.ProjectPath
+	}
+	request.Model = e.currentModel(sessionID)
+	return request
+}
+
+func hookAuditContext(runID string) context.Context {
+	return tool.WithRunID(context.Background(), runID)
 }
 
 // notifyHook dispatches Notification hooks without waiting for their command
@@ -40,12 +80,9 @@ func (e *Engine) notifyHook(ctx context.Context, sessionID string, request hooks
 		return
 	}
 	request.Event = hooks.EventNotification
-	request.SessionID = sessionID
-	request.CWD = tool.CWDFromContext(ctx)
-	request.ProjectPath = e.resolveProjectPath(sessionID)
-	request.Model = e.currentModel(sessionID)
+	request = e.prepareHookRequest(ctx, sessionID, request)
 	runtime.Notify(context.WithoutCancel(ctx), request, func(outcome hooks.Outcome) {
-		e.recordHookResults(context.Background(), sessionID, outcome.Results)
+		e.recordHookResults(hookAuditContext(request.RunID), sessionID, outcome.Results)
 	})
 }
 
@@ -53,6 +90,7 @@ func (e *Engine) recordHookResults(ctx context.Context, sessionID string, result
 	for _, result := range results {
 		e.emit(ctx, sessionID, event.KindHookCompleted, map[string]any{
 			"id":            result.ID,
+			"event_id":      result.EventID,
 			"name":          result.Name,
 			"event":         result.Event,
 			"decision":      result.Decision,
@@ -74,9 +112,59 @@ func (e *Engine) RunSessionStart(ctx context.Context, sessionID string) {
 	ctx = tool.WithCWD(ctx, e.resolveProjectPath(sessionID))
 	ctx = tool.WithSessionID(ctx, sessionID)
 	outcome := e.runHook(ctx, sessionID, hooks.Request{
-		Event: hooks.EventSessionStart,
+		Event:  hooks.EventSessionStart,
+		Source: "startup",
 	})
 	e.appendHookContext(ctx, sessionID, outcome.Context, "session_start")
+}
+
+// RunSessionEnd notifies observational hooks before a session is removed.
+func (e *Engine) RunSessionEnd(ctx context.Context, sessionID, reason string) {
+	e.observeHook(ctx, sessionID, hooks.Request{
+		Event:  hooks.EventSessionEnd,
+		Source: reason,
+		Reason: reason,
+	})
+}
+
+// RunSubagentStart dispatches lifecycle hooks after the child session exists.
+func (e *Engine) RunSubagentStart(
+	ctx context.Context,
+	sessionID, parentSessionID, runID, agentID, agentType, task string,
+) {
+	outcome := e.runHook(ctx, sessionID, hooks.Request{
+		Event:           hooks.EventSubagentStart,
+		RunID:           runID,
+		AgentID:         agentID,
+		AgentType:       agentType,
+		ParentSessionID: parentSessionID,
+		ChildSessionID:  sessionID,
+		Metadata:        map[string]any{"task": task},
+	})
+	e.appendHookContext(ctx, sessionID, outcome.Context, "subagent_start")
+}
+
+// RunSubagentStop dispatches a child completion hook. It is synchronous so a
+// hook may provide final validation feedback before the parent receives output.
+func (e *Engine) RunSubagentStop(
+	ctx context.Context,
+	sessionID, parentSessionID, runID, agentID, agentType, status, output, errorText string,
+) (bool, string) {
+	outcome := e.runHook(ctx, sessionID, hooks.Request{
+		Event:            hooks.EventSubagentStop,
+		RunID:            runID,
+		AgentID:          agentID,
+		AgentType:        agentType,
+		ParentSessionID:  parentSessionID,
+		ChildSessionID:   sessionID,
+		Status:           status,
+		Error:            errorText,
+		AssistantMessage: output,
+	})
+	if outcome.Decision == hooks.DecisionDeny || outcome.Halt {
+		return true, hookFeedback(outcome, "sub-agent completion blocked by hook")
+	}
+	return false, ""
 }
 
 func (e *Engine) appendHookContext(ctx context.Context, sessionID string, contexts []string, source string) {

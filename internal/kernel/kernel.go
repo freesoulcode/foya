@@ -36,6 +36,7 @@ import (
 	"github.com/freesoulcode/foya/internal/state"
 	"github.com/freesoulcode/foya/internal/storage"
 	"github.com/freesoulcode/foya/internal/subagent"
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
@@ -52,6 +53,7 @@ type App struct {
 	browser     *browseruse.Controller
 	channels    *feishu.Manager
 	automations *automation.Manager
+	telemetry   *foyatelemetry.Provider
 	database    *storage.Database
 }
 
@@ -62,6 +64,25 @@ func New(cfg config.Config) (*App, error) {
 	} else if ok {
 		cfg.Agents = saved
 	}
+	telemetryProvider, err := foyatelemetry.New(context.Background(), foyatelemetry.Config{
+		Enabled:        cfg.Telemetry.Enabled,
+		TracesEnabled:  cfg.Telemetry.TracesEnabled,
+		MetricsEnabled: cfg.Telemetry.MetricsEnabled,
+		CaptureContent: cfg.Telemetry.CaptureContent,
+		ServiceName:    cfg.Telemetry.ServiceName,
+		Environment:    cfg.Telemetry.Environment,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize telemetry: %w", err)
+	}
+	keepTelemetry := false
+	defer func() {
+		if !keepTelemetry {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = telemetryProvider.Shutdown(shutdownCtx)
+		}
+	}()
 	database, err := storage.Open(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -246,6 +267,32 @@ func New(cfg config.Config) (*App, error) {
 	if err := subagents.EnablePersistence(cfg.DataDir); err != nil {
 		return nil, err
 	}
+	subagents.SetLifecycleCallbacks(
+		func(ctx context.Context, lifecycle subagent.Lifecycle) {
+			engine.RunSubagentStart(
+				ctx,
+				lifecycle.ChildSessionID,
+				lifecycle.ParentSessionID,
+				lifecycle.RunID,
+				lifecycle.AgentID,
+				lifecycle.AgentType,
+				lifecycle.Task,
+			)
+		},
+		func(ctx context.Context, lifecycle subagent.Lifecycle) (bool, string) {
+			return engine.RunSubagentStop(
+				ctx,
+				lifecycle.ChildSessionID,
+				lifecycle.ParentSessionID,
+				lifecycle.RunID,
+				lifecycle.AgentID,
+				lifecycle.AgentType,
+				lifecycle.Status,
+				lifecycle.Output,
+				lifecycle.Error,
+			)
+		},
+	)
 	engine.SetUsageObserver(subagents.ObserveUsage)
 	tools.Register(subagent.NewSearchTool(agents, resolveProject))
 	tools.Register(subagent.NewTool(subagents))
@@ -328,9 +375,11 @@ func New(cfg config.Config) (*App, error) {
 		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
 		memory: memoryManager, browser: browserController,
 		channels: feishuManager, automations: automationManager,
-		database: database,
+		telemetry: telemetryProvider,
+		database:  database,
 	}
 	keepDatabase = true
+	keepTelemetry = true
 	return app, nil
 }
 
@@ -383,5 +432,8 @@ func (a *App) Close() {
 	a.cancel()
 	a.browser.Close()
 	a.mcp.Close()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = a.telemetry.Shutdown(shutdownCtx)
 	_ = a.database.Close()
 }

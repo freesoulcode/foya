@@ -1810,6 +1810,7 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 		if browserController != nil {
 			browserController.ClearSession(sessionID)
 		}
+		b.engine.RunSessionEnd(context.WithoutCancel(ctx), sessionID, "deleted")
 		if err := b.sessions.Delete(sessionID); err != nil {
 			return err
 		}

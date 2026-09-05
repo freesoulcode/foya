@@ -17,6 +17,8 @@ import (
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
 	"github.com/freesoulcode/foya/internal/state"
+	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -184,13 +186,13 @@ func (b *Backend) SubmitInput(
 		runner, turnCtx := b.createRunnerLocked(sessionID)
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
-		go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx)
+		go b.runTurnLoop(sessionID, queueInput(next), next.CreatedAt, runner, turnCtx)
 		return Submission{Status: SubmissionQueued, Queued: &item}, nil
 	}
 
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, input, runner, turnCtx)
+	go b.runTurnLoop(sessionID, input, time.Time{}, runner, turnCtx)
 	return Submission{Status: SubmissionStarted}, nil
 }
 
@@ -490,7 +492,7 @@ func (b *Backend) DispatchQueuedMessage(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, queueInput(selected), runner, turnCtx)
+	go b.runTurnLoop(sessionID, queueInput(selected), selected.CreatedAt, runner, turnCtx)
 	return selected, nil
 }
 
@@ -547,7 +549,7 @@ func (b *Backend) CompactSession(
 	runner, turnCtx := b.createRunnerLocked(sessionID)
 	b.broadcastQueueLocked(sessionID)
 	b.turns.mu.Unlock()
-	go b.runTurnLoop(sessionID, queueInput(next), runner, turnCtx)
+	go b.runTurnLoop(sessionID, queueInput(next), next.CreatedAt, runner, turnCtx)
 	return checkpoint, err
 }
 
@@ -760,11 +762,19 @@ func (b *Backend) createRunnerLocked(sessionID string) (*sessionRunner, context.
 func (b *Backend) runTurnLoop(
 	sessionID string,
 	input message.UserInput,
+	queuedAt time.Time,
 	runner *sessionRunner,
 	turnCtx context.Context,
 ) {
 	defer close(runner.done)
 	for {
+		if !queuedAt.IsZero() {
+			foyatelemetry.RecordQueueWait(
+				turnCtx,
+				time.Since(queuedAt),
+				attribute.String("foya.queue.kind", "user_turn"),
+			)
+		}
 		_ = b.engine.RunInput(turnCtx, sessionID, input)
 
 		b.turns.mu.Lock()
@@ -794,6 +804,7 @@ func (b *Backend) runTurnLoop(
 		b.broadcastQueueLocked(sessionID)
 		b.turns.mu.Unlock()
 		input = queueInput(next)
+		queuedAt = next.CreatedAt
 	}
 }
 

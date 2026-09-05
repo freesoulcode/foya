@@ -16,6 +16,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		Matcher: "^bash$",
 		Command: "foya-hook-format",
 		Timeout: 10,
+		Async:   true,
 		Enabled: &enabled,
 	}}
 
@@ -37,7 +38,8 @@ func TestConfigRoundTrip(t *testing.T) {
 	if !ok || len(got) != 1 {
 		t.Fatalf("loaded = %+v, %v; want one hook", got, ok)
 	}
-	if got[0].ID != want[0].ID || got[0].Matcher != want[0].Matcher || got[0].Timeout != want[0].Timeout {
+	if got[0].ID != want[0].ID || got[0].Matcher != want[0].Matcher ||
+		got[0].Timeout != want[0].Timeout || !got[0].Async {
 		t.Fatalf("loaded = %+v, want %+v", got[0], want[0])
 	}
 }
@@ -103,10 +105,17 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 func TestValidateConfig(t *testing.T) {
 	for _, event := range []Event{
 		EventSessionStart,
+		EventSessionEnd,
 		EventUserPromptSubmit,
 		EventPreToolUse,
 		EventPostToolUse,
+		EventPermissionRequest,
+		EventSubagentStart,
+		EventSubagentStop,
+		EventPreCompact,
+		EventPostCompact,
 		EventStop,
+		EventTurnComplete,
 		EventNotification,
 	} {
 		t.Run(string(event), func(t *testing.T) {
@@ -135,8 +144,15 @@ func TestValidateConfig(t *testing.T) {
 }
 
 func TestEventPolicy(t *testing.T) {
-	if EventNotification.SupportsControlEffects() || !EventNotification.IsAsync() {
-		t.Fatal("Notification must be asynchronous and observational")
+	for _, event := range []Event{
+		EventSessionEnd,
+		EventPostCompact,
+		EventTurnComplete,
+		EventNotification,
+	} {
+		if event.SupportsControlEffects() || !event.IsAsync() {
+			t.Fatalf("%s must be asynchronous and observational", event)
+		}
 	}
 	if EventPreToolUse.IsAsync() || !EventPreToolUse.SupportsControlEffects() {
 		t.Fatal("PreToolUse must be synchronous and controlling")
