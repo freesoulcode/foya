@@ -15,9 +15,9 @@ import {
   TargetIcon,
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
-import { renderMarkdown } from "@/lib/markdown";
 import { api } from "@/lib/api";
 import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
+import MarkdownContent from "./MarkdownContent.vue";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 import TaskArtifacts from "./TaskArtifacts.vue";
 
@@ -221,12 +221,6 @@ function formatDuration(durationMS: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-// 渲染单个文本段的 markdown。
-function renderSegment(text: string): string {
-  return renderMarkdown(text);
-}
-
-const bodyEl = ref<HTMLElement | null>(null);
 const copiedAll = ref(false);
 const rewindUnsupported = computed(
   () =>
@@ -381,11 +375,11 @@ function rewindMessage() {
       </div>
 
       <!-- 错误气泡:直接渲染 content -->
-      <div
+      <MarkdownContent
         v-else-if="isError"
-        ref="bodyEl"
+        :source="message.content"
+        :render-mermaid="!streaming"
         class="prose-chat relative text-destructive"
-        v-html="renderSegment(message.content)"
         @click="onBodyClick"
       />
 
@@ -442,10 +436,11 @@ function rewindMessage() {
             </div>
 
             <!-- 正文段(markdown) -->
-            <div
+            <MarkdownContent
               v-else-if="seg.kind === 'text'"
+              :source="seg.text"
+              :render-mermaid="!streaming"
               class="prose-chat relative text-foreground"
-              v-html="renderSegment(seg.text)"
               @click="onBodyClick"
             />
           </template>

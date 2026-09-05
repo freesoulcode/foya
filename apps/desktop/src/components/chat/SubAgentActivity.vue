@@ -11,7 +11,7 @@ import {
   XCircleIcon,
 } from "@lucide/vue";
 import type { AgentRunSnapshot, ChatMessage } from "@/lib/api";
-import { renderMarkdown } from "@/lib/markdown";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const props = defineProps<{
   run: AgentRunSnapshot;
@@ -101,10 +101,11 @@ const elapsed = computed(() => {
           class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all pl-5 font-mono text-[11px] text-foreground/70"
         >{{ tool.output }}</pre>
       </div>
-      <div
+      <MarkdownContent
         v-if="message.role === 'assistant' && message.content"
+        :source="message.content"
+        :render-mermaid="run.status !== 'running'"
         class="prose-chat text-foreground/90"
-        v-html="renderMarkdown(message.content)"
       />
     </div>
 

@@ -201,6 +201,83 @@
     background: transparent;
     padding: 0.75rem 1rem;
   }
+  .prose-chat .mermaid-diagram {
+    margin: 0.75rem 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--background);
+  }
+  .prose-chat .mermaid-diagram-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 2rem;
+    padding: 0 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: oklch(0.5 0.01 286 / 0.06);
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+  }
+  .prose-chat .mermaid-copy-source {
+    padding: 0.2rem 0.45rem;
+    border-radius: 0.3rem;
+    color: var(--muted-foreground);
+    background: transparent;
+    font-family: var(--font-sans);
+    transition: color 0.15s, background-color 0.15s;
+  }
+  .prose-chat .mermaid-copy-source:hover {
+    color: var(--foreground);
+    background: oklch(0.5 0.01 286 / 0.12);
+  }
+  .prose-chat .mermaid-preview-trigger {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    padding: 1rem;
+    background: transparent;
+    cursor: zoom-in;
+    transition: background-color 0.15s;
+  }
+  .prose-chat .mermaid-preview-trigger:hover {
+    background: oklch(0.5 0.01 286 / 0.04);
+  }
+  .prose-chat .mermaid-preview-trigger svg {
+    display: block;
+    height: auto;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+  .prose-chat .mermaid-diagram text {
+    font-family: var(--font-sans) !important;
+    letter-spacing: 0;
+  }
+  .prose-chat .mermaid-render-failed {
+    border-color: color-mix(in oklch, var(--destructive) 35%, var(--border));
+  }
+  .mermaid-preview-viewport {
+    min-height: 0;
+    overflow: auto;
+    padding: 1.5rem;
+    background: var(--background);
+  }
+  .mermaid-preview-canvas {
+    min-width: 50%;
+    margin: 0 auto;
+  }
+  .mermaid-preview-canvas svg {
+    display: block;
+    width: 100% !important;
+    height: auto;
+    max-width: none !important;
+    margin: 0 auto;
+  }
+  .mermaid-preview-canvas text {
+    font-family: var(--font-sans) !important;
+    letter-spacing: 0;
+  }
   .prose-chat pre code {
     background: transparent;
     padding: 0;
