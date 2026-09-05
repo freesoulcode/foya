@@ -54,6 +54,12 @@ let unlistenElement: UnlistenFn | undefined;
 let unlistenPickerState: UnlistenFn | undefined;
 const handledAgentActions = new Set<string>();
 let agentRuntimeReady = false;
+const BACKGROUND_VIEWPORT: BrowserViewport = {
+  x: -10_000,
+  y: -10_000,
+  width: 1280,
+  height: 720,
+};
 let pendingAgentLoad:
   | {
       resolve: () => void;
@@ -110,6 +116,10 @@ function measureViewport(): BrowserViewport | null {
     width: Math.round(rect.width),
     height: Math.round(rect.height),
   };
+}
+
+function agentViewport(): BrowserViewport | null {
+  return measureViewport() ?? (!props.active ? BACKGROUND_VIEWPORT : null);
 }
 
 function titleForUrl(value: string): string {
@@ -206,7 +216,7 @@ async function executeAgentAction(request: BrowserActionRequest) {
       const url = normalizeAddress(request.url ?? "");
       if (!url) throw new Error("浏览器地址无效");
       await nextTick();
-      const bounds = measureViewport();
+      const bounds = agentViewport();
       if (!bounds) throw new Error("浏览器预览区域尚未就绪");
       address.value = url;
       currentUrl.value = url;
@@ -220,7 +230,7 @@ async function executeAgentAction(request: BrowserActionRequest) {
         }, Math.min(request.timeout_ms || 1_500, 1_500));
         pendingAgentLoad = { resolve, reject, timer };
       });
-      await api.navigateBrowser(props.browserId, url, bounds);
+      await api.navigateBrowser(props.browserId, url, bounds, props.active);
       await loaded;
       syncViewport();
       try {

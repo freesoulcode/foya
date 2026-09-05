@@ -34,6 +34,8 @@ const {
   openBrowser: openWorkbarBrowser,
   openAgentBrowser,
   openBackgroundCommand: openWorkbarBackgroundCommand,
+  setActiveSession: setActiveWorkbarSession,
+  removeSession: removeWorkbarSession,
 } = useWorkbar();
 const { linkOpenMode } = useLinkPreference();
 
@@ -45,6 +47,7 @@ const {
   runningSessions,
   unreadSessions,
   compactingSessions,
+  agentRunsBySession,
   workflowsBySession,
   activeId,
   activeSession,
@@ -127,9 +130,24 @@ watch(
   }
 );
 
-watch(activeId, () => {
-  pendingBrowserElements.value = [];
-});
+watch(
+  activeId,
+  (id) => {
+    setActiveWorkbarSession(id);
+    pendingBrowserElements.value = [];
+  },
+  { immediate: true }
+);
+
+watch(
+  () => sessions.value.map((session) => session.id),
+  (ids, previous = []) => {
+    const current = new Set(ids);
+    for (const id of previous) {
+      if (!current.has(id)) removeWorkbarSession(id);
+    }
+  }
+);
 
 function onTurnSelect(i: number) {
   messageListRef.value?.scrollToTurn(i);
@@ -280,13 +298,25 @@ function restoreBrowserElements(elements: BrowserElementSelection[]) {
 }
 
 const openedBrowserRequests = new Set<string>();
+
+function workbarSessionFor(executionSessionId: string) {
+  for (const runs of Object.values(agentRunsBySession.value)) {
+    const run = runs.find((item) => item.child_session_id === executionSessionId);
+    if (run?.root_session_id) return run.root_session_id;
+  }
+  return executionSessionId;
+}
+
 watch(
   () => Object.values(pendingBrowserActions.value),
   (actions) => {
     for (const action of actions) {
       if (openedBrowserRequests.has(action.id)) continue;
       openedBrowserRequests.add(action.id);
-      openAgentBrowser(action.session_id, action.browser_id);
+      openAgentBrowser(
+        workbarSessionFor(action.session_id),
+        action.browser_id
+      );
     }
   },
   { immediate: true }
@@ -385,7 +415,7 @@ function onFork(id: string) {
 
 // 删除会话:内核中断回合、清历史并广播,前端移除并按需切换会话。
 function onDelete(id: string) {
-  void deleteSession(id);
+  void deleteSession(id).then(() => removeWorkbarSession(id));
 }
 
 async function onDeleteProject(id: string) {
@@ -537,14 +567,14 @@ const viewContext: ChatWorkspaceContext = {
       </div>
 
       <WorkbarPanel
-        v-if="!automationsActive"
-        v-show="workbarOpen"
+        v-show="!automationsActive && workbarOpen"
         :session-id="activeId || undefined"
         :project-path="projectPath"
         :messages="messages"
         :background-commands="backgroundCommands"
         :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
+        :visible="!automationsActive && workbarOpen"
         :ensure-session="ensureSession"
         @project-files-changed="refreshActiveFileReview"
         @browser-element-selected="onBrowserElementSelected"

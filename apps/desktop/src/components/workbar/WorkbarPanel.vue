@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import {
   FileIcon,
   FolderIcon,
@@ -43,6 +43,7 @@ const props = defineProps<{
   backgroundCommands?: BackgroundCommand[];
   browserActions?: BrowserActionRequest[];
   obscured?: boolean;
+  visible?: boolean;
   ensureSession: () => Promise<string>;
 }>();
 
@@ -60,6 +61,7 @@ const { showCustomWindowControls } = usePlatform();
 const {
   items,
   tabs,
+  allTabs,
   width,
   open,
   activeTabId,
@@ -73,7 +75,6 @@ const {
   selectTab,
   setTabTitle,
   closeTab,
-  closeFileTabs,
   renameEntryTabs,
   resetDeletedEntryTab,
 } = useWorkbar();
@@ -90,6 +91,28 @@ const panelStyle = computed(() => ({
   maxWidth: focused.value ? "none" : "max(0px, calc(100% - " + CHAT_MIN_WIDTH + "px))",
 }));
 const launcherVisible = computed(() => !activeTab.value);
+const browserTabs = computed(() =>
+  allTabs.value.filter((tab) => tab.kind === "browser")
+);
+const terminalTabs = computed(() =>
+  allTabs.value.filter((tab) => tab.kind === "terminal")
+);
+const backgroundCommandTabs = computed(() =>
+  allTabs.value.filter((tab) => tab.kind === "background-command")
+);
+
+function isCurrentSessionTab(tab: WorkbarTab) {
+  return (tab.sessionId ?? "") === (props.sessionId ?? "");
+}
+
+function isActiveWorkbarTab(tab: WorkbarTab) {
+  return (
+    props.visible &&
+    open.value &&
+    isCurrentSessionTab(tab) &&
+    activeTabId.value === tab.id
+  );
+}
 
 const icons: Record<WorkbarTabKind, LucideIcon> = {
   file: FileIcon,
@@ -220,13 +243,6 @@ function startResize(event: PointerEvent) {
 }
 
 onBeforeUnmount(() => stopResize?.());
-
-watch(
-  () => props.projectPath,
-  (projectPath, previous) => {
-    if (projectPath !== previous) closeFileTabs();
-  }
-);
 </script>
 
 <template>
@@ -391,51 +407,51 @@ watch(
           @files-changed="emit('project-files-changed', $event)"
         />
 
-        <template v-for="tab in tabs" :key="tab.id">
-          <TerminalPanel
-            v-if="tab.kind === 'terminal'"
-            v-show="activeTabId === tab.id"
-            class="absolute inset-0"
-            :session-id="sessionId"
-            :active="open && activeTabId === tab.id"
-            :ensure-session="ensureSession"
-          />
+        <TerminalPanel
+          v-for="tab in terminalTabs"
+          :key="tab.id"
+          v-show="isActiveWorkbarTab(tab)"
+          class="absolute inset-0"
+          :session-id="tab.sessionId"
+          :active="isActiveWorkbarTab(tab)"
+          :ensure-session="ensureSession"
+        />
+        <template v-for="tab in backgroundCommandTabs" :key="tab.id">
           <BackgroundCommandTerminalPanel
-            v-else-if="
-              tab.kind === 'background-command' &&
-              tab.sessionId &&
-              tab.commandId
-            "
-            v-show="activeTabId === tab.id"
+            v-if="tab.sessionId && tab.commandId"
+            v-show="isActiveWorkbarTab(tab)"
             class="absolute inset-0"
             :session-id="tab.sessionId"
             :command-id="tab.commandId"
             :command="
-              backgroundCommands?.find(
-                (command) => command.command_id === tab.commandId
-              )
+              isCurrentSessionTab(tab)
+                ? backgroundCommands?.find(
+                    (command) => command.command_id === tab.commandId
+                  )
+                : undefined
             "
-            :active="open && activeTabId === tab.id"
-          />
-          <BrowserPanel
-            v-else-if="tab.kind === 'browser'"
-            v-show="activeTabId === tab.id"
-            class="absolute inset-0"
-            :browser-id="tab.id"
-            :initial-url="tab.url"
-            :active="open && activeTabId === tab.id"
-            :obscured="obscured || addMenuOpen"
-            :agent-action="
-              browserActions?.find((action) => action.browser_id === tab.id)
-            "
-            @title-change="setTabTitle(tab.id, $event)"
-            @element-selected="emit('browser-element-selected', $event)"
-            @agent-action-result="
-              (request, result) =>
-                emit('browser-action-result', request, result)
-            "
+            :active="isActiveWorkbarTab(tab)"
           />
         </template>
+        <BrowserPanel
+          v-for="tab in browserTabs"
+          :key="tab.id"
+          v-show="isActiveWorkbarTab(tab)"
+          class="absolute inset-0"
+          :browser-id="tab.id"
+          :initial-url="tab.url"
+          :active="isActiveWorkbarTab(tab)"
+          :obscured="obscured || addMenuOpen"
+          :agent-action="
+            browserActions?.find((action) => action.browser_id === tab.id)
+          "
+          @title-change="setTabTitle(tab.id, $event)"
+          @element-selected="emit('browser-element-selected', $event)"
+          @agent-action-result="
+            (request, result) =>
+              emit('browser-action-result', request, result)
+          "
+        />
       </div>
     </div>
   </aside>

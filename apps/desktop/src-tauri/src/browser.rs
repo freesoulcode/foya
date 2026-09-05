@@ -969,6 +969,7 @@ pub(crate) async fn navigate_browser(
     browser_id: String,
     url: String,
     viewport: BrowserViewport,
+    visible: Option<bool>,
 ) -> Result<(), String> {
     let parsed = url.parse::<tauri::Url>().map_err(|e| e.to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -979,6 +980,7 @@ pub(crate) async fn navigate_browser(
     }
     let position = tauri::LogicalPosition::new(viewport.x, viewport.y);
     let size = tauri::LogicalSize::new(viewport.width, viewport.height);
+    let visible = visible.unwrap_or(true);
     let label = browser_view_label(&browser_id)?;
     if let Some(webview) = app.get_webview(&label) {
         webview.navigate(parsed).map_err(|e| e.to_string())?;
@@ -988,8 +990,12 @@ pub(crate) async fn navigate_browser(
                 size: tauri::Size::Logical(size),
             })
             .map_err(|e| e.to_string())?;
-        webview.show().map_err(|e| e.to_string())?;
-        webview.set_focus().map_err(|e| e.to_string())?;
+        if visible {
+            webview.show().map_err(|e| e.to_string())?;
+            webview.set_focus().map_err(|e| e.to_string())?;
+        } else {
+            webview.hide().map_err(|e| e.to_string())?;
+        }
         return Ok(());
     }
 
@@ -999,6 +1005,7 @@ pub(crate) async fn navigate_browser(
     let navigation_browser_id = browser_id.clone();
     let navigation_app = app.clone();
     let builder = tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed))
+        .focused(visible)
         .on_navigation(move |target| {
             if target.scheme() == "foya-element" {
                 let was_active = ACTIVE_BROWSER_PICKERS
@@ -1078,8 +1085,12 @@ pub(crate) async fn navigate_browser(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|e| e.to_string())?;
-    webview.show().map_err(|e| e.to_string())?;
-    webview.set_focus().map_err(|e| e.to_string())?;
+    if visible {
+        webview.show().map_err(|e| e.to_string())?;
+        webview.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        webview.hide().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

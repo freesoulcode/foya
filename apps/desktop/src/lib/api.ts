@@ -1608,8 +1608,9 @@ export const api = {
   navigateBrowser: (
     browserId: string,
     url: string,
-    viewport: BrowserViewport
-  ) => invoke("navigate_browser", { browserId, url, viewport }),
+    viewport: BrowserViewport,
+    visible = true
+  ) => invoke("navigate_browser", { browserId, url, viewport, visible }),
 
   browserBack: (browserId: string) => invoke("browser_back", { browserId }),
 
