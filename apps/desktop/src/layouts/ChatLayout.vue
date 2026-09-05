@@ -43,6 +43,7 @@ const {
   sessions,
   projects,
   runningSessions,
+  unreadSessions,
   compactingSessions,
   workflowsBySession,
   activeId,
@@ -195,12 +196,21 @@ const activeQuestionBatch = computed(
       (batch) => batch.session_id === activeId.value
     ) ?? null
 );
-const sessionsWaitingForAnswer = computed<Record<string, boolean>>(() => {
-  const waiting: Record<string, boolean> = {};
+const sessionsRequiringAttention = computed<Record<string, boolean>>(() => {
+  const pending: Record<string, boolean> = {};
+  const markPending = (sessionID: string) => {
+    if (sessionID && sessionID !== activeId.value) pending[sessionID] = true;
+  };
   for (const batch of Object.values(pendingQuestions.value)) {
-    waiting[batch.session_id] = true;
+    markPending(batch.session_id);
   }
-  return waiting;
+  for (const approval of Object.values(pendingApprovals.value)) {
+    markPending(approval.session);
+  }
+  for (const workflow of Object.values(workflowsBySession.value)) {
+    if (workflow?.status === "ready") markPending(workflow.session_id);
+  }
+  return pending;
 });
 const workbarObscured = computed(
   () =>
@@ -493,7 +503,8 @@ const viewContext: ChatWorkspaceContext = {
       :sessions="sessions"
       :projects="activeProjects"
       :running="runningSessions"
-      :waiting-for-answer="sessionsWaitingForAnswer"
+      :unread="unreadSessions"
+      :needs-attention="sessionsRequiringAttention"
       :active-id="activeId"
       :is-draft="isDraft"
       :automations-active="automationsActive"

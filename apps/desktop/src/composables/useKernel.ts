@@ -58,6 +58,8 @@ const streaming = ref(false);
 // 哪些会话正在运行 AI 回合(sessionId → true)。供侧边栏给运行中的会话加动画,
 // 与当前激活会话无关:切到别的会话后,原会话仍显示运行态。
 const runningSessions = ref<Record<string, boolean>>({});
+// 非当前会话产生了尚未查看的回合结果。进入会话后清除。
+const unreadSessions = ref<Record<string, boolean>>({});
 const compactingSessions = ref<Record<string, boolean>>({});
 
 // 新对话草稿态的配置(activeId === "" 时生效)。
@@ -514,7 +516,11 @@ function handleEvent(sessionId: string, data: string) {
       }
       streamingIdx[sessionId] = -1;
       delete runningSessions.value[sessionId];
-      if (sessionId === activeId.value) streaming.value = false;
+      if (sessionId === activeId.value) {
+        streaming.value = false;
+      } else if (p?.status !== "cancelled") {
+        unreadSessions.value[sessionId] = true;
+      }
       void refreshFileReview(sessionId);
       break;
     }
@@ -857,6 +863,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
 // 切换到某会话:首次进入时加载历史并订阅。
 async function select(id: string) {
   activeId.value = id;
+  delete unreadSessions.value[id];
   streaming.value = Boolean(runningSessions.value[id]);
   if (!messagesBySession.value[id] || messagesBySession.value[id].length === 0) {
     const history = await api.loadHistory(id);
@@ -948,6 +955,7 @@ function removeSession(id: string) {
   subscribed.delete(id);
   delete streamingIdx[id];
   delete runningSessions.value[id];
+  delete unreadSessions.value[id];
   delete compactingSessions.value[id];
   delete backgroundCommandsBySession.value[id];
   delete fileReviewsBySession.value[id];
@@ -1382,6 +1390,7 @@ export function useKernel() {
     sessions,
     projects,
     runningSessions,
+    unreadSessions,
     compactingSessions,
     activeId,
     activeSession,

@@ -58,15 +58,20 @@ const props = defineProps<{
   automationsActive?: boolean;
   // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
   running?: Record<string, boolean>;
-  waitingForAnswer?: Record<string, boolean>;
+  unread?: Record<string, boolean>;
+  needsAttention?: Record<string, boolean>;
 }>();
 
 function isRunning(id: string) {
   return !!props.running?.[id];
 }
 
-function isWaitingForAnswer(id: string) {
-  return !!props.waitingForAnswer?.[id];
+function isUnread(id: string) {
+  return !!props.unread?.[id];
+}
+
+function needsAttention(id: string) {
+  return !!props.needsAttention?.[id];
 }
 
 const emit = defineEmits<{
@@ -290,7 +295,8 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               :session="session"
               :active="session.id === activeId"
               :running="isRunning(session.id)"
-              :waiting-for-answer="isWaitingForAnswer(session.id)"
+              :unread="isUnread(session.id)"
+              :needs-attention="needsAttention(session.id)"
               @select="emit('select', $event)"
               @rename="(id, value) => emit('rename', id, value)"
               @pin="(id, value) => emit('pin', id, value)"
@@ -407,7 +413,8 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   :session="session"
                   :active="session.id === activeId"
                   :running="isRunning(session.id)"
-                  :waiting-for-answer="isWaitingForAnswer(session.id)"
+                  :unread="isUnread(session.id)"
+                  :needs-attention="needsAttention(session.id)"
                   @select="emit('select', $event)"
                   @rename="(id, value) => emit('rename', id, value)"
                   @pin="(id, value) => emit('pin', id, value)"
