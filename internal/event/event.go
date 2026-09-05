@@ -33,6 +33,8 @@ const (
 	KindCompactionStarted        Kind = "compaction_started"
 	KindCompactionCompleted      Kind = "compaction_completed"
 	KindCompactionFailed         Kind = "compaction_failed"
+	KindCompactionDiagnostic     Kind = "compaction_diagnostic"
+	KindContextRequestAccepted   Kind = "context_request_accepted"
 	KindHistoryRewound           Kind = "history_rewound"
 	KindFileReviewResolved       Kind = "file_review_resolved"
 	KindMessageImported          Kind = "message_imported"

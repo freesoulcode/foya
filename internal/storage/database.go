@@ -227,6 +227,19 @@ CREATE TABLE IF NOT EXISTS compaction_checkpoints (
     FOREIGN KEY(event_seq) REFERENCES events(seq) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS context_accepted_boundaries (
+    session_id TEXT NOT NULL,
+    event_seq INTEGER NOT NULL,
+    route TEXT NOT NULL,
+    through_seq INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    payload_units INTEGER NOT NULL DEFAULT 0,
+    accepted_at_ns INTEGER NOT NULL,
+    PRIMARY KEY(session_id, route),
+    FOREIGN KEY(event_seq) REFERENCES events(seq) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS stream_snapshots (
     session_id TEXT NOT NULL,
     stream_id TEXT NOT NULL,

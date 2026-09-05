@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -2262,6 +2263,10 @@ func (b *Backend) SetConnections(connections []config.Connection) {
 	b.engine.SetImageCapabilityResolver(b.resolveSessionImageCapability)
 	b.engine.SetContextWindowResolver(b.resolveSessionContextWindow)
 	b.engine.SetModelTokenLimitsResolver(b.resolveSessionModelTokenLimits)
+	b.engine.SetModelRouteResolver(b.resolveSessionModelRoute)
+	for _, current := range b.sessions.List() {
+		b.engine.InvalidateHistoryEstimate(current.ID)
+	}
 	if err := config.SaveConnections(b.dataDir, normalized); err != nil {
 		fmt.Fprintf(os.Stderr, "persist connections config failed: %v\n", err)
 	}
@@ -2551,6 +2556,26 @@ func (b *Backend) resolveSessionModelTokenLimits(sessionID, model string) *agent
 		MaxInputTokens:  settings.MaxInputTokens,
 		MaxOutputTokens: settings.MaxOutputTokens,
 	}
+}
+
+func (b *Backend) resolveSessionModelRoute(sessionID, model string) string {
+	item, ok := b.sessions.Get(sessionID)
+	if !ok || item.ConnectionID == "" {
+		return ""
+	}
+	connection, ok := b.Connection(item.ConnectionID)
+	if !ok {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		connection.ID,
+		connection.Type,
+		connection.Kind,
+		connection.AuthKind,
+		connection.BaseURL,
+		model,
+	}, "\x00")))
+	return connection.ID + ":" + hex.EncodeToString(sum[:])
 }
 
 // MemoryCompleter returns the source session's configured model for the

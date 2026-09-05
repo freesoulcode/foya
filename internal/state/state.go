@@ -73,7 +73,17 @@ type Store interface {
 	Delete(ctx context.Context, session string) error
 	History(ctx context.Context, session string) ([]message.Message, error)
 	ModelHistory(ctx context.Context, session string) ([]message.Message, error)
+	ModelContext(
+		ctx context.Context,
+		session string,
+		route string,
+	) (compaction.ModelProjection, error)
 	Events(ctx context.Context, session string) ([]event.Event, error)
+	ActiveMessageEvent(
+		ctx context.Context,
+		session string,
+		seq event.Seq,
+	) (event.Event, bool, error)
 	FileBlob(ctx context.Context, hash string) ([]byte, error)
 	BeginFileRewind(
 		ctx context.Context,
@@ -96,6 +106,11 @@ type Store interface {
 	) (event.Event, error)
 	UsageSummary(ctx context.Context, query UsageQuery) (UsageSummary, error)
 	Checkpoint(ctx context.Context, session string) (*compaction.Checkpoint, bool, error)
+	AcceptedBoundary(
+		ctx context.Context,
+		session string,
+		route string,
+	) (compaction.AcceptedBoundary, bool, error)
 	RecordCheckpoint(ctx context.Context, checkpoint compaction.Checkpoint) (event.Event, error)
 	ImportMessages(
 		ctx context.Context,

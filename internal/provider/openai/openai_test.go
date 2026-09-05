@@ -175,3 +175,65 @@ func TestStreamRequestsAndEmitsUsage(t *testing.T) {
 		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
+
+func TestCompleteDetailedReturnsFinishReasonAndUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			Stream              bool  `json:"stream"`
+			MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Stream {
+			t.Fatal("detailed completion unexpectedly streamed")
+		}
+		if body.MaxCompletionTokens != 4_096 {
+			t.Fatalf("max_completion_tokens = %d", body.MaxCompletionTokens)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id":"test",
+			"object":"chat.completion",
+			"created":1,
+			"model":"test-model",
+			"choices":[{
+				"index":0,
+				"message":{"role":"assistant","content":"summary","refusal":null},
+				"finish_reason":"length",
+				"logprobs":null
+			}],
+			"usage":{
+				"prompt_tokens":120,
+				"completion_tokens":30,
+				"total_tokens":150,
+				"prompt_tokens_details":{"cached_tokens":40}
+			}
+		}`)
+	}))
+	defer server.Close()
+
+	p := New(Config{BaseURL: server.URL + "/v1", APIKey: "test", Model: "test-model"})
+	completion, err := p.CompleteDetailed(context.Background(), provider.Request{
+		MaxOutputTokens: 4_096,
+		Messages: []provider.InputMessage{
+			provider.TextMessage(message.Message{Role: message.RoleUser, Content: "summarize"}),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completion.Text != "summary" || completion.FinishReason != "length" {
+		t.Fatalf("completion = %#v", completion)
+	}
+	if completion.Usage == nil ||
+		completion.Usage.InputTokens != 120 ||
+		completion.Usage.OutputTokens != 30 ||
+		completion.Usage.CachedTokens != 40 {
+		t.Fatalf("usage = %#v", completion.Usage)
+	}
+}

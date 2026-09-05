@@ -81,6 +81,7 @@ func (s *store) Delete(ctx context.Context, session string) error {
 		`DELETE FROM stream_snapshots WHERE session_id = ?`,
 		`DELETE FROM file_rewind_journals WHERE session_id = ?`,
 		`DELETE FROM compaction_checkpoints WHERE session_id = ?`,
+		`DELETE FROM context_accepted_boundaries WHERE session_id = ?`,
 		`DELETE FROM message_projection WHERE session_id = ?`,
 		`DELETE FROM usage_records WHERE session_id = ?`,
 		`DELETE FROM events WHERE session_id = ?`,
@@ -122,27 +123,39 @@ func (s *store) ModelHistory(
 	ctx context.Context,
 	session string,
 ) ([]message.Message, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	projection, err := s.ModelContext(ctx, session, "")
 	if err != nil {
-		return nil, fmt.Errorf("begin model history: %w", err)
+		return nil, err
+	}
+	return projection.Messages, nil
+}
+
+func (s *store) ModelContext(
+	ctx context.Context,
+	session string,
+	route string,
+) (compaction.ModelProjection, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return compaction.ModelProjection{}, fmt.Errorf("begin model context: %w", err)
 	}
 	defer tx.Rollback()
 
 	events, err := loadActiveMessageEvents(ctx, tx, session)
 	if err != nil {
-		return nil, err
+		return compaction.ModelProjection{}, err
 	}
-	checkpoint, ok, err := loadCheckpoint(ctx, tx, session)
+	checkpoint, ok, err := resolveCheckpointTx(ctx, tx, session, events)
 	if err != nil {
-		return nil, err
+		return compaction.ModelProjection{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit model history read: %w", err)
+		return compaction.ModelProjection{}, fmt.Errorf("commit model context read: %w", err)
 	}
 	if !ok {
-		return compaction.Project(events, nil), nil
+		return compaction.ProjectForRoute(events, nil, route), nil
 	}
-	return compaction.Project(events, checkpoint), nil
+	return compaction.ProjectForRoute(events, checkpoint, route), nil
 }
 
 func (s *store) Events(
@@ -150,6 +163,31 @@ func (s *store) Events(
 	session string,
 ) ([]event.Event, error) {
 	return loadActiveMessageEvents(ctx, s.db, session)
+}
+
+func (s *store) ActiveMessageEvent(
+	ctx context.Context,
+	session string,
+	seq event.Seq,
+) (event.Event, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.seq, e.kind, e.session_id, e.run_id, e.occurred_at_ns, e.payload_json
+		FROM message_projection AS p
+		JOIN events AS e ON e.seq = p.event_seq
+		WHERE p.session_id = ? AND p.event_seq = ? AND p.active = 1
+	`, session, int64(seq))
+	if err != nil {
+		return event.Event{}, false, fmt.Errorf("read active message event: %w", err)
+	}
+	defer rows.Close()
+	events, err := scanEvents(rows)
+	if err != nil {
+		return event.Event{}, false, err
+	}
+	if len(events) == 0 {
+		return event.Event{}, false, nil
+	}
+	return events[0], true, nil
 }
 
 func (s *store) UsageSummary(
@@ -176,7 +214,62 @@ func (s *store) Checkpoint(
 	ctx context.Context,
 	session string,
 ) (*compaction.Checkpoint, bool, error) {
-	return loadCheckpoint(ctx, s.db, session)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin checkpoint read: %w", err)
+	}
+	defer tx.Rollback()
+
+	active, err := loadActiveMessageEvents(ctx, tx, session)
+	if err != nil {
+		return nil, false, err
+	}
+	checkpoint, ok, err := resolveCheckpointTx(ctx, tx, session, active)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit checkpoint read: %w", err)
+	}
+	return checkpoint, ok, nil
+}
+
+func (s *store) AcceptedBoundary(
+	ctx context.Context,
+	session string,
+	route string,
+) (compaction.AcceptedBoundary, bool, error) {
+	var boundary compaction.AcceptedBoundary
+	var (
+		rawThrough  int64
+		rawAccepted int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT route, through_seq, input_tokens, output_tokens,
+		       payload_units, accepted_at_ns
+		FROM context_accepted_boundaries
+		WHERE session_id = ? AND route = ?
+	`, session, route).Scan(
+		&boundary.Route,
+		&rawThrough,
+		&boundary.InputTokens,
+		&boundary.OutputTokens,
+		&boundary.PayloadUnits,
+		&rawAccepted,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return compaction.AcceptedBoundary{}, false, nil
+	}
+	if err != nil {
+		return compaction.AcceptedBoundary{}, false, fmt.Errorf(
+			"read accepted context boundary: %w",
+			err,
+		)
+	}
+	boundary.SessionID = session
+	boundary.ThroughSeq = event.Seq(rawThrough)
+	boundary.CreatedAt = time.Unix(0, rawAccepted)
+	return boundary, true, nil
 }
 
 func (s *store) RecordCheckpoint(
@@ -195,6 +288,23 @@ func (s *store) RecordCheckpoint(
 	}
 	if !compaction.ValidateCheckpoint(active, checkpoint) {
 		return event.Event{}, fmt.Errorf("compaction checkpoint does not match source events")
+	}
+	current, ok, err := resolveCheckpointTx(ctx, tx, checkpoint.SessionID, active)
+	if err != nil {
+		return event.Event{}, err
+	}
+	if ok {
+		if checkpoint.ThroughSeq < current.ThroughSeq {
+			return event.Event{}, fmt.Errorf("compaction checkpoint coverage moved backwards")
+		}
+		if current.CheckpointID != "" &&
+			checkpoint.PreviousCheckpointID != current.CheckpointID {
+			return event.Event{}, fmt.Errorf("compaction checkpoint lineage is stale")
+		}
+		if checkpoint.ThroughSeq == current.ThroughSeq &&
+			checkpoint.PreviousCheckpointID == "" {
+			return event.Event{}, fmt.Errorf("same-coverage checkpoint requires explicit lineage")
+		}
 	}
 	ev := event.Event{
 		Kind:    event.KindCompactionCompleted,
@@ -487,6 +597,11 @@ func applyProjectionTx(
 		`, ev.Session); err != nil {
 			return fmt.Errorf("invalidate compaction checkpoint: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM context_accepted_boundaries WHERE session_id = ?
+		`, ev.Session); err != nil {
+			return fmt.Errorf("invalidate accepted context boundary: %w", err)
+		}
 	case event.KindFileReviewResolved:
 		resolved, ok := fileReviewResolvedFromPayload(ev.Payload)
 		if !ok {
@@ -537,6 +652,29 @@ func applyProjectionTx(
 				checkpoint_json = excluded.checkpoint_json
 		`, ev.Session, int64(ev.Seq), payload); err != nil {
 			return fmt.Errorf("project compaction checkpoint: %w", err)
+		}
+	case event.KindContextRequestAccepted:
+		boundary, ok := acceptedBoundaryFromPayload(ev.Payload)
+		if !ok || boundary.SessionID != ev.Session {
+			return errors.New("context_request_accepted payload is invalid")
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO context_accepted_boundaries(
+				session_id, event_seq, route, through_seq,
+				input_tokens, output_tokens, payload_units, accepted_at_ns
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(session_id, route) DO UPDATE SET
+				event_seq = excluded.event_seq,
+				through_seq = excluded.through_seq,
+				input_tokens = excluded.input_tokens,
+				output_tokens = excluded.output_tokens,
+				payload_units = excluded.payload_units,
+				accepted_at_ns = excluded.accepted_at_ns
+		`, ev.Session, int64(ev.Seq), boundary.Route,
+			int64(boundary.ThroughSeq), boundary.InputTokens,
+			boundary.OutputTokens, boundary.PayloadUnits,
+			boundary.CreatedAt.UnixNano()); err != nil {
+			return fmt.Errorf("project accepted context boundary: %w", err)
 		}
 	}
 	return nil
@@ -705,6 +843,105 @@ func loadCheckpoint(
 	return &checkpoint, true, nil
 }
 
+func resolveCheckpointTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	session string,
+	active []event.Event,
+) (*compaction.Checkpoint, bool, error) {
+	checkpoint, ok, loadErr := loadCheckpoint(ctx, tx, session)
+	if loadErr != nil && !isCheckpointDecodeError(loadErr) {
+		return nil, false, loadErr
+	}
+	if loadErr == nil && ok && compaction.ValidateCheckpoint(active, *checkpoint) {
+		return checkpoint, true, nil
+	}
+
+	recovered, eventSeq, recoveredOK, err := recoverCheckpointFromEvents(
+		ctx,
+		tx,
+		session,
+		active,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if recoveredOK {
+		payload, err := json.Marshal(recovered)
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal recovered checkpoint: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO compaction_checkpoints(session_id, event_seq, checkpoint_json)
+			VALUES (?, ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				event_seq = excluded.event_seq,
+				checkpoint_json = excluded.checkpoint_json
+		`, session, int64(eventSeq), payload); err != nil {
+			return nil, false, fmt.Errorf("repair compaction checkpoint: %w", err)
+		}
+		return recovered, true, nil
+	}
+
+	if ok || loadErr != nil {
+		if _, err := tx.ExecContext(
+			ctx,
+			`DELETE FROM compaction_checkpoints WHERE session_id = ?`,
+			session,
+		); err != nil {
+			return nil, false, fmt.Errorf("discard invalid compaction checkpoint: %w", err)
+		}
+	}
+	return nil, false, nil
+}
+
+func recoverCheckpointFromEvents(
+	ctx context.Context,
+	tx *sql.Tx,
+	session string,
+	active []event.Event,
+) (*compaction.Checkpoint, event.Seq, bool, error) {
+	var (
+		rawSeq  int64
+		payload []byte
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT seq, payload_json
+		FROM events
+		WHERE session_id = ?
+		  AND kind = ?
+		  AND seq > COALESCE((
+			SELECT MAX(seq)
+			FROM events
+			WHERE session_id = ? AND kind = ?
+		  ), 0)
+		ORDER BY seq DESC
+		LIMIT 1
+	`, session, string(event.KindCompactionCompleted),
+		session, string(event.KindHistoryRewound)).Scan(&rawSeq, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("read checkpoint event: %w", err)
+	}
+	var candidate compaction.Checkpoint
+	if err := json.Unmarshal(payload, &candidate); err != nil ||
+		!compaction.ValidateCheckpoint(active, candidate) {
+		return nil, 0, false, nil
+	}
+	return &candidate, event.Seq(rawSeq), true, nil
+}
+
+func isCheckpointDecodeError(err error) bool {
+	var syntaxError *json.SyntaxError
+	if errors.As(err, &syntaxError) {
+		return true
+	}
+	var typeError *json.UnmarshalTypeError
+	return errors.As(err, &typeError)
+}
+
 func scanEvents(rows *sql.Rows) ([]event.Event, error) {
 	var events []event.Event
 	for rows.Next() {
@@ -790,6 +1027,29 @@ func checkpointFromPayload(payload any) (compaction.Checkpoint, bool) {
 		return compaction.Checkpoint{}, false
 	}
 	return checkpoint, true
+}
+
+func acceptedBoundaryFromPayload(payload any) (compaction.AcceptedBoundary, bool) {
+	switch value := payload.(type) {
+	case compaction.AcceptedBoundary:
+		return value, true
+	case *compaction.AcceptedBoundary:
+		if value != nil {
+			return *value, true
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return compaction.AcceptedBoundary{}, false
+	}
+	var boundary compaction.AcceptedBoundary
+	if err := json.Unmarshal(data, &boundary); err != nil ||
+		boundary.SessionID == "" ||
+		boundary.Route == "" ||
+		boundary.ThroughSeq == 0 {
+		return compaction.AcceptedBoundary{}, false
+	}
+	return boundary, true
 }
 
 var _ Store = (*store)(nil)

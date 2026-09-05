@@ -2288,6 +2288,11 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.CompactSessionResponse{
+		CheckpointID:          checkpoint.CheckpointID,
+		Phase:                 string(checkpoint.Phase),
+		ProjectionKind:        string(checkpoint.ProjectionKind),
+		Level:                 string(checkpoint.Level),
+		SegmentCount:          len(checkpoint.Segments),
 		ThroughSeq:            uint64(checkpoint.ThroughSeq),
 		EstimatedTokensBefore: checkpoint.EstimatedTokensBefore,
 		EstimatedTokensAfter:  checkpoint.EstimatedTokensAfter,

@@ -415,12 +415,26 @@ func extractReasoning(delta oai.ChatCompletionChunkChoiceDelta) string {
 // Complete 发起非流式 Chat Completions 请求,返回完整文本。
 // 用于标题生成等一次性短文本旁路任务。不携带工具定义。
 func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, error) {
+	completion, err := p.CompleteDetailed(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return completion.Text, nil
+}
+
+// CompleteDetailed returns text together with finish reason and usage.
+func (p *Provider) CompleteDetailed(
+	ctx context.Context,
+	req provider.Request,
+) (provider.Completion, error) {
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
 	if model == "" {
-		return "", fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
+		return provider.Completion{}, fmt.Errorf(
+			"尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key",
+		)
 	}
 
 	params := oai.ChatCompletionNewParams{
@@ -435,12 +449,26 @@ func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, 
 	}
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return "", err
+		return provider.Completion{}, err
 	}
 	if len(resp.Choices) == 0 {
-		return "", nil
+		return provider.Completion{}, nil
 	}
-	return resp.Choices[0].Message.Content, nil
+	usage := &provider.Usage{
+		Model:        model,
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+		TotalTokens:  resp.Usage.TotalTokens,
+		CachedTokens: resp.Usage.PromptTokensDetails.CachedTokens,
+	}
+	if usage.TotalTokens == 0 {
+		usage = nil
+	}
+	return provider.Completion{
+		Text:         resp.Choices[0].Message.Content,
+		FinishReason: resp.Choices[0].FinishReason,
+		Usage:        usage,
+	}, nil
 }
 
 // ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 与上下文窗口。

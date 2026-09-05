@@ -11,7 +11,10 @@ import (
 	"github.com/freesoulcode/foya/internal/message"
 )
 
-var ErrNativeSearchUnsupported = errors.New("provider native web search is unsupported")
+var (
+	ErrNativeSearchUnsupported     = errors.New("provider native web search is unsupported")
+	ErrNativeCompactionUnsupported = errors.New("provider native compaction is unsupported")
+)
 
 // FunctionDef 是一个函数工具的定义。
 type FunctionDef struct {
@@ -137,6 +140,13 @@ type Request struct {
 	MaxOutputTokens int64
 	Messages        []InputMessage
 	Tools           []ToolDef
+	ContextState    *ContextState
+}
+
+// ContextState is an opaque provider-native continuation state.
+type ContextState struct {
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data"`
 }
 
 // Provider 是统一的 LLM 接入点。
@@ -162,4 +172,28 @@ type CapabilityResolver interface {
 // 用于标题生成等旁路任务;不支持的 provider 可不实现,调用方走截断兜底。
 type Completer interface {
 	Complete(ctx context.Context, req Request) (string, error)
+}
+
+// Completion is the detailed result of a short non-streaming generation.
+type Completion struct {
+	Text         string
+	FinishReason string
+	Usage        *Usage
+}
+
+// DetailedCompleter is an optional extension for callers that must reject
+// truncated output and account for the physical model request.
+type DetailedCompleter interface {
+	CompleteDetailed(ctx context.Context, req Request) (Completion, error)
+}
+
+type NativeCompactionResult struct {
+	State ContextState
+	Usage *Usage
+}
+
+// NativeContextCompactor is implemented only by providers whose request
+// protocol can both create and replay an opaque compaction state.
+type NativeContextCompactor interface {
+	CompactContext(ctx context.Context, req Request) (NativeCompactionResult, error)
 }

@@ -34,8 +34,11 @@ func (compactingProvider) Stream(
 	return ch, nil
 }
 
-func (compactingProvider) Complete(context.Context, provider.Request) (string, error) {
-	return `## Goal
+func (compactingProvider) CompleteDetailed(
+	context.Context,
+	provider.Request,
+) (provider.Completion, error) {
+	return provider.Completion{Text: `## Goal
 Continue the task.
 ## Progress
 History was summarized.
@@ -44,7 +47,7 @@ Preserve canonical events.
 ## Next Steps
 Continue with the next request.
 ## Critical Context
-No unresolved detail.`, nil
+No unresolved detail.`, FinishReason: "stop"}, nil
 }
 
 func TestCompactSessionRoute(t *testing.T) {

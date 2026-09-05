@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -377,15 +378,16 @@ func TestStoreRewindsAndInvalidatesCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, ok := compaction.BuildPlan(active, nil, false)
+	plan, ok := compaction.BuildPlanForPhase(
+		active,
+		nil,
+		compaction.PhaseStandalone,
+	)
 	if !ok {
 		t.Fatal("expected compaction plan")
 	}
-	if _, err := store.RecordCheckpoint(ctx, compaction.Checkpoint{
-		SessionID: sessionID, ThroughSeq: plan.ThroughSeq,
-		SourceDigest: plan.SourceDigest, Summary: "summary",
-		CreatedAt: time.Now(),
-	}); err != nil {
+	checkpoint := checkpointForStorePlan(plan, sessionID, "summary")
+	if _, err := store.RecordCheckpoint(ctx, checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	modelHistory, err := store.ModelHistory(ctx, sessionID)
@@ -394,6 +396,44 @@ func TestStoreRewindsAndInvalidatesCheckpoint(t *testing.T) {
 	}
 	if len(modelHistory) != 1 || modelHistory[0].Role != message.RoleSystem {
 		t.Fatalf("model history = %#v", modelHistory)
+	}
+	boundary := compaction.AcceptedBoundary{
+		SessionID:    sessionID,
+		Route:        "connection\x00provider\x00model",
+		ThroughSeq:   active[len(active)-1].Seq,
+		InputTokens:  100,
+		OutputTokens: 10,
+		PayloadUnits: 400,
+		CreatedAt:    time.Now(),
+	}
+	if _, err := store.Append(ctx, event.Event{
+		Kind: event.KindContextRequestAccepted, Session: sessionID,
+		Payload: boundary, Time: boundary.CreatedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := store.AcceptedBoundary(
+		ctx,
+		sessionID,
+		boundary.Route,
+	); err != nil || !ok || got.ThroughSeq != boundary.ThroughSeq ||
+		got.PayloadUnits != boundary.PayloadUnits {
+		t.Fatalf("accepted boundary before rewind: %#v ok=%v err=%v", got, ok, err)
+	}
+	secondRoute := boundary
+	secondRoute.Route = "connection-2\x00provider\x00model"
+	if _, err := store.Append(ctx, event.Event{
+		Kind: event.KindContextRequestAccepted, Session: sessionID,
+		Payload: secondRoute, Time: secondRoute.CreatedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.AcceptedBoundary(
+		ctx,
+		sessionID,
+		boundary.Route,
+	); err != nil || !ok {
+		t.Fatalf("first route boundary was overwritten: ok=%v err=%v", ok, err)
 	}
 
 	preview, err := store.Rewind(ctx, sessionID, target, false, 0, nil, "")
@@ -412,6 +452,20 @@ func TestStoreRewindsAndInvalidatesCheckpoint(t *testing.T) {
 	}
 	if _, ok, err := store.Checkpoint(ctx, sessionID); err != nil || ok {
 		t.Fatalf("checkpoint after rewind: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.AcceptedBoundary(
+		ctx,
+		sessionID,
+		boundary.Route,
+	); err != nil || ok {
+		t.Fatalf("accepted boundary after rewind: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.AcceptedBoundary(
+		ctx,
+		sessionID,
+		secondRoute.Route,
+	); err != nil || ok {
+		t.Fatalf("second accepted boundary after rewind: ok=%v err=%v", ok, err)
 	}
 
 	history, err := store.History(ctx, sessionID)
@@ -435,6 +489,174 @@ func TestStoreRewindsAndInvalidatesCheckpoint(t *testing.T) {
 	}
 	if !foundOldAnswer {
 		t.Fatal("rewind removed an immutable source event")
+	}
+}
+
+func TestStoreRecoversCorruptCheckpointProjectionFromEvent(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	ctx := context.Background()
+	sessionID := "session-1"
+
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleUser, Content: "question",
+	})
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "answer",
+	})
+	active, err := store.Events(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := compaction.BuildPlanForPhase(
+		active,
+		nil,
+		compaction.PhaseStandalone,
+	)
+	if !ok {
+		t.Fatal("expected compaction plan")
+	}
+	checkpoint := compaction.Checkpoint{
+		SchemaVersion:        compaction.CheckpointSchemaVersion,
+		SourcePolicyVersion:  compaction.SourcePolicyVersion,
+		SummaryFormatVersion: compaction.SummaryFormatVersion,
+		PromptVersion:        compaction.PromptVersion,
+		SessionID:            sessionID,
+		Phase:                compaction.PhaseStandalone,
+		ThroughSeq:           plan.ThroughSeq,
+		SourceDigest:         plan.SourceDigest,
+		ProjectionKind:       compaction.ProjectionText,
+		Level:                compaction.CheckpointLevelSegmented,
+		Segments:             compaction.ConsolidatedSegment(plan, "recovered summary"),
+		Summary:              "recovered summary",
+		Model:                "test-model",
+		CreatedAt:            time.Now(),
+	}
+	checkpoint.CheckpointID = compaction.ComputeCheckpointID(checkpoint)
+	if _, err := store.RecordCheckpoint(ctx, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		UPDATE compaction_checkpoints
+		SET checkpoint_json = '{'
+		WHERE session_id = ?
+	`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := store.ModelHistory(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 ||
+		!bytes.Contains([]byte(history[0].Content), []byte("recovered summary")) {
+		t.Fatalf("recovered model history = %#v", history)
+	}
+	var repaired []byte
+	if err := db.QueryRow(`
+		SELECT checkpoint_json
+		FROM compaction_checkpoints
+		WHERE session_id = ?
+	`, sessionID).Scan(&repaired); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(repaired) {
+		t.Fatalf("checkpoint projection was not repaired: %q", repaired)
+	}
+}
+
+func TestStoreRejectsStaleCheckpointLineage(t *testing.T) {
+	db, err := storage.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := NewStore(db)
+	ctx := context.Background()
+	sessionID := "session-1"
+
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleUser, Content: "first question",
+	})
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "first answer",
+	})
+	active, err := store.Events(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPlan, ok := compaction.BuildPlanForPhase(
+		active,
+		nil,
+		compaction.PhaseStandalone,
+	)
+	if !ok {
+		t.Fatal("expected first plan")
+	}
+	first := compaction.Checkpoint{
+		SchemaVersion:        compaction.CheckpointSchemaVersion,
+		SourcePolicyVersion:  compaction.SourcePolicyVersion,
+		SummaryFormatVersion: compaction.SummaryFormatVersion,
+		PromptVersion:        compaction.PromptVersion,
+		SessionID:            sessionID,
+		Phase:                compaction.PhaseStandalone,
+		ThroughSeq:           firstPlan.ThroughSeq,
+		SourceDigest:         firstPlan.SourceDigest,
+		ProjectionKind:       compaction.ProjectionText,
+		Level:                compaction.CheckpointLevelSegmented,
+		Segments:             compaction.ConsolidatedSegment(firstPlan, "first summary"),
+		Summary:              "first summary",
+		Model:                "test-model",
+		CreatedAt:            time.Now(),
+	}
+	first.CheckpointID = compaction.ComputeCheckpointID(first)
+	if _, err := store.RecordCheckpoint(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleUser, Content: "second question",
+	})
+	appendStoreMessage(t, store, sessionID, message.Message{
+		Role: message.RoleAssistant, Content: "second answer",
+	})
+	active, err = store.Events(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPlan, ok := compaction.BuildPlanForPhase(
+		active,
+		&first,
+		compaction.PhaseStandalone,
+	)
+	if !ok {
+		t.Fatal("expected successor plan")
+	}
+	stale := compaction.Checkpoint{
+		SchemaVersion:         compaction.CheckpointSchemaVersion,
+		SourcePolicyVersion:   compaction.SourcePolicyVersion,
+		SummaryFormatVersion:  compaction.SummaryFormatVersion,
+		PromptVersion:         compaction.PromptVersion,
+		PreviousCheckpointID:  "stale-parent",
+		SessionID:             sessionID,
+		Phase:                 compaction.PhaseStandalone,
+		ThroughSeq:            secondPlan.ThroughSeq,
+		SourceDigest:          secondPlan.SourceDigest,
+		ProjectionKind:        compaction.ProjectionText,
+		Level:                 compaction.CheckpointLevelSession,
+		Segments:              compaction.ConsolidatedSegment(secondPlan, "stale summary"),
+		Summary:               "stale summary",
+		Model:                 "test-model",
+		EstimatedTokensBefore: secondPlan.EstimatedTokens,
+		CreatedAt:             time.Now(),
+	}
+	stale.CheckpointID = compaction.ComputeCheckpointID(stale)
+	if _, err := store.RecordCheckpoint(ctx, stale); err == nil {
+		t.Fatal("expected stale checkpoint lineage to be rejected")
 	}
 }
 
@@ -658,6 +880,31 @@ func appendStoreMessage(
 		t.Fatal(err)
 	}
 	return seq
+}
+
+func checkpointForStorePlan(
+	plan compaction.Plan,
+	sessionID, summary string,
+) compaction.Checkpoint {
+	checkpoint := compaction.Checkpoint{
+		SchemaVersion:        compaction.CheckpointSchemaVersion,
+		SourcePolicyVersion:  compaction.SourcePolicyVersion,
+		SummaryFormatVersion: compaction.SummaryFormatVersion,
+		PromptVersion:        compaction.PromptVersion,
+		SessionID:            sessionID,
+		Phase:                plan.Phase,
+		HeadAnchorSeq:        plan.HeadAnchorSeq,
+		ThroughSeq:           plan.ThroughSeq,
+		SourceDigest:         plan.SourceDigest,
+		ProjectionKind:       compaction.ProjectionText,
+		Level:                compaction.CheckpointLevelSegmented,
+		Segments:             compaction.ConsolidatedSegment(plan, summary),
+		Summary:              summary,
+		Model:                "test-model",
+		CreatedAt:            time.Now(),
+	}
+	checkpoint.CheckpointID = compaction.ComputeCheckpointID(checkpoint)
+	return checkpoint
 }
 
 func loadUsageSummaryForTest(

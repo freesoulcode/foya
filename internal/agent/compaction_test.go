@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
@@ -18,13 +21,51 @@ import (
 )
 
 type compactionProvider struct {
-	mu            sync.Mutex
-	contextWindow int64
-	overflowFirst bool
-	streamCalls   int
-	captured      [][]provider.InputMessage
-	efforts       []string
-	outputLimits  []int64
+	mu             sync.Mutex
+	contextWindow  int64
+	overflowFirst  bool
+	streamCalls    int
+	captured       [][]provider.InputMessage
+	efforts        []string
+	outputLimits   []int64
+	completeCalls  int
+	completeLimits []int64
+	completeInputs [][]provider.InputMessage
+	completions    []provider.Completion
+	completionErrs []error
+}
+
+type nativeCompactionProvider struct {
+	state          provider.ContextState
+	previousStates []*provider.ContextState
+}
+
+type unsupportedNativeProvider struct {
+	*compactionProvider
+}
+
+func (*unsupportedNativeProvider) CompactContext(
+	context.Context,
+	provider.Request,
+) (provider.NativeCompactionResult, error) {
+	return provider.NativeCompactionResult{}, provider.ErrNativeCompactionUnsupported
+}
+
+func (p *nativeCompactionProvider) Name() string { return "native-test" }
+func (p *nativeCompactionProvider) Stream(
+	context.Context,
+	provider.Request,
+) (<-chan provider.StreamEvent, error) {
+	ch := make(chan provider.StreamEvent)
+	close(ch)
+	return ch, nil
+}
+func (p *nativeCompactionProvider) CompactContext(
+	_ context.Context,
+	request provider.Request,
+) (provider.NativeCompactionResult, error) {
+	p.previousStates = append(p.previousStates, request.ContextState)
+	return provider.NativeCompactionResult{State: p.state}, nil
 }
 
 func (p *compactionProvider) Name() string { return "test" }
@@ -37,7 +78,40 @@ func (p *compactionProvider) Complete(
 	context.Context,
 	provider.Request,
 ) (string, error) {
-	return `## Goal
+	return defaultCompactionSummary, nil
+}
+
+func (p *compactionProvider) CompleteDetailed(
+	_ context.Context,
+	req provider.Request,
+) (provider.Completion, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.completeCalls++
+	p.completeLimits = append(p.completeLimits, req.MaxOutputTokens)
+	p.completeInputs = append(
+		p.completeInputs,
+		append([]provider.InputMessage(nil), req.Messages...),
+	)
+	if len(p.completionErrs) > 0 {
+		err := p.completionErrs[0]
+		p.completionErrs = p.completionErrs[1:]
+		if err != nil {
+			return provider.Completion{}, err
+		}
+	}
+	if len(p.completions) > 0 {
+		result := p.completions[0]
+		p.completions = p.completions[1:]
+		return result, nil
+	}
+	return provider.Completion{
+		Text:         defaultCompactionSummary,
+		FinishReason: "stop",
+	}, nil
+}
+
+const defaultCompactionSummary = `## Goal
 Continue the requested work.
 ## Progress
 Earlier investigation completed.
@@ -46,8 +120,7 @@ Keep canonical history unchanged.
 ## Next Steps
 Continue from the latest user request.
 ## Critical Context
-Use the current project and tools.`, nil
-}
+Use the current project and tools.`
 
 func (p *compactionProvider) Stream(
 	_ context.Context,
@@ -124,16 +197,141 @@ func TestRunTurnUsesConfiguredInputLimitForCompaction(t *testing.T) {
 	}
 }
 
-func TestConfiguredInputLimitDoesNotExpandContextBudget(t *testing.T) {
-	limit := inputTokenLimit(
-		compaction.DeriveBudget(131_072),
-		ModelTokenLimits{
-			MaxInputTokens:  130_048,
-			MaxOutputTokens: 16_384,
-		},
+func TestEstimatedBudgetDoesNotRejectProviderRequest(t *testing.T) {
+	engine, _, sessionID, prov := newCompactionTestEngine(t, 64)
+
+	if err := engine.RunTurn(
+		context.Background(),
+		sessionID,
+		strings.Repeat("large current request ", 500),
+	); err != nil {
+		t.Fatal(err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.streamCalls != 1 {
+		t.Fatalf("stream calls = %d, want 1", prov.streamCalls)
+	}
+}
+
+func TestRunTurnPersistsAcceptedProviderBoundary(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 100_000)
+	if err := engine.RunTurn(context.Background(), sessionID, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	route := engine.modelRouteKey(sessionID, "test-model")
+	boundary, ok, err := log.AcceptedBoundary(
+		context.Background(),
+		sessionID,
+		route,
 	)
-	if limit != 114_688 {
-		t.Fatalf("input limit = %d, want 114688", limit)
+	if err != nil || !ok {
+		t.Fatalf("accepted boundary: ok=%v err=%v", ok, err)
+	}
+	if boundary.ThroughSeq == 0 || boundary.Route != route {
+		t.Fatalf("accepted boundary = %#v", boundary)
+	}
+	if boundary.InputTokens != 100 || boundary.PayloadUnits == 0 {
+		t.Fatalf("accepted boundary usage = %#v", boundary)
+	}
+}
+
+func TestPrepareModelRequestCompactsCompletedMidTurnSteps(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 512)
+	appendMessage(t, log, sessionID, message.RoleUser, "current request")
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID: "call-1", Name: "read",
+		}},
+	})
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "call-1",
+		Content:    strings.Repeat("first evidence ", 1_000),
+	})
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID: "call-2", Name: "test",
+		}},
+	})
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "call-2",
+		Content:    strings.Repeat("second evidence ", 1_000),
+	})
+	appendMessage(t, log, sessionID, message.RoleAssistant, "latest working note")
+
+	messages, _, _, _, _, err := engine.prepareModelRequest(
+		context.Background(),
+		sessionID,
+		"test-model",
+		"system",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, ok, err := log.Checkpoint(context.Background(), sessionID)
+	if err != nil || !ok {
+		t.Fatalf("checkpoint: ok=%v err=%v", ok, err)
+	}
+	if checkpoint.Phase != compaction.PhaseMidTurn || checkpoint.HeadAnchorSeq == 0 {
+		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+	text := messagesText(provider.TextMessages(messages))
+	if !strings.Contains(text, "<context_checkpoint>") ||
+		!strings.Contains(text, "current request") ||
+		!strings.Contains(text, "latest working note") {
+		t.Fatalf("mid-turn projection = %s", text)
+	}
+	if strings.Contains(text, "first evidence first evidence") {
+		t.Fatal("covered mid-turn tool result leaked into projection")
+	}
+}
+
+func TestPrepareModelRequestExposesHistoryReaderOnlyForReferences(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 128)
+	engine.tools.Register(tool.NewHistoryReadToolResult(log))
+	appendMessage(t, log, sessionID, message.RoleUser, "current request")
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role: message.RoleAssistant,
+		ToolCalls: []message.ToolCall{{
+			ID: "call-1", Name: "bash",
+		}},
+	})
+	appendMessageValue(t, log, sessionID, message.Message{
+		Role:       message.RoleTool,
+		ToolCallID: "call-1",
+		Content:    strings.Repeat("large output ", 2_000),
+	})
+
+	messages, toolDefs, _, _, _, err := engine.prepareModelRequest(
+		context.Background(),
+		sessionID,
+		"test-model",
+		"system",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !messagesContainToolResultReference(messages) {
+		t.Fatal("bounded history did not contain a tool-result reference")
+	}
+	if !activeToolDefNames(toolDefs)[tool.HistoryReadToolResultName] {
+		t.Fatal("history reader was not exposed for a referenced tool result")
+	}
+}
+
+func TestConfiguredInputLimitDoesNotExpandContextBudget(t *testing.T) {
+	compiled := (compaction.ContextCompiler{}).Compile(compaction.CompileInput{
+		ContextWindow:  131_072,
+		MaxInputTokens: 130_048,
+	})
+	if compiled.InputLimit != 114_688 {
+		t.Fatalf("input limit = %d, want 114688", compiled.InputLimit)
 	}
 }
 
@@ -216,13 +414,424 @@ func TestCompactSessionCreatesStandaloneCheckpoint(t *testing.T) {
 	if len(projected) != 1 || projected[0].Role != message.RoleSystem {
 		t.Fatalf("projected history = %#v", projected)
 	}
+	if checkpoint.Level != compaction.CheckpointLevelSegmented ||
+		len(checkpoint.Segments) != 1 {
+		t.Fatalf("checkpoint hierarchy = %#v", checkpoint)
+	}
+}
+
+func TestCompactSessionAppendsSummarySegment(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 100_000)
+	appendMessage(t, log, sessionID, message.RoleUser, "first question")
+	appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("first answer ", 200),
+	)
+	first, err := engine.CompactSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMessage(t, log, sessionID, message.RoleUser, "second question")
+	appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("second answer ", 200),
+	)
+	second, err := engine.CompactSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.PreviousCheckpointID != first.CheckpointID ||
+		len(second.Segments) != 2 ||
+		second.Level != compaction.CheckpointLevelSegmented {
+		t.Fatalf("rolling checkpoint = %#v", second)
+	}
+	if !strings.Contains(second.Summary, "<checkpoint_segments>") {
+		t.Fatalf("segmented summary = %q", second.Summary)
+	}
+}
+
+func TestCompactSessionConsolidatesBoundedSegments(t *testing.T) {
+	engine, log, sessionID, _ := newCompactionTestEngine(t, 100_000)
+	var checkpoint *compaction.Checkpoint
+	for i := 0; i < compaction.MaxCheckpointSegments+1; i++ {
+		appendMessage(
+			t,
+			log,
+			sessionID,
+			message.RoleUser,
+			fmt.Sprintf("question %d", i),
+		)
+		appendMessage(
+			t,
+			log,
+			sessionID,
+			message.RoleAssistant,
+			strings.Repeat(fmt.Sprintf("answer %d ", i), 200),
+		)
+		var err error
+		checkpoint, err = engine.CompactSession(context.Background(), sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if checkpoint.Level != compaction.CheckpointLevelSession ||
+		len(checkpoint.Segments) != 1 {
+		t.Fatalf("consolidated checkpoint = %#v", checkpoint)
+	}
+}
+
+func TestCompactionUsesDedicatedOutputLimitAndRepairsLength(t *testing.T) {
+	engine, log, sessionID, prov := newCompactionTestEngine(t, 100_000)
+	engine.SetModelTokenLimitsResolver(func(string, string) *ModelTokenLimits {
+		return &ModelTokenLimits{MaxOutputTokens: 32_000}
+	})
+	prov.completions = []provider.Completion{
+		{Text: "truncated", FinishReason: "length"},
+		{Text: defaultCompactionSummary, FinishReason: "stop"},
+	}
+	appendMessage(t, log, sessionID, message.RoleUser, "completed question")
+	appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("completed answer ", 200),
+	)
+
+	if _, err := engine.CompactSession(context.Background(), sessionID); err != nil {
+		t.Fatal(err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.completeCalls != 2 {
+		t.Fatalf("completion calls = %d, want 2", prov.completeCalls)
+	}
+	for _, limit := range prov.completeLimits {
+		if limit != compaction.MaxOutputTokens {
+			t.Fatalf("compaction output limit = %d", limit)
+		}
+	}
+}
+
+func TestCompactionRetreatsToAcceptedProviderBoundary(t *testing.T) {
+	engine, log, sessionID, prov := newCompactionTestEngine(t, 100_000)
+	firstSeq := appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleUser,
+		strings.Repeat("old question ", 200),
+	)
+	acceptedSeq := appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("old answer ", 200),
+	)
+	if firstSeq == 0 {
+		t.Fatal("first event sequence was not assigned")
+	}
+	appendMessage(t, log, sessionID, message.RoleUser, "current request")
+	appendMessage(t, log, sessionID, message.RoleAssistant, "completed step one")
+	appendMessage(t, log, sessionID, message.RoleAssistant, "completed step two")
+	appendMessage(t, log, sessionID, message.RoleAssistant, "latest working note")
+
+	route := engine.modelRouteKey(sessionID, "test-model")
+	boundary := compaction.AcceptedBoundary{
+		SessionID: sessionID,
+		Route:     route, ThroughSeq: acceptedSeq,
+		CreatedAt: time.Now(),
+	}
+	if _, err := log.Append(context.Background(), event.Event{
+		Kind: event.KindContextRequestAccepted, Session: sessionID,
+		Payload: boundary, Time: boundary.CreatedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prov.completionErrs = []error{
+		fmt.Errorf("maximum context length exceeded"),
+		nil,
+	}
+
+	checkpoint, err := engine.compactHistory(
+		context.Background(),
+		sessionID,
+		"test-model",
+		compaction.PhaseAuto,
+		"test",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.ThroughSeq != acceptedSeq {
+		t.Fatalf(
+			"checkpoint through = %d, want accepted boundary %d",
+			checkpoint.ThroughSeq,
+			acceptedSeq,
+		)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.completeCalls != 2 {
+		t.Fatalf("completion calls = %d, want 2", prov.completeCalls)
+	}
+}
+
+func TestCompactionSuppressesRepeatedDeterministicFailure(t *testing.T) {
+	engine, log, sessionID, prov := newCompactionTestEngine(t, 100_000)
+	appendMessage(t, log, sessionID, message.RoleUser, "completed question")
+	appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("completed answer ", 200),
+	)
+	prov.completions = []provider.Completion{
+		{Text: "invalid", FinishReason: "stop"},
+		{Text: "still invalid", FinishReason: "stop"},
+	}
+
+	_, firstErr := engine.compactHistory(
+		context.Background(),
+		sessionID,
+		"test-model",
+		compaction.PhaseStandalone,
+		"test",
+	)
+	if !errors.Is(firstErr, errCompactionInvalidSummary) {
+		t.Fatalf("first error = %v", firstErr)
+	}
+	_, secondErr := engine.compactHistory(
+		context.Background(),
+		sessionID,
+		"test-model",
+		compaction.PhaseStandalone,
+		"test",
+	)
+	if !errors.Is(secondErr, errCompactionSuppressed) {
+		t.Fatalf("second error = %v", secondErr)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.completeCalls != 2 {
+		t.Fatalf("completion calls = %d, want 2", prov.completeCalls)
+	}
+}
+
+func TestCompactionFailureCircuitIsScopedToProviderRoute(t *testing.T) {
+	engine, log, sessionID, prov := newCompactionTestEngine(t, 100_000)
+	route := "route-a"
+	engine.SetModelRouteResolver(func(string, string) string { return route })
+	appendMessage(t, log, sessionID, message.RoleUser, "completed question")
+	appendMessage(
+		t,
+		log,
+		sessionID,
+		message.RoleAssistant,
+		strings.Repeat("completed answer ", 200),
+	)
+	prov.completions = []provider.Completion{
+		{Text: "invalid", FinishReason: "stop"},
+		{Text: "still invalid", FinishReason: "stop"},
+		{Text: defaultCompactionSummary, FinishReason: "stop"},
+	}
+
+	if _, err := engine.compactHistory(
+		context.Background(),
+		sessionID,
+		"test-model",
+		compaction.PhaseStandalone,
+		"test",
+	); !errors.Is(err, errCompactionInvalidSummary) {
+		t.Fatalf("first error = %v", err)
+	}
+	route = "route-b"
+	if _, err := engine.compactHistory(
+		context.Background(),
+		sessionID,
+		"test-model",
+		compaction.PhaseStandalone,
+		"test",
+	); err != nil {
+		t.Fatal(err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.completeCalls != 3 {
+		t.Fatalf("completion calls = %d, want 3", prov.completeCalls)
+	}
+}
+
+func TestProviderNativeCheckpointReplaysOnlyOnMatchingRoute(t *testing.T) {
+	sessions := newTestSessionManager(t)
+	sess, err := sessions.Create(session.CreateOptions{Model: "native-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := newTestStore(t)
+	bus := broker.New[event.Event]()
+	gateway := approval.NewGateway(bus, log)
+	prov := &nativeCompactionProvider{state: provider.ContextState{
+		Kind: "native.compaction",
+		Data: []byte(`{"opaque":"state"}`),
+	}}
+	engine := NewEngine(
+		log,
+		bus,
+		sessions,
+		prov,
+		"native-model",
+		tool.NewRegistry(),
+		gateway,
+	)
+	appendMessage(t, log, sess.ID, message.RoleUser, "old question")
+	appendMessage(
+		t,
+		log,
+		sess.ID,
+		message.RoleAssistant,
+		strings.Repeat("old answer ", 200),
+	)
+	appendMessage(t, log, sess.ID, message.RoleUser, "current request")
+
+	checkpoint, err := engine.compactHistory(
+		context.Background(),
+		sess.ID,
+		"native-model",
+		compaction.PhasePreTurn,
+		"test",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.ProjectionKind != compaction.ProjectionProviderNative ||
+		checkpoint.ProviderRoute == "" ||
+		len(checkpoint.ProviderState) == 0 {
+		t.Fatalf("native checkpoint = %#v", checkpoint)
+	}
+	messages, _, contextState, _, _, err := engine.prepareModelRequest(
+		context.Background(),
+		sess.ID,
+		"native-model",
+		"system",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextState == nil ||
+		contextState.Kind != "native.compaction" ||
+		string(contextState.Data) != `{"opaque":"state"}` {
+		t.Fatalf("context state = %#v", contextState)
+	}
+	if text := messagesText(provider.TextMessages(messages)); strings.Contains(text, "old answer") {
+		t.Fatalf("native-covered history leaked into request: %s", text)
+	}
+	appendMessage(
+		t,
+		log,
+		sess.ID,
+		message.RoleAssistant,
+		strings.Repeat("native continuation ", 200),
+	)
+	checkpoint, err = engine.CompactSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.previousStates) != 2 ||
+		prov.previousStates[1] == nil ||
+		prov.previousStates[1].Kind != "native.compaction" {
+		t.Fatalf("native rolling states = %#v", prov.previousStates)
+	}
+
+	raw := compaction.ProjectForRoute(
+		mustEvents(t, log, sess.ID),
+		checkpoint,
+		"different-route",
+	)
+	if raw.ContextState != nil || len(raw.Messages) != 4 {
+		t.Fatalf("route mismatch projection = %#v", raw)
+	}
+
+	textProvider := &compactionProvider{contextWindow: 100_000}
+	engine.SwitchProvider(textProvider, "native-model")
+	appendMessage(
+		t,
+		log,
+		sess.ID,
+		message.RoleAssistant,
+		strings.Repeat("completed after switch ", 200),
+	)
+	portable, err := engine.CompactSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portable.ProjectionKind != compaction.ProjectionText {
+		t.Fatalf("portable checkpoint kind = %q", portable.ProjectionKind)
+	}
+	textProvider.mu.Lock()
+	defer textProvider.mu.Unlock()
+	if len(textProvider.completeInputs) == 0 ||
+		!strings.Contains(
+			messagesText(textProvider.completeInputs[0]),
+			"old answer old answer",
+		) {
+		t.Fatal("native route fallback did not rebuild from canonical history")
+	}
+}
+
+func TestUnsupportedNativeCompactionFallsBackToText(t *testing.T) {
+	sessions := newTestSessionManager(t)
+	sess, err := sessions.Create(session.CreateOptions{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := newTestStore(t)
+	bus := broker.New[event.Event]()
+	gateway := approval.NewGateway(bus, log)
+	prov := &unsupportedNativeProvider{
+		compactionProvider: &compactionProvider{contextWindow: 100_000},
+	}
+	engine := NewEngine(
+		log,
+		bus,
+		sessions,
+		prov,
+		"test-model",
+		tool.NewRegistry(),
+		gateway,
+	)
+	appendMessage(t, log, sess.ID, message.RoleUser, "old question")
+	appendMessage(
+		t,
+		log,
+		sess.ID,
+		message.RoleAssistant,
+		strings.Repeat("old answer ", 200),
+	)
+
+	checkpoint, err := engine.CompactSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.ProjectionKind != compaction.ProjectionText {
+		t.Fatalf("checkpoint kind = %q", checkpoint.ProjectionKind)
+	}
 }
 
 func TestContextOverflowClassification(t *testing.T) {
 	for _, text := range []string{
 		"maximum context length exceeded",
 		"prompt is too long",
-		"request_too_large",
+		"request_too_large: prompt exceeds context window",
 	} {
 		if !isContextOverflow(text) {
 			t.Fatalf("expected context overflow for %q", text)
@@ -230,6 +839,9 @@ func TestContextOverflowClassification(t *testing.T) {
 	}
 	if isContextOverflow("rate limit exceeded for input tokens") {
 		t.Fatal("rate limit must not be classified as context overflow")
+	}
+	if isContextOverflow("request_too_large") {
+		t.Fatal("ambiguous request size errors must not be classified as context overflow")
 	}
 }
 
@@ -265,16 +877,31 @@ func appendMessage(
 	sessionID string,
 	role message.Role,
 	content string,
-) {
+) event.Seq {
+	return appendMessageValue(
+		t,
+		log,
+		sessionID,
+		message.Message{Role: role, Content: content},
+	)
+}
+
+func appendMessageValue(
+	t *testing.T,
+	log state.Store,
+	sessionID string,
+	value message.Message,
+) event.Seq {
 	t.Helper()
-	_, err := log.Append(context.Background(), event.Event{
+	seq, err := log.Append(context.Background(), event.Event{
 		Kind:    event.KindMessageEnd,
 		Session: sessionID,
-		Payload: message.Message{Role: role, Content: content},
+		Payload: value,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return seq
 }
 
 func messagesText(messages []provider.InputMessage) string {
@@ -287,4 +914,13 @@ func messagesText(messages []provider.InputMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func mustEvents(t *testing.T, log state.Store, sessionID string) []event.Event {
+	t.Helper()
+	events, err := log.Events(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return events
 }

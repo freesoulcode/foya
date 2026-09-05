@@ -136,6 +136,7 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewEditTool(gw, executionRunner))
 	tools.Register(tool.NewAskUserTool(questions))
 	tools.Register(tool.NewReadTasksTool(sessions))
+	tools.Register(tool.NewHistoryReadToolResult(log))
 	tools.Register(tool.NewUpdateTasksTool(sessions, func(ctx context.Context, s *session.Session) {
 		ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
 		seq, _ := log.Append(ctx, ev)

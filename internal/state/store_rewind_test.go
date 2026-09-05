@@ -55,17 +55,16 @@ func TestRewindKeepsSourceEventsAndProjectsOnlyActivePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, ok := compaction.BuildPlan(active, nil, false)
+	plan, ok := compaction.BuildPlanForPhase(
+		active,
+		nil,
+		compaction.PhaseStandalone,
+	)
 	if !ok {
 		t.Fatal("expected checkpoint plan")
 	}
-	if _, err := log.RecordCheckpoint(ctx, compaction.Checkpoint{
-		SessionID:    sessionID,
-		ThroughSeq:   plan.ThroughSeq,
-		SourceDigest: plan.SourceDigest,
-		Summary:      "old checkpoint",
-		CreatedAt:    time.Now(),
-	}); err != nil {
+	checkpoint := checkpointForStorePlan(plan, sessionID, "old checkpoint")
+	if _, err := log.RecordCheckpoint(ctx, checkpoint); err != nil {
 		t.Fatal(err)
 	}
 

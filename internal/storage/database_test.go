@@ -47,6 +47,7 @@ func TestOpenCreatesPrivateDatabaseWithRequiredPragmas(t *testing.T) {
 		"file_changes",
 		"file_rewind_journals",
 		"file_rewind_journal_files",
+		"context_accepted_boundaries",
 		"usage_daily_ledger",
 		"usage_message_daily_ledger",
 		"usage_session_days",

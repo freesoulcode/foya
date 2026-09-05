@@ -19,6 +19,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 		target = &message.Message{}
 	case event.KindCompactionCompleted:
 		target = &compaction.Checkpoint{}
+	case event.KindContextRequestAccepted:
+		target = &compaction.AcceptedBoundary{}
 	case event.KindHistoryRewound:
 		target = &event.HistoryRewound{}
 	case event.KindFileReviewResolved:
@@ -41,6 +43,8 @@ func decodePayload(kind event.Kind, raw json.RawMessage) any {
 	case *message.Message:
 		return *value
 	case *compaction.Checkpoint:
+		return *value
+	case *compaction.AcceptedBoundary:
 		return *value
 	case *event.HistoryRewound:
 		return *value

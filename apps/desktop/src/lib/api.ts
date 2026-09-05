@@ -235,6 +235,11 @@ export interface UsageStatistics {
 }
 
 export interface CompactSessionResult {
+  checkpoint_id?: string;
+  phase?: "standalone" | "pre_turn" | "mid_turn";
+  projection_kind?: "text" | "provider_native";
+  level?: "segmented" | "session";
+  segment_count?: number;
   through_seq: number;
   estimated_tokens_before: number;
   estimated_tokens_after: number;

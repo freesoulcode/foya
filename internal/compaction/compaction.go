@@ -19,7 +19,18 @@ const (
 	UnknownReserveTokens       int64 = 16_384
 	MaxReserveTokens           int64 = 16_384
 	MaxToolResultTokens        int64 = 2_048
+	DefaultOutputTokens        int64 = 4_096
+	MaxOutputTokens            int64 = 8_192
+	MinAdaptiveReserveTokens   int64 = 1_024
+	MaxAdaptiveReserveTokens   int64 = 8_192
+
+	CheckpointSchemaVersion = 3
+	SourcePolicyVersion     = "message-prefix-v1"
+	SummaryFormatVersion    = "continuation-v2"
+	PromptVersion           = "continuation-prompt-v2"
 )
+
+const toolOutputOmission = "\n\n[... middle of tool output omitted ...]\n\n"
 
 // Budget separates model input capacity from the space reserved for generation.
 type Budget struct {
@@ -54,46 +65,173 @@ func DeriveBudget(contextWindow int64) Budget {
 	}
 }
 
+// DeriveBudgetForOutput uses observed generation size when the model window is
+// known. Unknown models retain the conservative fallback.
+func DeriveBudgetForOutput(contextWindow, priorOutputTokens int64) Budget {
+	budget := DeriveBudget(contextWindow)
+	if contextWindow <= 0 || priorOutputTokens <= 0 {
+		return budget
+	}
+	reserve := priorOutputTokens * 2
+	if reserve < MinAdaptiveReserveTokens {
+		reserve = MinAdaptiveReserveTokens
+	}
+	if reserve > MaxAdaptiveReserveTokens {
+		reserve = MaxAdaptiveReserveTokens
+	}
+	budget.ReserveTokens = reserve
+	budget.HighWater = max(1, contextWindow-reserve)
+	return budget
+}
+
+type Phase string
+
+const (
+	PhaseAuto       Phase = "auto"
+	PhaseStandalone Phase = "standalone"
+	PhasePreTurn    Phase = "pre_turn"
+	PhaseMidTurn    Phase = "mid_turn"
+)
+
+type CheckpointLevel string
+
+const (
+	CheckpointLevelSegmented CheckpointLevel = "segmented"
+	CheckpointLevelSession   CheckpointLevel = "session"
+)
+
+type Segment struct {
+	FromSeq      event.Seq `json:"from_seq"`
+	ThroughSeq   event.Seq `json:"through_seq"`
+	SourceDigest string    `json:"source_digest"`
+	Summary      string    `json:"summary"`
+}
+
 // Checkpoint is a lossy model-history projection over an immutable event prefix.
 type Checkpoint struct {
-	SessionID             string    `json:"session_id"`
-	ThroughSeq            event.Seq `json:"through_seq"`
-	SourceDigest          string    `json:"source_digest"`
-	Summary               string    `json:"summary"`
-	Model                 string    `json:"model"`
-	EstimatedTokensBefore int64     `json:"estimated_tokens_before"`
-	EstimatedTokensAfter  int64     `json:"estimated_tokens_after"`
-	CreatedAt             time.Time `json:"created_at"`
+	SchemaVersion        int             `json:"schema_version"`
+	SourcePolicyVersion  string          `json:"source_policy_version"`
+	SummaryFormatVersion string          `json:"summary_format_version"`
+	PromptVersion        string          `json:"prompt_version"`
+	CheckpointID         string          `json:"checkpoint_id"`
+	PreviousCheckpointID string          `json:"previous_checkpoint_id,omitempty"`
+	SessionID            string          `json:"session_id"`
+	Phase                Phase           `json:"phase"`
+	HeadAnchorSeq        event.Seq       `json:"head_anchor_seq,omitempty"`
+	ThroughSeq           event.Seq       `json:"through_seq"`
+	SourceDigest         string          `json:"source_digest"`
+	ProjectionKind       ProjectionKind  `json:"projection_kind"`
+	Level                CheckpointLevel `json:"level,omitempty"`
+	Segments             []Segment       `json:"segments,omitempty"`
+	Summary              string          `json:"summary"`
+	ProviderRoute        string          `json:"provider_route,omitempty"`
+	ProviderStateKind    string          `json:"provider_state_kind,omitempty"`
+	ProviderState        json.RawMessage `json:"provider_state,omitempty"`
+	Model                string          `json:"model"`
+
+	EstimatedRawTokens    int64 `json:"estimated_raw_tokens,omitempty"`
+	EstimatedTokensBefore int64 `json:"estimated_tokens_before"`
+	EstimatedTokensAfter  int64 `json:"estimated_tokens_after"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AcceptedBoundary records the canonical history included in a successful
+// physical provider request for one exact provider route.
+type AcceptedBoundary struct {
+	SessionID    string    `json:"session_id"`
+	Route        string    `json:"route"`
+	ThroughSeq   event.Seq `json:"through_seq"`
+	InputTokens  int64     `json:"input_tokens,omitempty"`
+	OutputTokens int64     `json:"output_tokens,omitempty"`
+	PayloadUnits int64     `json:"payload_units,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Plan contains the immutable prefix to summarize and its rolling input.
 type Plan struct {
-	SessionID       string
-	ThroughSeq      event.Seq
-	SourceDigest    string
-	SourceMessages  []message.Message
-	PreviousSummary string
-	CoveredMessages int
-	EstimatedTokens int64
+	SessionID            string
+	Phase                Phase
+	HeadAnchorSeq        event.Seq
+	HeadAnchor           *message.Message
+	ThroughSeq           event.Seq
+	SourceDigest         string
+	SourceMessages       []message.Message
+	PreviousSummary      string
+	PreviousCheckpointID string
+	CoveredMessages      int
+	CoveredFromSeq       event.Seq
+	NewFromSeq           event.Seq
+	NewSourceDigest      string
+	EstimatedRawTokens   int64
+	EstimatedTokens      int64
 }
 
-// BuildPlan selects a completed message prefix. Automatic compaction preserves
-// the latest user turn verbatim; standalone/manual compaction may cover all messages.
-func BuildPlan(events []event.Event, previous *Checkpoint, preserveLatestTurn bool) (Plan, bool) {
-	content := messageEvents(events)
-	cut := len(content)
-	if preserveLatestTurn {
-		lastUser := -1
-		for i := len(content) - 1; i >= 0; i-- {
-			if content[i].message.Role == message.RoleUser {
-				lastUser = i
-				break
+type PlanOptions struct {
+	Phase         Phase
+	MaxThroughSeq event.Seq
+}
+
+// BuildPlanForPhase selects the largest safe contiguous prefix for a compaction phase.
+func BuildPlanForPhase(events []event.Event, previous *Checkpoint, phase Phase) (Plan, bool) {
+	return BuildPlanWithOptions(events, previous, PlanOptions{Phase: phase})
+}
+
+// BuildPlanWithOptions supports bounded retreat after a provider accepted a
+// smaller canonical prefix.
+func BuildPlanWithOptions(
+	events []event.Event,
+	previous *Checkpoint,
+	options PlanOptions,
+) (Plan, bool) {
+	phase := options.Phase
+	if phase == PhaseAuto {
+		preTurn, preTurnOK := BuildPlanWithOptions(events, previous, PlanOptions{
+			Phase: PhasePreTurn, MaxThroughSeq: options.MaxThroughSeq,
+		})
+		midTurn, midTurnOK := BuildPlanWithOptions(events, previous, PlanOptions{
+			Phase: PhaseMidTurn, MaxThroughSeq: options.MaxThroughSeq,
+		})
+		switch {
+		case preTurnOK && midTurnOK:
+			if midTurn.ThroughSeq > preTurn.ThroughSeq {
+				return midTurn, true
 			}
-		}
-		if lastUser < 0 {
+			return preTurn, true
+		case midTurnOK:
+			return midTurn, true
+		case preTurnOK:
+			return preTurn, true
+		default:
 			return Plan{}, false
 		}
-		cut = lastUser
+	}
+
+	content := messageEvents(events)
+	if len(content) == 0 {
+		return Plan{}, false
+	}
+	groups := atomicGroups(content)
+	cut, headAnchorSeq, ok := planBoundary(content, groups, phase)
+	if !ok {
+		return Plan{}, false
+	}
+	if options.MaxThroughSeq != 0 &&
+		content[cut-1].seq > options.MaxThroughSeq {
+		desired := 0
+		for desired < cut && content[desired].seq <= options.MaxThroughSeq {
+			desired++
+		}
+		cut = safePrefixCut(groups, desired)
+		if cut == 0 {
+			return Plan{}, false
+		}
+		if phase == PhaseMidTurn {
+			lastUser := lastUserIndex(content)
+			if lastUser < 0 || cut <= lastUser+1 {
+				return Plan{}, false
+			}
+		}
 	}
 	if cut == 0 {
 		return Plan{}, false
@@ -101,51 +239,124 @@ func BuildPlan(events []event.Event, previous *Checkpoint, preserveLatestTurn bo
 
 	covered := content[:cut]
 	through := covered[len(covered)-1].seq
+	previousValid := previous != nil && validCheckpoint(*previous, content)
+	if previousValid && through <= previous.ThroughSeq {
+		return Plan{}, false
+	}
+
 	start := 0
 	previousSummary := ""
-	if previous != nil && validCheckpoint(*previous, content) {
-		if previous.ThroughSeq == through {
-			return Plan{}, false
-		}
-		if previous.ThroughSeq < through {
-			for i, item := range covered {
-				if item.seq <= previous.ThroughSeq {
-					start = i + 1
-				}
+	previousCheckpointID := ""
+	if previousValid {
+		for i, item := range covered {
+			if item.seq <= previous.ThroughSeq {
+				start = i + 1
 			}
-			previousSummary = previous.Summary
 		}
+		previousSummary = previous.Summary
+		previousCheckpointID = previous.CheckpointID
 	}
 	if start >= len(covered) {
 		return Plan{}, false
 	}
 
-	source := make([]message.Message, 0, len(covered)-start)
+	source := make([]message.Message, 0, len(covered)-start+1)
+	if previousValid &&
+		previous.HeadAnchorSeq != 0 &&
+		previous.HeadAnchorSeq != headAnchorSeq {
+		if anchor, found := messageAtSeq(content, previous.HeadAnchorSeq); found {
+			source = append(source, anchor.message)
+		}
+	}
 	for _, item := range covered[start:] {
 		source = append(source, item.message)
 	}
 	source, _ = BoundToolResults(source, MaxToolResultTokens)
+
+	rawMessages := messagesOf(covered)
+	effectiveBefore := rawMessages
+	if previousValid {
+		effectiveBefore = projectedCoveredPrefix(content, *previous, through)
+	}
+	var headAnchor *message.Message
+	if headAnchorSeq != 0 {
+		if anchor, found := messageAtSeq(content, headAnchorSeq); found {
+			copied := anchor.message
+			headAnchor = &copied
+		}
+	}
 	return Plan{
-		SessionID:       events[0].Session,
-		ThroughSeq:      through,
-		SourceDigest:    digest(covered),
-		SourceMessages:  source,
-		PreviousSummary: previousSummary,
-		CoveredMessages: cut,
-		EstimatedTokens: EstimateMessagesTokens(messagesOf(covered)),
+		SessionID:            content[0].session,
+		Phase:                phase,
+		HeadAnchorSeq:        headAnchorSeq,
+		HeadAnchor:           headAnchor,
+		ThroughSeq:           through,
+		SourceDigest:         digest(covered),
+		SourceMessages:       source,
+		PreviousSummary:      previousSummary,
+		PreviousCheckpointID: previousCheckpointID,
+		CoveredMessages:      cut,
+		CoveredFromSeq:       covered[0].seq,
+		NewFromSeq:           covered[start].seq,
+		NewSourceDigest:      digest(covered[start:]),
+		EstimatedRawTokens:   EstimateMessagesTokens(rawMessages),
+		EstimatedTokens:      EstimateMessagesTokens(effectiveBefore),
 	}, true
 }
 
-// Project replaces a validated covered prefix with its checkpoint summary.
+type ModelProjection struct {
+	Messages     []message.Message
+	ContextState *provider.ContextState
+	ThroughSeq   event.Seq
+}
+
+// Project returns the portable text projection. Provider-native checkpoints
+// fall back to canonical history when no matching route is supplied.
 func Project(events []event.Event, checkpoint *Checkpoint) []message.Message {
+	return ProjectForRoute(events, checkpoint, "").Messages
+}
+
+// ProjectForRoute applies a text checkpoint or a route-bound provider-native state.
+func ProjectForRoute(
+	events []event.Event,
+	checkpoint *Checkpoint,
+	route string,
+) ModelProjection {
 	content := messageEvents(events)
-	if checkpoint == nil || !validCheckpoint(*checkpoint, content) {
-		return messagesOf(content)
+	var through event.Seq
+	if len(content) > 0 {
+		through = content[len(content)-1].seq
 	}
-	out := []message.Message{{
-		Role:    message.RoleSystem,
-		Content: "<context_checkpoint>\n" + checkpoint.Summary + "\n</context_checkpoint>",
-	}}
+	if checkpoint == nil || !validCheckpoint(*checkpoint, content) {
+		return ModelProjection{Messages: messagesOf(content), ThroughSeq: through}
+	}
+	if checkpoint.ProjectionKind == ProjectionProviderNative {
+		if route == "" || route != checkpoint.ProviderRoute {
+			return ModelProjection{Messages: messagesOf(content), ThroughSeq: through}
+		}
+		out := projectedTail(content, *checkpoint)
+		return ModelProjection{
+			Messages: out,
+			ContextState: &provider.ContextState{
+				Kind: checkpoint.ProviderStateKind,
+				Data: append(json.RawMessage(nil), checkpoint.ProviderState...),
+			},
+			ThroughSeq: through,
+		}
+	}
+	out := []message.Message{CheckpointMessage(checkpoint.Summary)}
+	out[0].EventSeq = uint64(checkpoint.ThroughSeq)
+	out = append(out, projectedTail(content, *checkpoint)...)
+	return ModelProjection{Messages: out, ThroughSeq: through}
+}
+
+func projectedTail(content []messageEvent, checkpoint Checkpoint) []message.Message {
+	var out []message.Message
+	if checkpoint.HeadAnchorSeq != 0 {
+		if anchor, ok := messageAtSeq(content, checkpoint.HeadAnchorSeq); ok {
+			out = append(out, anchor.message)
+		}
+	}
 	for _, item := range content {
 		if item.seq > checkpoint.ThroughSeq {
 			out = append(out, item.message)
@@ -157,6 +368,52 @@ func Project(events []event.Event, checkpoint *Checkpoint) []message.Message {
 // ValidateCheckpoint verifies that a checkpoint still covers the exact source prefix.
 func ValidateCheckpoint(events []event.Event, checkpoint Checkpoint) bool {
 	return validCheckpoint(checkpoint, messageEvents(events))
+}
+
+// CheckpointMessage creates the provider-visible envelope used for a text checkpoint.
+func CheckpointMessage(summary string) message.Message {
+	return message.Message{
+		Role:    message.RoleSystem,
+		Content: "<context_checkpoint>\n" + summary + "\n</context_checkpoint>",
+	}
+}
+
+// EstimateCheckpointTokens measures a candidate checkpoint as it will appear to the model.
+func EstimateCheckpointTokens(summary string, anchor *message.Message) int64 {
+	projected := []message.Message{CheckpointMessage(summary)}
+	if anchor != nil {
+		projected = append(projected, *anchor)
+	}
+	return EstimateMessagesTokens(projected)
+}
+
+// ComputeCheckpointID derives stable identity from the projection and its source lineage.
+func ComputeCheckpointID(checkpoint Checkpoint) string {
+	h := sha256.New()
+	segments, _ := json.Marshal(checkpoint.Segments)
+	_, _ = fmt.Fprintf(
+		h,
+		"%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00",
+		checkpoint.SchemaVersion,
+		checkpoint.SourcePolicyVersion,
+		checkpoint.SummaryFormatVersion,
+		checkpoint.PromptVersion,
+		checkpoint.SessionID,
+		checkpoint.Phase,
+		checkpoint.PreviousCheckpointID,
+		checkpoint.ThroughSeq,
+		checkpoint.HeadAnchorSeq,
+		checkpoint.SourceDigest,
+		checkpoint.ProjectionKind,
+		checkpoint.Level,
+		string(segments),
+		checkpoint.ProviderRoute,
+		checkpoint.ProviderStateKind,
+		string(checkpoint.ProviderState),
+		checkpoint.Summary,
+		checkpoint.Model,
+	)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // EstimateRequestTokens estimates the fully materialized request, including tool schemas.
@@ -175,10 +432,20 @@ func EstimateNextRequestTokens(priorInputTokens, priorUnits, currentUnits int64)
 
 // RequestUnits returns a stable weighted character count for delta estimation.
 func RequestUnits(messages []message.Message, tools []provider.ToolDef) int64 {
+	return RequestUnitsWithContext(messages, tools, nil)
+}
+
+// RequestUnitsWithContext also accounts for opaque provider-native continuation state.
+func RequestUnitsWithContext(
+	messages []message.Message,
+	tools []provider.ToolDef,
+	contextState *provider.ContextState,
+) int64 {
 	payload, _ := json.Marshal(struct {
-		Messages []providerVisibleMessage `json:"messages"`
-		Tools    []provider.ToolDef       `json:"tools"`
-	}{providerVisibleMessages(messages), tools})
+		Messages     []providerVisibleMessage `json:"messages"`
+		Tools        []provider.ToolDef       `json:"tools"`
+		ContextState *provider.ContextState   `json:"context_state,omitempty"`
+	}{providerVisibleMessages(messages), tools, contextState})
 	units := weightedUnits(string(payload))
 	for _, item := range messages {
 		units += int64(len(item.Attachments)) * 4096
@@ -199,17 +466,45 @@ func EstimateTextTokens(text string) int64 { return unitsToTokens(weightedUnits(
 // BoundToolResults replaces oversized model-visible tool payloads with a bounded excerpt.
 // The canonical event log remains untouched.
 func BoundToolResults(messages []message.Message, maxTokens int64) ([]message.Message, int) {
+	return BoundToolResultsWithPolicy(messages, ToolResultPolicy{
+		MaxTokens: maxTokens,
+	})
+}
+
+type ToolResultPolicy struct {
+	MaxTokens  int64
+	KeepNewest int
+}
+
+// BoundToolResultsWithPolicy preserves a recent working set before projecting
+// older oversized tool results to recoverable excerpts.
+func BoundToolResultsWithPolicy(
+	messages []message.Message,
+	policy ToolResultPolicy,
+) ([]message.Message, int) {
 	out := append([]message.Message(nil), messages...)
+	keep := make(map[int]struct{}, max(0, policy.KeepNewest))
+	for i := len(out) - 1; i >= 0 && len(keep) < policy.KeepNewest; i-- {
+		if out[i].Role == message.RoleTool {
+			keep[i] = struct{}{}
+		}
+	}
 	rewritten := 0
 	for i := range out {
-		if out[i].Role != message.RoleTool || EstimateTextTokens(out[i].Content) <= maxTokens {
+		if _, preserved := keep[i]; preserved {
+			continue
+		}
+		if out[i].Role != message.RoleTool ||
+			EstimateTextTokens(out[i].Content) <= policy.MaxTokens {
 			continue
 		}
 		originalTokens := EstimateTextTokens(out[i].Content)
-		out[i].Content = boundedExcerpt(out[i].Content, maxTokens) + fmt.Sprintf(
-			"\n\n[Tool output reduced from approximately %d tokens. Re-run the tool with narrower parameters if exact details are needed.]",
-			originalTokens,
+		notice := toolResultNotice(out[i], originalTokens)
+		excerptTokens := max(
+			1,
+			policy.MaxTokens-EstimateTextTokens(notice)-EstimateTextTokens(toolOutputOmission),
 		)
+		out[i].Content = boundedHeadTail(out[i].Content, excerptTokens) + notice
 		rewritten++
 	}
 	return out, rewritten
@@ -217,7 +512,143 @@ func BoundToolResults(messages []message.Message, maxTokens int64) ([]message.Me
 
 type messageEvent struct {
 	seq     event.Seq
+	session string
 	message message.Message
+}
+
+type atomicGroup struct {
+	start    int
+	end      int
+	complete bool
+}
+
+func atomicGroups(content []messageEvent) []atomicGroup {
+	groups := make([]atomicGroup, 0, len(content))
+	for i := 0; i < len(content); {
+		item := content[i].message
+		if item.Role == message.RoleAssistant && len(item.ToolCalls) > 0 {
+			expected := make(map[string]struct{}, len(item.ToolCalls))
+			for _, call := range item.ToolCalls {
+				expected[call.ID] = struct{}{}
+			}
+			seen := make(map[string]struct{}, len(expected))
+			j := i + 1
+			for j < len(content) && content[j].message.Role == message.RoleTool {
+				if _, ok := expected[content[j].message.ToolCallID]; ok {
+					seen[content[j].message.ToolCallID] = struct{}{}
+				}
+				j++
+			}
+			groups = append(groups, atomicGroup{
+				start:    i,
+				end:      j,
+				complete: len(expected) > 0 && len(seen) == len(expected),
+			})
+			i = j
+			continue
+		}
+		groups = append(groups, atomicGroup{
+			start:    i,
+			end:      i + 1,
+			complete: item.Role != message.RoleTool,
+		})
+		i++
+	}
+	return groups
+}
+
+func planBoundary(
+	content []messageEvent,
+	groups []atomicGroup,
+	phase Phase,
+) (int, event.Seq, bool) {
+	switch phase {
+	case PhaseStandalone:
+		cut := safePrefixCut(groups, len(content))
+		return cut, 0, cut > 0
+	case PhasePreTurn:
+		lastUser := lastUserIndex(content)
+		if lastUser < 0 {
+			return 0, 0, false
+		}
+		cut := safePrefixCut(groups, lastUser)
+		return cut, 0, cut > 0
+	case PhaseMidTurn:
+		lastUser := lastUserIndex(content)
+		if lastUser < 0 {
+			return 0, 0, false
+		}
+		headGroup := -1
+		for i, group := range groups {
+			if group.start <= lastUser && lastUser < group.end {
+				headGroup = i
+				break
+			}
+		}
+		// Keep the latest atomic group verbatim and require at least one completed
+		// group after the user head to make the fold worthwhile.
+		if headGroup < 0 || len(groups)-headGroup-1 < 2 {
+			return 0, 0, false
+		}
+		lastCoveredGroup := len(groups) - 2
+		for i := 0; i <= lastCoveredGroup; i++ {
+			if !groups[i].complete {
+				return 0, 0, false
+			}
+		}
+		cut := groups[lastCoveredGroup].end
+		return cut, content[lastUser].seq, cut > lastUser+1
+	default:
+		return 0, 0, false
+	}
+}
+
+func safePrefixCut(groups []atomicGroup, desired int) int {
+	cut := 0
+	for _, group := range groups {
+		if group.end > desired || !group.complete {
+			break
+		}
+		cut = group.end
+	}
+	return cut
+}
+
+func lastUserIndex(content []messageEvent) int {
+	for i := len(content) - 1; i >= 0; i-- {
+		if content[i].message.Role == message.RoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+func messageAtSeq(content []messageEvent, seq event.Seq) (messageEvent, bool) {
+	for _, item := range content {
+		if item.seq == seq {
+			return item, true
+		}
+	}
+	return messageEvent{}, false
+}
+
+func projectedCoveredPrefix(
+	content []messageEvent,
+	checkpoint Checkpoint,
+	through event.Seq,
+) []message.Message {
+	out := []message.Message{CheckpointMessage(checkpoint.Summary)}
+	if checkpoint.HeadAnchorSeq != 0 {
+		if anchor, ok := messageAtSeq(content, checkpoint.HeadAnchorSeq); ok {
+			out = append(out, anchor.message)
+		}
+	}
+	for _, item := range content {
+		if item.seq > checkpoint.ThroughSeq && item.seq <= through {
+			out = append(out, item.message)
+		}
+	}
+	return out
 }
 
 type providerVisibleMessage struct {
@@ -251,7 +682,12 @@ func messageEvents(events []event.Event) []messageEvent {
 		}
 		msg, ok := ev.Payload.(message.Message)
 		if ok {
-			out = append(out, messageEvent{seq: ev.Seq, message: msg})
+			msg.EventSeq = uint64(ev.Seq)
+			out = append(out, messageEvent{
+				seq:     ev.Seq,
+				session: ev.Session,
+				message: msg,
+			})
 		}
 	}
 	return out
@@ -266,7 +702,53 @@ func messagesOf(events []messageEvent) []message.Message {
 }
 
 func validCheckpoint(checkpoint Checkpoint, content []messageEvent) bool {
-	if checkpoint.ThroughSeq == 0 || strings.TrimSpace(checkpoint.Summary) == "" {
+	if checkpoint.ThroughSeq == 0 ||
+		checkpoint.SessionID == "" ||
+		checkpoint.Model == "" ||
+		checkpoint.CreatedAt.IsZero() {
+		return false
+	}
+	if len(content) > 0 &&
+		checkpoint.SessionID != content[0].session {
+		return false
+	}
+	if checkpoint.SchemaVersion != CheckpointSchemaVersion ||
+		checkpoint.SourcePolicyVersion != SourcePolicyVersion ||
+		checkpoint.SummaryFormatVersion != SummaryFormatVersion ||
+		checkpoint.PromptVersion != PromptVersion ||
+		checkpoint.SourceDigest == "" {
+		return false
+	}
+	if checkpoint.Phase != PhaseStandalone &&
+		checkpoint.Phase != PhasePreTurn &&
+		checkpoint.Phase != PhaseMidTurn {
+		return false
+	}
+	if checkpoint.ProjectionKind != ProjectionText &&
+		checkpoint.ProjectionKind != ProjectionProviderNative {
+		return false
+	}
+	if checkpoint.ProjectionKind == ProjectionText {
+		if strings.TrimSpace(checkpoint.Summary) == "" ||
+			len(checkpoint.Segments) == 0 ||
+			(checkpoint.Level != CheckpointLevelSegmented &&
+				checkpoint.Level != CheckpointLevelSession) {
+			return false
+		}
+	}
+	if checkpoint.ProjectionKind == ProjectionProviderNative {
+		if checkpoint.ProviderRoute == "" ||
+			checkpoint.ProviderStateKind == "" ||
+			len(checkpoint.ProviderState) == 0 ||
+			!json.Valid(checkpoint.ProviderState) {
+			return false
+		}
+	}
+	if !validSegments(checkpoint) {
+		return false
+	}
+	if checkpoint.CheckpointID == "" ||
+		checkpoint.CheckpointID != ComputeCheckpointID(checkpoint) {
 		return false
 	}
 	cut := 0
@@ -275,16 +757,27 @@ func validCheckpoint(checkpoint Checkpoint, content []messageEvent) bool {
 			cut++
 		}
 	}
-	return cut > 0 &&
-		content[cut-1].seq == checkpoint.ThroughSeq &&
-		digest(content[:cut]) == checkpoint.SourceDigest
+	if cut == 0 ||
+		content[cut-1].seq != checkpoint.ThroughSeq ||
+		digest(content[:cut]) != checkpoint.SourceDigest {
+		return false
+	}
+	if checkpoint.HeadAnchorSeq != 0 {
+		anchor, ok := messageAtSeq(content[:cut], checkpoint.HeadAnchorSeq)
+		if !ok || anchor.message.Role != message.RoleUser {
+			return false
+		}
+	}
+	return true
 }
 
 func digest(events []messageEvent) string {
 	h := sha256.New()
 	for _, item := range events {
 		_, _ = fmt.Fprintf(h, "%d\x00", item.seq)
-		data, _ := json.Marshal(item.message)
+		msg := item.message
+		msg.EventSeq = 0
+		data, _ := json.Marshal(msg)
 		_, _ = h.Write(data)
 		_, _ = h.Write([]byte{0})
 	}
@@ -313,24 +806,78 @@ func unitsToTokens(units int64) int64 {
 	return (units + 3) / 4
 }
 
-func boundedExcerpt(text string, maxTokens int64) string {
+func boundedHeadTail(text string, maxTokens int64) string {
 	if maxTokens <= 0 {
 		return ""
 	}
 	maxUnits := maxTokens * 4
 	runes := []rune(text)
+	if weightedUnits(text) <= maxUnits {
+		return strings.TrimSpace(text)
+	}
+	headEnd := prefixRunesWithin(runes, maxUnits*3/5)
+	tailStart := suffixRunesWithin(runes, maxUnits-maxUnits*3/5)
+	if tailStart < headEnd {
+		tailStart = headEnd
+	}
+	return strings.TrimSpace(string(runes[:headEnd])) +
+		toolOutputOmission +
+		strings.TrimSpace(string(runes[tailStart:]))
+}
+
+func prefixRunesWithin(runes []rune, maxUnits int64) int {
 	var used int64
-	end := 0
-	for end < len(runes) {
-		cost := int64(1)
-		if runes[end] > 0x7f {
-			cost = 4
-		}
+	for i, r := range runes {
+		cost := runeUnits(r)
 		if used+cost > maxUnits {
-			break
+			return i
 		}
 		used += cost
-		end++
 	}
-	return strings.TrimSpace(string(runes[:end]))
+	return len(runes)
+}
+
+func suffixRunesWithin(runes []rune, maxUnits int64) int {
+	var used int64
+	for i := len(runes) - 1; i >= 0; i-- {
+		cost := runeUnits(runes[i])
+		if used+cost > maxUnits {
+			return i + 1
+		}
+		used += cost
+	}
+	return 0
+}
+
+func runeUnits(r rune) int64 {
+	if r > 0x7f {
+		return 4
+	}
+	return 1
+}
+
+func toolResultNotice(item message.Message, originalTokens int64) string {
+	if item.EventSeq == 0 || strings.TrimSpace(item.ToolCallID) == "" {
+		return fmt.Sprintf(
+			"\n\n[Tool output reduced from approximately %d tokens. The beginning and end are preserved. Re-run the tool with narrower parameters if exact details are needed.]",
+			originalTokens,
+		)
+	}
+	sum := sha256.Sum256([]byte(item.Content))
+	reference, _ := json.Marshal(struct {
+		Kind            string `json:"kind"`
+		EventSeq        uint64 `json:"event_seq"`
+		ToolCallID      string `json:"tool_call_id"`
+		SHA256          string `json:"sha256"`
+		EstimatedTokens int64  `json:"estimated_tokens"`
+		ReadTool        string `json:"read_tool"`
+	}{
+		Kind:            "foya.tool_result_ref.v1",
+		EventSeq:        item.EventSeq,
+		ToolCallID:      item.ToolCallID,
+		SHA256:          hex.EncodeToString(sum[:]),
+		EstimatedTokens: originalTokens,
+		ReadTool:        "history_read_tool_result",
+	})
+	return "\n\n<tool_result_ref>" + string(reference) + "</tool_result_ref>"
 }

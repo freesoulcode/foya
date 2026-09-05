@@ -189,6 +189,11 @@ type ModelsResponse struct {
 
 // CompactSessionResponse 是一次手动上下文压缩的结果。
 type CompactSessionResponse struct {
+	CheckpointID          string `json:"checkpoint_id,omitempty"`
+	Phase                 string `json:"phase,omitempty"`
+	ProjectionKind        string `json:"projection_kind,omitempty"`
+	Level                 string `json:"level,omitempty"`
+	SegmentCount          int    `json:"segment_count,omitempty"`
 	ThroughSeq            uint64 `json:"through_seq"`
 	EstimatedTokensBefore int64  `json:"estimated_tokens_before"`
 	EstimatedTokensAfter  int64  `json:"estimated_tokens_after"`
