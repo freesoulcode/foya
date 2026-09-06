@@ -66,6 +66,36 @@ func TestWorkflowPolicyAndUpdate(t *testing.T) {
 	}
 }
 
+func TestCloseWorkflowEndsReadOnlyPolicy(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := manager.Start("session-1", KindPlan, "梳理实现", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := manager.Close("session-1", record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Status != StatusClosed || closed.Revision != 2 {
+		t.Fatalf("closed workflow = %#v", closed)
+	}
+	if _, ok := manager.Active("session-1"); ok {
+		t.Fatal("closed workflow remains active")
+	}
+	if _, ok := manager.Policy("session-1"); ok {
+		t.Fatal("closed workflow keeps read-only policy")
+	}
+	if _, err := manager.Close("session-1", record.ID); !errors.Is(err, ErrInvalidStatus) {
+		t.Fatalf("close closed workflow error = %v", err)
+	}
+	if _, err := manager.Close("other-session", record.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("close workflow from another session error = %v", err)
+	}
+}
+
 func TestCompleteActiveStoresFinalResponse(t *testing.T) {
 	dataDir := t.TempDir()
 	projectPath := filepath.Join(t.TempDir(), "project")

@@ -192,6 +192,34 @@ function isFileChangeTool(tool: ToolCallView): boolean {
   return tool.name === "write" || tool.name === "edit" || tool.name === "delete";
 }
 
+function toolTargetPath(tool: ToolCallView): string {
+  for (const raw of [tool.input, tool.output]) {
+    if (!raw) continue;
+    try {
+      const value = JSON.parse(raw) as { path?: unknown };
+      if (typeof value.path === "string" && value.path.trim()) return value.path.trim();
+    } catch {
+      // Non-JSON output is not a structured file result.
+    }
+  }
+  return "";
+}
+
+function toolTargetKind(tool: ToolCallView): string {
+  if (!tool.output) return "";
+  try {
+    const value = JSON.parse(tool.output) as { kind?: unknown };
+    return typeof value.kind === "string" ? value.kind : "";
+  } catch {
+    return "";
+  }
+}
+
+function toolTargetName(tool: ToolCallView): string {
+  const path = toolTargetPath(tool).replace(/[\\/]+$/, "");
+  return path.split(/[\\/]/).pop() || path;
+}
+
 function showRawDetails(tool: ToolCallView): boolean {
   return !isFileChangeTool(tool) || tool.status === "error";
 }
@@ -204,6 +232,9 @@ function toolLabel(tool: ToolCallView): string {
   if (tool.status === "error") return `${meta.done}${agentSuffix}（失败）`;
   if (tool.name === "bash" && tool.output?.includes('"running_in_background"')) {
     return "命令已转到后台";
+  }
+  if (tool.name === "delete") {
+    return toolTargetKind(tool) === "directory" ? "已删除 1 个文件夹" : "已删除 1 个文件";
   }
   if (tool.diff && tool.name !== "delete") return "已编辑 1 个文件";
   return meta.done + agentSuffix;
@@ -261,6 +292,7 @@ function formatInput(input: string): string {
           <button
             type="button"
             class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+            :title="toolLabel(tool)"
             @click="toggleTool(tool)"
           >
             <ChevronRightIcon
@@ -350,6 +382,17 @@ function formatInput(input: string): string {
                   {{ attachment.name }}
                 </figcaption>
               </figure>
+            </div>
+            <div
+              v-if="tool.name === 'delete' && !tool.diff && toolTargetPath(tool)"
+              class="mt-1 flex h-8 w-full items-center gap-2 px-1 text-xs text-muted-foreground"
+              :title="toolTargetPath(tool)"
+            >
+              <Trash2Icon class="size-3.5 shrink-0 text-primary" />
+              <span class="min-w-0 flex-1 truncate font-mono">
+                {{ toolTargetName(tool) }}
+              </span>
+              <span class="shrink-0">废纸篓</span>
             </div>
             <button
               v-if="isFileChangeTool(tool) && tool.diff"

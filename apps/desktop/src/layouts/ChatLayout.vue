@@ -91,6 +91,7 @@ const {
   deleteQueuedMessage,
   dispatchQueuedMessage,
   approveWorkflow,
+  closeWorkflow,
   refreshConnections,
   refreshProjects,
   registerProject,
@@ -105,10 +106,10 @@ const questionPanelExpanded = ref(false);
 const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
 const sessionDeleteDialogOpen = ref(false);
 const automationsActive = computed(() => route.name === "automations");
-const pluginsActive = computed(() => route.name === "plugins");
-const workspacePageActive = computed(
-  () => automationsActive.value || pluginsActive.value
+const pluginsActive = computed(
+  () => route.name === "plugins" || route.name === "plugin-detail"
 );
+const workspacePageActive = computed(() => route.name !== "chat");
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -524,6 +525,7 @@ const viewContext: ChatWorkspaceContext = {
   stopBackgroundCommand,
   onOpenBackgroundCommand,
   approveWorkflow,
+  closeWorkflow,
   send,
   executeComposerCommand,
   cancelTurn,

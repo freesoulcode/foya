@@ -590,6 +590,14 @@ pub(crate) async fn approve_workflow(
 }
 
 #[tauri::command]
+pub(crate) async fn close_workflow(
+    _session_id: String,
+    _workflow_id: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
 pub(crate) async fn list_projects() -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }

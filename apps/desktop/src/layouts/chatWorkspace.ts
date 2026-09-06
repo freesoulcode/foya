@@ -39,6 +39,7 @@ type KernelBindings = Pick<
   | "backgroundTool"
   | "stopBackgroundCommand"
   | "approveWorkflow"
+  | "closeWorkflow"
   | "send"
   | "cancelTurn"
   | "editQueuedMessage"

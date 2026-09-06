@@ -58,6 +58,7 @@ const {
   stopBackgroundCommand,
   onOpenBackgroundCommand,
   approveWorkflow,
+  closeWorkflow,
   send,
   executeComposerCommand,
   cancelTurn,
@@ -150,6 +151,7 @@ function forkAtMessage(messageSeq: number) {
       @delete-queued="deleteQueuedMessage"
       @open-workflow-file="onOpenWorkflowFile"
       @approve-workflow="approveWorkflow(activeId)"
+      @close-workflow="closeWorkflow(activeId)"
     />
     <AskUserPanel
       :batch="activeQuestionBatch"

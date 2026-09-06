@@ -258,6 +258,45 @@ func (b *Backend) Workflow(sessionID string) (workflow.Record, bool, error) {
 	return record, ok, nil
 }
 
+func (b *Backend) CloseWorkflow(
+	ctx context.Context,
+	sessionID, id string,
+) (workflow.Record, error) {
+	current, ok := b.sessions.Get(sessionID)
+	if !ok {
+		return workflow.Record{}, session.ErrNotFound
+	}
+	manager, err := b.workflowManager()
+	if err != nil {
+		return workflow.Record{}, err
+	}
+	record, ok := manager.Get(id)
+	if !ok || record.SessionID != sessionID {
+		return workflow.Record{}, workflow.ErrNotFound
+	}
+	if record.Status != workflow.StatusActive && record.Status != workflow.StatusReady {
+		return workflow.Record{}, workflow.ErrInvalidStatus
+	}
+	b.CancelTurn(sessionID)
+	record, err = manager.Close(sessionID, id)
+	if err != nil {
+		return workflow.Record{}, err
+	}
+	if record.Kind == workflow.KindPlan {
+		mode := current.PrePlanMode
+		if mode == "" || mode == session.AgentModePlan || mode == session.AgentModePlanReady {
+			mode = session.AgentModeExecute
+		}
+		current, err = b.sessions.SetAgentMode(sessionID, mode, "")
+		if err != nil {
+			return workflow.Record{}, err
+		}
+		b.broadcastSession(ctx, current)
+	}
+	b.broadcastWorkflow(ctx, record)
+	return record, nil
+}
+
 func (b *Backend) ApproveWorkflow(ctx context.Context, sessionID, id string) (WorkflowApproval, error) {
 	manager, err := b.workflowManager()
 	if err != nil {

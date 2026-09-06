@@ -53,6 +53,38 @@ func TestApproveWorkflowImmediatelyStartsExecution(t *testing.T) {
 	provider.releases <- struct{}{}
 }
 
+func TestClosePlanWorkflowRestoresPreviousMode(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	manager, err := workflow.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.SetWorkflowManager(manager)
+	record, err := manager.Start(sessionID, workflow.KindPlan, "检查设计", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.sessions.SetAgentMode(
+		sessionID,
+		session.AgentModePlan,
+		session.AgentModeExecute,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	closed, err := be.CloseWorkflow(context.Background(), sessionID, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Status != workflow.StatusClosed {
+		t.Fatalf("closed workflow = %#v", closed)
+	}
+	current, ok := be.sessions.Get(sessionID)
+	if !ok || current.AgentMode != session.AgentModeExecute || current.PrePlanMode != "" {
+		t.Fatalf("restored session = %#v, %v", current, ok)
+	}
+}
+
 func TestApproveSpecInitializesTasksAndStartsExecution(t *testing.T) {
 	be, sessionID, provider := newQueueTestBackend(t)
 	manager, err := workflow.NewManager(t.TempDir())

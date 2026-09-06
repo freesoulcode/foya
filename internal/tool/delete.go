@@ -72,8 +72,21 @@ func (t *deleteTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err := t.trash(path); err != nil {
 		return errResult("移入废纸篓失败: " + err.Error()), nil
 	}
+	kind := "file"
+	if info.IsDir() {
+		kind = "directory"
+	}
+	output, _ := json.Marshal(struct {
+		Operation string `json:"operation"`
+		Path      string `json:"path"`
+		Kind      string `json:"kind"`
+	}{
+		Operation: "trash",
+		Path:      path,
+		Kind:      kind,
+	})
 	return Result{
-		Content: []ContentPart{{Type: "text", Text: "已移入废纸篓: " + path}},
+		Content: []ContentPart{{Type: "text", Text: string(output)}},
 		Diff:    diff,
 	}, nil
 }

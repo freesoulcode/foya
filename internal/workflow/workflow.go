@@ -243,6 +243,32 @@ func (m *Manager) Approve(id string) (Record, error) {
 	return record, nil
 }
 
+func (m *Manager) Close(sessionID, id string) (Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.records[id]
+	if !ok || record.SessionID != sessionID {
+		return Record{}, ErrNotFound
+	}
+	if record.Status != StatusActive && record.Status != StatusReady {
+		return Record{}, ErrInvalidStatus
+	}
+	record.Status = StatusClosed
+	record.Revision++
+	record.UpdatedAt = time.Now()
+	previous := m.records[id]
+	m.records[id] = record
+	if err := writeArtifact(record); err != nil {
+		m.records[id] = previous
+		return Record{}, err
+	}
+	if err := m.persistLocked(); err != nil {
+		m.records[id] = previous
+		return Record{}, err
+	}
+	return record, nil
+}
+
 // CompleteActive stores the final assistant response as the workflow artifact.
 // It is called by the Agent Loop after a constrained workflow turn completes;
 // no user-visible model tool is involved.

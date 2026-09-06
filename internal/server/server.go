@@ -173,6 +173,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/{id}/commands/{name}", s.handleExecuteCommand)
 	s.mux.HandleFunc("GET /sessions/{id}/workflow", s.handleGetWorkflow)
 	s.mux.HandleFunc("POST /sessions/{id}/workflow/{workflow_id}/approve", s.handleApproveWorkflow)
+	s.mux.HandleFunc("DELETE /sessions/{id}/workflow/{workflow_id}", s.handleCloseWorkflow)
 	s.mux.HandleFunc("GET /projects", s.handleListProjects)
 	s.mux.HandleFunc("POST /projects", s.handleCreateProject)
 	s.mux.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
@@ -377,6 +378,19 @@ func (s *Server) handleApproveWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCloseWorkflow(w http.ResponseWriter, r *http.Request) {
+	record, err := s.backend.CloseWorkflow(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("workflow_id"),
+	)
+	if err != nil {
+		writeCommandErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, record)
 }
 
 func writeCommandErr(w http.ResponseWriter, err error) {

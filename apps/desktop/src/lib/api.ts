@@ -1616,6 +1616,11 @@ export const api = {
       (r) => JSON.parse(r) as WorkflowApproval
     ),
 
+  closeWorkflow: (sessionId: string, workflowId: string) =>
+    invoke<string>("close_workflow", { sessionId, workflowId }).then(
+      (r) => JSON.parse(r) as WorkflowRecord
+    ),
+
   setSkillEnabled: (skillRef: string, enabled: boolean) =>
     invoke("set_skill_enabled", { skillRef, enabled }),
 

@@ -5,7 +5,6 @@ import {
   ChevronRightIcon,
   Clock3Icon,
   EllipsisIcon,
-  FolderIcon,
   FolderOpenIcon,
   PencilIcon,
   PackageIcon,
@@ -354,7 +353,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   v-else
                   class="size-3.5 shrink-0 text-sidebar-foreground/60"
                 />
-                <FolderIcon class="size-4 shrink-0" />
+                <FolderOpenIcon class="size-4 shrink-0" />
                 <span class="truncate">{{ project.project.name }}</span>
               </button>
               <PinIcon

@@ -1388,6 +1388,16 @@ async function approveWorkflow(id: string) {
   workflowsBySession.value[id] = result.workflow;
 }
 
+async function closeWorkflow(id: string) {
+  const workflow = workflowsBySession.value[id];
+  if (!workflow || (workflow.status !== "active" && workflow.status !== "ready")) return;
+  try {
+    workflowsBySession.value[id] = await api.closeWorkflow(id, workflow.id);
+  } catch (e) {
+    console.error("退出工作流失败:", e);
+  }
+}
+
 export function useKernel() {
   return {
     ready,
@@ -1449,6 +1459,7 @@ export function useKernel() {
     deleteQueuedMessage,
     dispatchQueuedMessage,
     approveWorkflow,
+    closeWorkflow,
     resolveApproval,
     answerQuestions,
     cancelQuestions,

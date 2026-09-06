@@ -4,7 +4,7 @@ import {
   CircleAlertIcon,
   GitForkIcon,
   Loader2Icon,
-  MessageSquareIcon,
+  MessageCircleIcon,
   PinIcon,
   PinOffIcon,
   Trash2Icon,
@@ -84,7 +84,7 @@ function requestDelete(event: Event) {
         class="pr-2 group-hover/menu-item:pr-20 group-focus-within/menu-item:pr-20"
         @click="!editing && emit('select', session.id)"
       >
-        <MessageSquareIcon />
+        <MessageCircleIcon />
         <input
           v-if="editing"
           ref="editInput"

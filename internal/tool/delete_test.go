@@ -45,6 +45,47 @@ func TestDeleteMovesWorkspaceFileToTrashAndReturnsArtifact(t *testing.T) {
 	if !strings.Contains(result.Diff, "-obsolete") || result.FileChange != nil {
 		t.Fatalf("delete artifact = %#v", result)
 	}
+	var output struct {
+		Path string `json:"path"`
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Path != path || output.Kind != "file" {
+		t.Fatalf("delete output = %#v", output)
+	}
+}
+
+func TestDeleteReportsDirectoryKind(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "obsolete")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	instance := &deleteTool{
+		gw: allowGateway{},
+		trash: func(string) error {
+			return nil
+		},
+	}
+	encoded, _ := json.Marshal(DeleteParams{Path: path})
+	result, err := instance.Run(
+		WithCWD(context.Background(), workspace),
+		Call{Input: encoded},
+	)
+	if err != nil || result.IsError {
+		t.Fatalf("delete directory result = %#v, err = %v", result, err)
+	}
+	var output struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Kind != "directory" {
+		t.Fatalf("delete directory kind = %q", output.Kind)
+	}
 }
 
 func TestDeleteRejectsUnsafePaths(t *testing.T) {

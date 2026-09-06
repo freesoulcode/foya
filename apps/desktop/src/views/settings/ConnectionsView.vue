@@ -421,6 +421,7 @@ function openModelEditor(model: string) {
 }
 
 function closeModelEditor() {
+  updateModelTokenLimits();
   modelEditor.value = null;
 }
 
@@ -475,6 +476,7 @@ async function save() {
   saving.value = true;
   error.value = "";
   try {
+    updateModelTokenLimits();
     const payload = formPayload();
     const saved = selectedID.value
       ? await api.updateConnection(selectedID.value, payload)

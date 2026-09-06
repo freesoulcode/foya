@@ -327,6 +327,19 @@ pub(crate) async fn approve_workflow(
 }
 
 #[tauri::command]
+pub(crate) async fn close_workflow(
+    session_id: String,
+    workflow_id: String,
+) -> Result<String, String> {
+    kernel::request(
+        "DELETE",
+        &format!("/sessions/{session_id}/workflow/{workflow_id}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn list_projects() -> Result<String, String> {
     kernel::request("GET", "/projects", None).await
 }

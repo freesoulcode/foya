@@ -151,6 +151,7 @@ pub fn run() {
             execute_command,
             get_workflow,
             approve_workflow,
+            close_workflow,
             list_projects,
             register_project,
             update_project,

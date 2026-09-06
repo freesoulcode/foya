@@ -11,6 +11,7 @@ import {
   LoaderCircleIcon,
   SquareTerminalIcon,
   Undo2Icon,
+  XIcon,
 } from "@lucide/vue";
 import {
   Tooltip,
@@ -78,6 +79,7 @@ const emit = defineEmits<{
   (event: "delete-queued", id: string): void;
   (event: "open-workflow-file", path: string): void;
   (event: "approve-workflow"): void;
+  (event: "close-workflow"): void;
 }>();
 
 const open = ref(false);
@@ -306,10 +308,26 @@ function openFile(path: string, diff: string) {
           </button>
 
           <div
-            v-if="selected === 'workflow' && workflow?.status === 'ready'"
-            class="flex h-full shrink-0 items-center px-1.5"
+            v-if="selected === 'workflow' && workflow"
+            class="flex h-full shrink-0 items-center gap-1 px-1.5"
           >
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  class="text-muted-foreground"
+                  aria-label="退出当前工作流"
+                  @click="emit('close-workflow')"
+                >
+                  <XIcon class="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">退出当前工作流</TooltipContent>
+            </Tooltip>
             <Button
+              v-if="workflow.status === 'ready'"
               type="button"
               size="sm"
               aria-label="确认并执行"
