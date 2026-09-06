@@ -105,6 +105,10 @@ const questionPanelExpanded = ref(false);
 const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
 const sessionDeleteDialogOpen = ref(false);
 const automationsActive = computed(() => route.name === "automations");
+const pluginsActive = computed(() => route.name === "plugins");
+const workspacePageActive = computed(
+  () => automationsActive.value || pluginsActive.value
+);
 
 // 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
 const TURN_LABEL_MAX = 40;
@@ -379,12 +383,12 @@ async function onCreateProject(input: { name: string; path: string }) {
 }
 
 function onNewSession(projectID?: string) {
-  if (automationsActive.value) void router.push("/chat");
+  if (workspacePageActive.value) void router.push("/chat");
   newSession(projectID);
 }
 
 function onSelectSession(id: string) {
-  if (automationsActive.value) void router.push("/chat");
+  if (workspacePageActive.value) void router.push("/chat");
   select(id);
 }
 
@@ -407,7 +411,7 @@ function onPin(id: string, pinned: boolean) {
 }
 
 function onFork(id: string) {
-  if (automationsActive.value) void router.push("/chat");
+  if (workspacePageActive.value) void router.push("/chat");
   void forkSession(id).catch((error) => {
     console.error("复制会话失败:", error);
   });
@@ -456,6 +460,10 @@ function openStudio() {
 
 function openAutomations() {
   void router.push("/automations");
+}
+
+function openPlugins() {
+  void router.push("/plugins");
 }
 
 const viewContext: ChatWorkspaceContext = {
@@ -538,6 +546,7 @@ const viewContext: ChatWorkspaceContext = {
       :active-id="activeId"
       :is-draft="isDraft"
       :automations-active="automationsActive"
+      :plugins-active="pluginsActive"
       @new="onNewSession"
       @select="onSelectSession"
       @rename="onRename"
@@ -551,12 +560,13 @@ const viewContext: ChatWorkspaceContext = {
       @open-settings="openSettings"
       @open-studio="openStudio"
       @open-automations="openAutomations"
+      @open-plugins="openPlugins"
     />
 
     <SidebarInset class="relative min-w-0 flex-row overflow-hidden">
       <div class="flex min-h-0 min-w-[350px] flex-1 flex-col">
         <ChatTitleBar
-          v-if="!automationsActive"
+          v-if="!workspacePageActive"
           :session="activeSession"
           :project-path="projectPath"
           @rename="onRename"
@@ -567,14 +577,14 @@ const viewContext: ChatWorkspaceContext = {
       </div>
 
       <WorkbarPanel
-        v-show="!automationsActive && workbarOpen"
+        v-show="!workspacePageActive && workbarOpen"
         :session-id="activeId || undefined"
         :project-path="projectPath"
         :messages="messages"
         :background-commands="backgroundCommands"
         :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
-        :visible="!automationsActive && workbarOpen"
+        :visible="!workspacePageActive && workbarOpen"
         :ensure-session="ensureSession"
         @project-files-changed="refreshActiveFileReview"
         @browser-element-selected="onBrowserElementSelected"

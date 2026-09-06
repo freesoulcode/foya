@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,149 @@ run tests`)
 	if len(items) != 1 || items[0].Scope != ScopeProject ||
 		!strings.Contains(items[0].Path, filepath.Join(".agents", "skills")) {
 		t.Fatalf("unexpected project skills: %#v", items)
+	}
+}
+
+func TestNestedMetadataIsAccepted(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	writeSkill(t, filepath.Join(home, ".agents", "skills", "nested", "SKILL.md"), `---
+name: nested
+description: nested metadata
+metadata:
+  requires:
+    bins: ["example-cli"]
+  enabled: true
+---
+body`)
+	manager, err := NewManager(filepath.Join(root, "data"), home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := manager.List(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Name != "nested" {
+		t.Fatalf("unexpected skills: %#v", items)
+	}
+	encoded, err := json.Marshal(items[0].Manifest.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"bins":["example-cli"]`) {
+		t.Fatalf("nested metadata was not preserved: %s", encoded)
+	}
+}
+
+func TestPluginSkillsUseImmediateChildrenAndNamespacedRefs(t *testing.T) {
+	root := t.TempDir()
+	pluginSkills := filepath.Join(root, "plugins", "release-tools", "skills")
+	writeSkill(t, filepath.Join(pluginSkills, "release", "SKILL.md"), `---
+name: release
+description: Create a release.
+---
+release`)
+	writeSkill(t, filepath.Join(pluginSkills, "release", "references", "checklist.md"), "checklist")
+	writeSkill(t, filepath.Join(pluginSkills, "nested", "child", "SKILL.md"), `---
+name: ignored
+description: Nested plugin skill.
+---
+ignored`)
+
+	manager, err := NewManager(filepath.Join(root, "data"), filepath.Join(root, "home"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetPluginRoots(func() []PluginRoot {
+		return []PluginRoot{{PluginID: "release-tools", Path: pluginSkills}}
+	})
+	items, err := manager.List(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Ref != "plugin:release-tools:release" ||
+		items[0].Scope != ScopePlugin {
+		t.Fatalf("unexpected plugin skills: %#v", items)
+	}
+	resource, err := manager.ReadResource(
+		context.Background(), "", "", items[0].Ref, "references/checklist.md",
+	)
+	if err != nil || resource.Content != "checklist" {
+		t.Fatalf("plugin skill resource was not readable: %#v, %v", resource, err)
+	}
+}
+
+func TestPluginSkillCanBeResolvedByNamespacedRef(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first", "skills")
+	second := filepath.Join(root, "second", "skills")
+	writeSkill(t, filepath.Join(first, "shared", "SKILL.md"), `---
+name: shared
+description: First.
+---
+first`)
+	writeSkill(t, filepath.Join(second, "shared", "SKILL.md"), `---
+name: shared
+description: Second.
+---
+second`)
+	manager, err := NewManager(filepath.Join(root, "data"), filepath.Join(root, "home"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetPluginRoots(func() []PluginRoot {
+		return []PluginRoot{
+			{PluginID: "first", Path: first},
+			{PluginID: "second", Path: second},
+		}
+	})
+	item, err := manager.Get(context.Background(), "", "", "plugin:second:shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Body != "second" {
+		t.Fatalf("resolved plugin skill body = %q", item.Body)
+	}
+}
+
+func TestSymlinkedSkillPackageIsDiscovered(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	target := filepath.Join(root, "installed", "linked")
+	writeSkill(t, filepath.Join(target, "SKILL.md"), `---
+name: linked
+description: symlinked package
+---
+body`)
+	writeSkill(t, filepath.Join(target, "references", "details.md"), "Details.")
+	link := filepath.Join(home, ".agents", "skills", "linked")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	manager, err := NewManager(filepath.Join(root, "data"), home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := manager.List(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Name != "linked" || len(items[0].Resources) != 1 {
+		t.Fatalf("unexpected symlinked skill: %#v", items)
+	}
+	resource, err := manager.ReadResource(
+		context.Background(), "", "", "linked", "references/details.md",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource.Content != "Details." {
+		t.Fatalf("resource content = %q", resource.Content)
 	}
 }
 

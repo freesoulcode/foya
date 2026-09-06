@@ -30,9 +30,15 @@ type Scope string
 
 const (
 	ScopeBuiltin Scope = "builtin"
+	ScopePlugin  Scope = "plugin"
 	ScopeGlobal  Scope = "global"
 	ScopeProject Scope = "project"
 )
+
+type PluginRoot struct {
+	PluginID string
+	Path     string
+}
 
 // Skill is one effective SKILL.md definition.
 type Skill struct {
@@ -56,15 +62,15 @@ type Skill struct {
 }
 
 type SkillManifest struct {
-	Name                 string            `json:"name,omitempty" yaml:"name"`
-	Description          string            `json:"description,omitempty" yaml:"description"`
-	AllowedTools         []string          `json:"allowed_tools,omitempty" yaml:"allowed-tools"`
-	RequiredTools        []string          `json:"required_tools,omitempty" yaml:"required-tools"`
-	RequiredCapabilities []string          `json:"required_capabilities,omitempty" yaml:"required-capabilities"`
-	License              string            `json:"license,omitempty" yaml:"license"`
-	Compatibility        string            `json:"compatibility,omitempty" yaml:"compatibility"`
-	Metadata             map[string]string `json:"metadata,omitempty" yaml:"metadata"`
-	Category             string            `json:"category,omitempty" yaml:"category"`
+	Name                 string         `json:"name,omitempty" yaml:"name"`
+	Description          string         `json:"description,omitempty" yaml:"description"`
+	AllowedTools         []string       `json:"allowed_tools,omitempty" yaml:"allowed-tools"`
+	RequiredTools        []string       `json:"required_tools,omitempty" yaml:"required-tools"`
+	RequiredCapabilities []string       `json:"required_capabilities,omitempty" yaml:"required-capabilities"`
+	License              string         `json:"license,omitempty" yaml:"license"`
+	Compatibility        string         `json:"compatibility,omitempty" yaml:"compatibility"`
+	Metadata             map[string]any `json:"metadata,omitempty" yaml:"metadata"`
+	Category             string         `json:"category,omitempty" yaml:"category"`
 }
 
 type Resource struct {
@@ -112,12 +118,19 @@ type persistedState struct {
 
 // Manager owns discovery precedence and persisted enablement state.
 type Manager struct {
-	dataDir  string
-	homeDir  string
-	builtins []Skill
-	mu       sync.RWMutex
-	disabled map[string]bool
-	pinned   map[string]bool
+	dataDir     string
+	homeDir     string
+	builtins    []Skill
+	mu          sync.RWMutex
+	disabled    map[string]bool
+	pinned      map[string]bool
+	pluginRoots func() []PluginRoot
+}
+
+func (m *Manager) SetPluginRoots(provider func() []PluginRoot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pluginRoots = provider
 }
 
 func NewManager(dataDir, homeDir string, builtins []Skill) (*Manager, error) {
@@ -150,7 +163,7 @@ func (m *Manager) Inspect(ctx context.Context, projectID, projectPath string) (S
 	if err != nil {
 		return ScanResult{}, err
 	}
-	// Higher-ranked scopes win by name: project > global > builtin.
+	// Higher-ranked scopes win by name: project > global > plugin > builtin.
 	effective := make(map[string]Skill)
 	for _, item := range report.Inventory {
 		key := strings.ToLower(item.Name)
@@ -186,6 +199,17 @@ func (m *Manager) InspectAll(_ context.Context, projectID, projectPath string) (
 	for _, item := range m.builtins {
 		completeSkillDefaults(&item, ScopeBuiltin)
 		all = append(all, item)
+	}
+	m.mu.RLock()
+	pluginRoots := m.pluginRoots
+	m.mu.RUnlock()
+	if pluginRoots != nil {
+		for _, root := range pluginRoots() {
+			result := scanPluginRoot(root)
+			all = append(all, result.Skills...)
+			rejected = append(rejected, result.Rejected...)
+			diagnostics = append(diagnostics, result.Diagnostics...)
+		}
 	}
 	if m.homeDir != "" {
 		for _, root := range []string{".agents", ".foya"} {
@@ -226,6 +250,9 @@ func (m *Manager) InspectAll(_ context.Context, projectID, projectPath string) (
 	byScopeAndName := make(map[string]Skill)
 	for _, item := range all {
 		key := string(item.Scope) + ":" + strings.ToLower(item.Name)
+		if item.Scope == ScopePlugin {
+			key = item.Ref
+		}
 		byScopeAndName[key] = item
 	}
 	m.mu.RLock()
@@ -242,12 +269,72 @@ func (m *Manager) InspectAll(_ context.Context, projectID, projectPath string) (
 	return ScanResult{Inventory: out, Rejected: rejected, Diagnostics: diagnostics}, nil
 }
 
+func scanPluginRoot(root PluginRoot) ScanResult {
+	var result ScanResult
+	if strings.TrimSpace(root.PluginID) == "" || strings.TrimSpace(root.Path) == "" {
+		return result
+	}
+	entries, err := os.ReadDir(root.Path)
+	if err != nil {
+		result.Diagnostics = append(result.Diagnostics, diagnostic(
+			"", "", root.Path, "read_failed", "error", err.Error(), "",
+		))
+		return result
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || len(result.Skills) >= maxSkillsPerRoot {
+			continue
+		}
+		mainPath := filepath.Join(root.Path, entry.Name(), "SKILL.md")
+		info, err := os.Stat(mainPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		resolvedRoot, rootErr := filepath.EvalSymlinks(root.Path)
+		resolvedMain, mainErr := filepath.EvalSymlinks(mainPath)
+		if rootErr != nil || mainErr != nil || !pathInside(resolvedRoot, resolvedMain) {
+			result.Diagnostics = append(result.Diagnostics, diagnostic(
+				"", entry.Name(), mainPath, "path_escape", "warning",
+				"plugin skill resolves outside the plugin root", "",
+			))
+			continue
+		}
+		item, itemDiagnostics, err := parseFile(mainPath, ScopePlugin)
+		ref := pluginSkillRef(root.PluginID, entry.Name())
+		if err != nil {
+			rejectedDiagnostics := append(itemDiagnostics, diagnostic(
+				ref, entry.Name(), mainPath, "parse_failed", "error", err.Error(), "",
+			))
+			result.Rejected = append(result.Rejected, RejectedSkill{
+				Ref: ref, Name: entry.Name(), Path: mainPath,
+				Scope: ScopePlugin, Diagnostics: rejectedDiagnostics,
+			})
+			result.Diagnostics = append(result.Diagnostics, rejectedDiagnostics...)
+			continue
+		}
+		item.Ref = pluginSkillRef(root.PluginID, item.Name)
+		for index := range itemDiagnostics {
+			itemDiagnostics[index].Ref = item.Ref
+		}
+		item.Diagnostics = itemDiagnostics
+		result.Skills = append(result.Skills, item)
+		result.Diagnostics = append(result.Diagnostics, itemDiagnostics...)
+	}
+	result.Inventory = result.Skills
+	return result
+}
+
 func sortSkills(items []Skill) {
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Scope != items[j].Scope {
 			return scopeRank(items[i].Scope) > scopeRank(items[j].Scope)
 		}
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		left := strings.ToLower(items[i].Name)
+		right := strings.ToLower(items[j].Name)
+		if left != right {
+			return left < right
+		}
+		return items[i].Ref < items[j].Ref
 	})
 }
 
@@ -255,6 +342,20 @@ func (m *Manager) Get(
 	ctx context.Context,
 	projectID, projectPath, refOrName string,
 ) (Skill, error) {
+	if strings.Contains(refOrName, ":") {
+		items, err := m.ListAll(ctx, projectID, projectPath)
+		if err != nil {
+			return Skill{}, err
+		}
+		for _, item := range items {
+			if item.Ref == refOrName {
+				if !item.Enabled {
+					return Skill{}, fmt.Errorf("skill %q is disabled", item.Name)
+				}
+				return item, nil
+			}
+		}
+	}
 	items, err := m.List(ctx, projectID, projectPath)
 	if err != nil {
 		return Skill{}, err
@@ -405,22 +506,16 @@ func scanRoot(root string, scope Scope) (ScanResult, error) {
 	var out []Skill
 	var rejected []RejectedSkill
 	var diagnostics []Diagnostic
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	seen := make(map[string]bool)
+	addSkill := func(path string) {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			resolved = path
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		if seen[resolved] || len(out) >= maxSkillsPerRoot {
+			return
 		}
-		if entry.IsDir() || !strings.EqualFold(entry.Name(), "SKILL.md") {
-			return nil
-		}
-		if len(out) >= maxSkillsPerRoot {
-			return filepath.SkipAll
-		}
+		seen[resolved] = true
 		item, itemDiagnostics, err := parseFile(path, scope)
 		if err != nil {
 			name := filepath.Base(filepath.Dir(path))
@@ -434,11 +529,43 @@ func scanRoot(root string, scope Scope) (ScanResult, error) {
 				Diagnostics: rejectedDiagnostics,
 			})
 			diagnostics = append(diagnostics, rejectedDiagnostics...)
-			return nil
+			return
 		}
 		item.Diagnostics = itemDiagnostics
 		diagnostics = append(diagnostics, itemDiagnostics...)
 		out = append(out, item)
+	}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			targetInfo, err := os.Stat(target)
+			if err != nil {
+				return nil
+			}
+			if targetInfo.IsDir() {
+				mainPath := filepath.Join(target, "SKILL.md")
+				mainInfo, err := os.Stat(mainPath)
+				if err == nil && !mainInfo.IsDir() {
+					addSkill(mainPath)
+				}
+			} else if strings.EqualFold(entry.Name(), "SKILL.md") {
+				addSkill(path)
+			}
+			return nil
+		}
+		if entry.IsDir() || !strings.EqualFold(entry.Name(), "SKILL.md") {
+			return nil
+		}
+		if len(out) >= maxSkillsPerRoot {
+			return filepath.SkipAll
+		}
+		addSkill(path)
 		return nil
 	})
 	return ScanResult{Skills: out, Inventory: out, Rejected: rejected, Diagnostics: diagnostics}, err
@@ -556,17 +683,23 @@ func compactStrings(values []string) []string {
 	return out
 }
 
-func compactMap(values map[string]string) map[string]string {
+func compactMap(values map[string]any) map[string]any {
 	if len(values) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(values))
+	out := make(map[string]any, len(values))
 	for key, value := range values {
 		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if key != "" && value != "" {
-			out[key] = value
+		if key == "" || value == nil {
+			continue
 		}
+		if text, ok := value.(string); ok {
+			value = strings.TrimSpace(text)
+			if value == "" {
+				continue
+			}
+		}
+		out[key] = value
 	}
 	return out
 }
@@ -810,11 +943,17 @@ func projectSkillRef(projectID, name string) string {
 	return string(ScopeProject) + ":" + projectID + ":" + strings.ToLower(strings.TrimSpace(name))
 }
 
+func pluginSkillRef(pluginID, name string) string {
+	return string(ScopePlugin) + ":" + pluginID + ":" + strings.ToLower(strings.TrimSpace(name))
+}
+
 func scopeRank(scope Scope) int {
 	switch scope {
 	case ScopeProject:
-		return 3
+		return 4
 	case ScopeGlobal:
+		return 3
+	case ScopePlugin:
 		return 2
 	default:
 		return 1

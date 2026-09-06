@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,18 +23,20 @@ import (
 )
 
 type ServerConfig struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Enabled     bool              `json:"enabled"`
-	Transport   string            `json:"transport"` // stdio / streamable_http / sse
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	URL         string            `json:"url,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	BearerToken string            `json:"bearer_token,omitempty"`
-	HasToken    bool              `json:"has_token,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Enabled       bool              `json:"enabled"`
+	Transport     string            `json:"transport"` // stdio / streamable_http / sse
+	Command       string            `json:"command,omitempty"`
+	Args          []string          `json:"args,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	URL           string            `json:"url,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	BearerToken   string            `json:"bearer_token,omitempty"`
+	HasToken      bool              `json:"has_token,omitempty"`
+	PluginID      string            `json:"plugin_id,omitempty"`
+	LiteralValues bool              `json:"-"`
 }
 
 type Config struct {
@@ -65,6 +68,7 @@ type Status struct {
 	ResourceCount int    `json:"resource_count"`
 	PromptCount   int    `json:"prompt_count"`
 	Error         string `json:"error,omitempty"`
+	PluginID      string `json:"plugin_id,omitempty"`
 }
 
 type session struct {
@@ -77,21 +81,23 @@ type session struct {
 }
 
 type Manager struct {
-	dataDir  string
-	homeDir  string
-	registry foyatool.Registry
-	gateway  approval.Gateway
-	mu       sync.RWMutex
-	config   Config
-	secrets  map[string]string
-	sessions map[string]*session
+	dataDir       string
+	homeDir       string
+	registry      foyatool.Registry
+	gateway       approval.Gateway
+	mu            sync.RWMutex
+	config        Config
+	secrets       map[string]string
+	sessions      map[string]*session
+	pluginServers map[string]ServerConfig
+	runCtx        context.Context
 }
 
 func NewManager(dataDir, homeDir string, registry foyatool.Registry, gateway approval.Gateway) (*Manager, error) {
 	manager := &Manager{
 		dataDir: dataDir, homeDir: homeDir, registry: registry, gateway: gateway,
 		config: Config{Version: 1}, secrets: make(map[string]string),
-		sessions: make(map[string]*session),
+		sessions: make(map[string]*session), pluginServers: make(map[string]ServerConfig),
 	}
 	if err := manager.load(); err != nil {
 		return nil, err
@@ -100,9 +106,13 @@ func NewManager(dataDir, homeDir string, registry foyatool.Registry, gateway app
 }
 
 func (m *Manager) Start(ctx context.Context) {
-	m.mu.RLock()
+	m.mu.Lock()
+	m.runCtx = ctx
 	servers := append([]ServerConfig(nil), m.config.Servers...)
-	m.mu.RUnlock()
+	for _, server := range m.pluginServers {
+		servers = append(servers, server)
+	}
+	m.mu.Unlock()
 	for _, server := range servers {
 		if server.Enabled {
 			_ = m.Connect(ctx, server.ID)
@@ -122,8 +132,12 @@ func (m *Manager) Replace(ctx context.Context, next Config) error {
 	m.mu.RLock()
 	current := m.config
 	currentSecrets := make(map[string]string, len(m.secrets))
+	pluginIDs := make(map[string]bool, len(m.pluginServers))
 	for id, secret := range m.secrets {
 		currentSecrets[id] = secret
+	}
+	for id := range m.pluginServers {
+		pluginIDs[id] = true
 	}
 	m.mu.RUnlock()
 	currentByID := make(map[string]ServerConfig)
@@ -134,7 +148,9 @@ func (m *Manager) Replace(ctx context.Context, next Config) error {
 	for index := range next.Servers {
 		item := &next.Servers[index]
 		item.ID = strings.TrimSpace(item.ID)
-		if item.ID == "" || seen[item.ID] {
+		item.PluginID = ""
+		item.LiteralValues = false
+		if item.ID == "" || seen[item.ID] || pluginIDs[item.ID] {
 			return fmt.Errorf("invalid or duplicate MCP server id %q", item.ID)
 		}
 		seen[item.ID] = true
@@ -183,8 +199,12 @@ func (m *Manager) Replace(ctx context.Context, next Config) error {
 func (m *Manager) Statuses() []Status {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]Status, 0, len(m.config.Servers))
-	for _, config := range m.config.Servers {
+	configs := append([]ServerConfig(nil), m.config.Servers...)
+	for _, config := range m.pluginServers {
+		configs = append(configs, config)
+	}
+	out := make([]Status, 0, len(configs))
+	for _, config := range configs {
 		if active := m.sessions[config.ID]; active != nil {
 			out = append(out, active.status)
 			continue
@@ -195,6 +215,7 @@ func (m *Manager) Statuses() []Status {
 		}
 		out = append(out, Status{
 			ID: config.ID, Name: config.Name, State: state, Transport: config.Transport,
+			PluginID: config.PluginID,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -213,7 +234,7 @@ func (m *Manager) Connect(parent context.Context, id string) error {
 	ctx, cancel := context.WithCancel(parent)
 	active := &session{
 		config: config, ctx: ctx, cancel: cancel,
-		status: Status{ID: id, Name: config.Name, State: "connecting", Transport: config.Transport},
+		status: Status{ID: id, Name: config.Name, State: "connecting", Transport: config.Transport, PluginID: config.PluginID},
 	}
 	m.mu.Lock()
 	m.sessions[id] = active
@@ -275,6 +296,7 @@ func (m *Manager) Connect(parent context.Context, id string) error {
 		active.status = Status{
 			ID: config.ID, Name: config.Name, State: "connected", Transport: config.Transport,
 			ToolCount: len(tools), ResourceCount: len(resources), PromptCount: len(prompts),
+			PluginID: config.PluginID,
 		}
 	}
 	m.mu.Unlock()
@@ -300,6 +322,9 @@ func (m *Manager) Disconnect(id string) {
 }
 
 func (m *Manager) Close() {
+	m.mu.Lock()
+	m.runCtx = nil
+	m.mu.Unlock()
 	m.mu.RLock()
 	ids := make([]string, 0, len(m.sessions))
 	for id := range m.sessions {
@@ -309,6 +334,54 @@ func (m *Manager) Close() {
 	for _, id := range ids {
 		m.Disconnect(id)
 	}
+}
+
+func (m *Manager) SetPluginServers(next []ServerConfig) error {
+	incoming := make(map[string]ServerConfig, len(next))
+	m.mu.RLock()
+	nativeIDs := make(map[string]bool, len(m.config.Servers))
+	for _, item := range m.config.Servers {
+		nativeIDs[item.ID] = true
+	}
+	m.mu.RUnlock()
+	for _, item := range next {
+		if item.PluginID == "" {
+			return errors.New("plugin MCP server is missing plugin_id")
+		}
+		if item.ID == "" || nativeIDs[item.ID] || incoming[item.ID].ID != "" {
+			return fmt.Errorf("duplicate MCP server id %q", item.ID)
+		}
+		if err := validateConfig(item); err != nil {
+			return fmt.Errorf("%s: %w", item.ID, err)
+		}
+		incoming[item.ID] = item
+	}
+
+	m.mu.Lock()
+	var previous []string
+	for id := range m.pluginServers {
+		previous = append(previous, id)
+	}
+	m.pluginServers = incoming
+	runCtx := m.runCtx
+	m.mu.Unlock()
+	for _, id := range previous {
+		m.Disconnect(id)
+	}
+	if runCtx != nil {
+		ids := make([]string, 0, len(incoming))
+		for id := range incoming {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			item := incoming[id]
+			if item.Enabled {
+				_ = m.Connect(runCtx, id)
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Resources(ctx context.Context, id string) ([]*mcp.Resource, error) {
@@ -370,6 +443,10 @@ func (m *Manager) serverConfig(id string) (ServerConfig, bool) {
 		if item.ID == id {
 			return item, true
 		}
+	}
+	item, ok := m.pluginServers[id]
+	if ok {
+		return item, true
 	}
 	return ServerConfig{}, false
 }
@@ -611,13 +688,21 @@ type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
 	token   string
+	literal bool
+	origin  string
 }
 
 func (r headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	copy := req.Clone(req.Context())
 	copy.Header = req.Header.Clone()
+	if r.origin != "" && requestOrigin(copy.URL) != r.origin {
+		return r.base.RoundTrip(copy)
+	}
 	for key, value := range r.headers {
-		copy.Header.Set(key, os.ExpandEnv(value))
+		if !r.literal {
+			value = os.ExpandEnv(value)
+		}
+		copy.Header.Set(key, value)
 	}
 	if r.token != "" {
 		copy.Header.Set("Authorization", "Bearer "+r.token)
@@ -630,14 +715,15 @@ func buildTransport(ctx context.Context, config ServerConfig) (mcp.Transport, er
 	case "stdio":
 		command := exec.CommandContext(ctx, config.Command, config.Args...)
 		command.Dir = config.Cwd
-		command.Env = minimalEnvironment(config.Env)
+		command.Env = minimalEnvironmentValues(config.Env, !config.LiteralValues)
 		return &mcp.CommandTransport{Command: command}, nil
 	case "streamable_http", "sse":
 		client := &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: headerRoundTripper{
 				base: http.DefaultTransport, headers: config.Headers,
-				token: config.BearerToken,
+				token: config.BearerToken, literal: config.LiteralValues,
+				origin: pluginHeaderOrigin(config),
 			},
 		}
 		if config.Transport == "sse" {
@@ -650,6 +736,10 @@ func buildTransport(ctx context.Context, config ServerConfig) (mcp.Transport, er
 }
 
 func minimalEnvironment(explicit map[string]string) []string {
+	return minimalEnvironmentValues(explicit, true)
+}
+
+func minimalEnvironmentValues(explicit map[string]string, expand bool) []string {
 	allowed := []string{"PATH", "HOME", "USER", "SHELL", "LANG", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT"}
 	values := make(map[string]string)
 	for _, key := range allowed {
@@ -658,7 +748,10 @@ func minimalEnvironment(explicit map[string]string) []string {
 		}
 	}
 	for key, value := range explicit {
-		values[key] = os.ExpandEnv(value)
+		if expand {
+			value = os.ExpandEnv(value)
+		}
+		values[key] = value
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -670,6 +763,24 @@ func minimalEnvironment(explicit map[string]string) []string {
 		out = append(out, key+"="+values[key])
 	}
 	return out
+}
+
+func pluginHeaderOrigin(config ServerConfig) string {
+	if config.PluginID == "" {
+		return ""
+	}
+	parsed, err := url.Parse(config.URL)
+	if err != nil {
+		return ""
+	}
+	return requestOrigin(parsed)
+}
+
+func requestOrigin(value *url.URL) string {
+	if value == nil {
+		return ""
+	}
+	return strings.ToLower(value.Scheme) + "://" + strings.ToLower(value.Host)
 }
 
 func listTools(ctx context.Context, client *mcp.ClientSession) ([]*mcp.Tool, error) {

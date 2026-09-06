@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,6 +80,48 @@ func TestPublicConfigAlwaysExposesServersArray(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"servers":[]`) {
 		t.Fatalf("servers array missing from JSON: %s", data)
+	}
+}
+
+func TestPluginServersStayOutOfUserConfig(t *testing.T) {
+	manager, err := NewManager(t.TempDir(), t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.SetPluginServers([]ServerConfig{{
+		ID: "plugin:sample:tools", Name: "sample/tools", Enabled: true,
+		Transport: "stdio", Command: "node", PluginID: "sample", LiteralValues: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.Config().Servers) != 0 {
+		t.Fatalf("plugin MCP server leaked into user config: %#v", manager.Config())
+	}
+	config, ok := manager.serverConfig("plugin:sample:tools")
+	if !ok || config.PluginID != "sample" || !config.LiteralValues {
+		t.Fatalf("plugin MCP server was not registered: %#v", config)
+	}
+	statuses := manager.Statuses()
+	if len(statuses) != 1 || statuses[0].PluginID != "sample" {
+		t.Fatalf("plugin MCP status missing: %#v", statuses)
+	}
+	err = manager.Replace(context.Background(), Config{Servers: []ServerConfig{{
+		ID: "plugin:sample:tools", Name: "collision", Enabled: false,
+		Transport: "stdio", Command: "node",
+	}}})
+	if err == nil {
+		t.Fatal("native MCP config should not shadow a plugin server")
+	}
+}
+
+func TestPluginEnvironmentExpansionIsSinglePass(t *testing.T) {
+	t.Setenv("FOYA_PLUGIN_TEST", "expanded")
+	values := minimalEnvironmentValues(map[string]string{
+		"VALUE": "$FOYA_PLUGIN_TEST",
+	}, false)
+	if !strings.Contains(strings.Join(values, "\n"), "VALUE=$FOYA_PLUGIN_TEST") {
+		t.Fatalf("plugin environment was expanded by the host: %#v", values)
 	}
 }
 

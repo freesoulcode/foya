@@ -478,3 +478,140 @@ pub(crate) async fn search_mcp_registry(query: String) -> Result<String, String>
     let path = format!("/mcp/registry?search={}", encode_query_component(&query));
     kernel::request("GET", &path, None).await
 }
+
+#[tauri::command]
+pub(crate) async fn list_plugins() -> Result<String, String> {
+    kernel::request("GET", "/plugins", None).await
+}
+
+#[tauri::command]
+pub(crate) async fn list_plugin_marketplaces() -> Result<String, String> {
+    kernel::request("GET", "/plugin-marketplaces", None).await
+}
+
+#[tauri::command]
+pub(crate) async fn add_plugin_marketplace(
+    source: String,
+    git_ref: String,
+    sparse_paths: Vec<String>,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "source": source,
+        "ref": git_ref,
+        "sparse_paths": sparse_paths
+    })
+    .to_string();
+    kernel::request("POST", "/plugin-marketplaces", Some(&body)).await
+}
+
+#[tauri::command]
+pub(crate) async fn browse_plugin_marketplace(name: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/plugin-marketplaces/{}", encode_query_component(&name)),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn refresh_plugin_marketplace(name: String) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        &format!(
+            "/plugin-marketplaces/{}/refresh",
+            encode_query_component(&name)
+        ),
+        Some("{}"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn set_plugin_marketplace_enabled(
+    name: String,
+    enabled: bool,
+) -> Result<String, String> {
+    let body = serde_json::json!({ "enabled": enabled }).to_string();
+    kernel::request(
+        "PATCH",
+        &format!("/plugin-marketplaces/{}", encode_query_component(&name)),
+        Some(&body),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn remove_plugin_marketplace(name: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/plugin-marketplaces/{}", encode_query_component(&name)),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub(crate) async fn preview_marketplace_plugin(
+    marketplace: String,
+    plugin_name: String,
+) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!(
+            "/plugin-marketplaces/{}/plugins/{}",
+            encode_query_component(&marketplace),
+            encode_query_component(&plugin_name)
+        ),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn install_marketplace_plugin(
+    marketplace: String,
+    plugin_name: String,
+    replace: bool,
+) -> Result<String, String> {
+    let body = serde_json::json!({ "replace": replace }).to_string();
+    kernel::request(
+        "POST",
+        &format!(
+            "/plugin-marketplaces/{}/plugins/{}/install",
+            encode_query_component(&marketplace),
+            encode_query_component(&plugin_name)
+        ),
+        Some(&body),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn install_plugin(source: String, replace: bool) -> Result<String, String> {
+    let body = serde_json::json!({ "source": source, "replace": replace }).to_string();
+    kernel::request("POST", "/plugins/install", Some(&body)).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_plugin_enabled(name: String, enabled: bool) -> Result<String, String> {
+    let body = serde_json::json!({ "enabled": enabled }).to_string();
+    kernel::request(
+        "PATCH",
+        &format!("/plugins/{}", encode_query_component(&name)),
+        Some(&body),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn remove_plugin(name: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/plugins/{}", encode_query_component(&name)),
+        None,
+    )
+    .await
+    .map(|_| ())
+}

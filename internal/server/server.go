@@ -31,6 +31,7 @@ import (
 	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/plugin"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/protocol"
 	"github.com/freesoulcode/foya/internal/provider"
@@ -192,6 +193,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /web-search", s.handleUpdateWebSearch)
 	s.mux.HandleFunc("POST /web-search/test", s.handleTestWebSearch)
 	s.mux.HandleFunc("POST /sessions/{id}/browser-actions/{request_id}", s.handleResolveBrowserAction)
+	s.mux.HandleFunc("GET /plugins", s.handlePlugins)
+	s.mux.HandleFunc("POST /plugins/install", s.handleInstallPlugin)
+	s.mux.HandleFunc("GET /plugin-marketplaces", s.handlePluginMarketplaces)
+	s.mux.HandleFunc("POST /plugin-marketplaces", s.handleAddPluginMarketplace)
+	s.mux.HandleFunc("GET /plugin-marketplaces/{name}", s.handleBrowsePluginMarketplace)
+	s.mux.HandleFunc("PATCH /plugin-marketplaces/{name}", s.handleSetPluginMarketplaceEnabled)
+	s.mux.HandleFunc("DELETE /plugin-marketplaces/{name}", s.handleRemovePluginMarketplace)
+	s.mux.HandleFunc("POST /plugin-marketplaces/{name}/refresh", s.handleRefreshPluginMarketplace)
+	s.mux.HandleFunc("GET /plugin-marketplaces/{name}/plugins/{plugin}", s.handlePreviewMarketplacePlugin)
+	s.mux.HandleFunc("POST /plugin-marketplaces/{name}/plugins/{plugin}/install", s.handleInstallMarketplacePlugin)
+	s.mux.HandleFunc("PATCH /plugins/{name}", s.handleSetPluginEnabled)
+	s.mux.HandleFunc("DELETE /plugins/{name}", s.handleRemovePlugin)
 	s.mux.HandleFunc("GET /mcp", s.handleGetMCP)
 	s.mux.HandleFunc("PUT /mcp", s.handleReplaceMCP)
 	s.mux.HandleFunc("GET /mcp/status", s.handleMCPStatus)
@@ -1051,6 +1064,194 @@ func (s *Server) handleGetMCP(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, config)
+}
+
+func (s *Server) handlePlugins(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.backend.Plugins()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "plugins_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleInstallPlugin(w http.ResponseWriter, r *http.Request) {
+	var input protocol.PluginInstallRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(input.Source) == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "source is required")
+		return
+	}
+	item, err := s.backend.InstallPlugin(r.Context(), input.Source, input.Replace)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_install_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handlePluginMarketplaces(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.backend.PluginMarketplaces()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "plugin_marketplaces_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleAddPluginMarketplace(w http.ResponseWriter, r *http.Request) {
+	var input protocol.MarketplaceAddRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(input.Source) == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "source is required")
+		return
+	}
+	item, err := s.backend.AddPluginMarketplace(
+		r.Context(),
+		plugin.MarketplaceRegistrationInput{
+			Source: input.Source, Ref: input.Ref, SparsePaths: input.SparsePaths,
+		},
+	)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_marketplace_add_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleBrowsePluginMarketplace(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.BrowsePluginMarketplace(r.Context(), r.PathValue("name"))
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, plugin.ErrMarketplaceNotFound) {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, "plugin_marketplace_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleSetPluginMarketplaceEnabled(w http.ResponseWriter, r *http.Request) {
+	var input protocol.MarketplaceEnabledRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.SetPluginMarketplaceEnabled(
+		r.PathValue("name"),
+		input.Enabled,
+	); err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_marketplace_update_failed", err.Error())
+		return
+	}
+	items, err := s.backend.PluginMarketplaces()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "plugin_marketplaces_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleRefreshPluginMarketplace(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.RefreshPluginMarketplace(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_marketplace_refresh_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleRemovePluginMarketplace(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.RemovePluginMarketplace(r.PathValue("name")); err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_marketplace_remove_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePreviewMarketplacePlugin(w http.ResponseWriter, r *http.Request) {
+	item, err := s.backend.PreviewMarketplacePlugin(
+		r.Context(),
+		r.PathValue("name"),
+		r.PathValue("plugin"),
+	)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, plugin.ErrMarketplaceNotFound) ||
+			errors.Is(err, plugin.ErrMarketplacePluginNotFound) {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, "plugin_preview_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleInstallMarketplacePlugin(w http.ResponseWriter, r *http.Request) {
+	var input protocol.MarketplacePluginInstallRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	item, err := s.backend.InstallMarketplacePlugin(
+		r.Context(),
+		r.PathValue("name"),
+		r.PathValue("plugin"),
+		input.Replace,
+	)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, plugin.ErrMarketplaceNotFound) ||
+			errors.Is(err, plugin.ErrMarketplacePluginNotFound) {
+			status = http.StatusNotFound
+		}
+		writeErr(w, status, "plugin_install_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleSetPluginEnabled(w http.ResponseWriter, r *http.Request) {
+	var input protocol.PluginEnabledRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if err := s.backend.SetPluginEnabled(r.PathValue("name"), input.Enabled); err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_update_failed", err.Error())
+		return
+	}
+	items, err := s.backend.Plugins()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "plugins_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
+	if err := s.backend.RemovePlugin(r.PathValue("name")); err != nil {
+		writeErr(w, http.StatusBadRequest, "plugin_remove_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleReplaceMCP(w http.ResponseWriter, r *http.Request) {

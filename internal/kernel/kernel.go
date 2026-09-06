@@ -26,6 +26,7 @@ import (
 	"github.com/freesoulcode/foya/internal/hooks"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/memorymaint"
+	"github.com/freesoulcode/foya/internal/plugin"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/provider/openai"
@@ -166,10 +167,22 @@ func New(cfg config.Config) (*App, error) {
 	}))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
+	plugins, err := plugin.NewManager(cfg.DataDir, homeDir)
+	if err != nil {
+		return nil, err
+	}
 	skills, err := skill.NewManager(cfg.DataDir, homeDir, skill.BuiltinDefinitions())
 	if err != nil {
 		return nil, err
 	}
+	skills.SetPluginRoots(func() []skill.PluginRoot {
+		roots := plugins.SkillRoots()
+		out := make([]skill.PluginRoot, 0, len(roots))
+		for _, root := range roots {
+			out = append(out, skill.PluginRoot{PluginID: root.PluginID, Path: root.Path})
+		}
+		return out
+	})
 	web, err := websearch.NewManager(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -187,6 +200,13 @@ func New(cfg config.Config) (*App, error) {
 	}
 	mcpManager, err := mcpclient.NewManager(cfg.DataDir, homeDir, tools, gw)
 	if err != nil {
+		return nil, err
+	}
+	pluginServers, err := plugins.MCPServers()
+	if err != nil {
+		return nil, err
+	}
+	if err := mcpManager.SetPluginServers(pluginServers); err != nil {
 		return nil, err
 	}
 	projects, err := project.NewManager(cfg.DataDir)
@@ -319,6 +339,7 @@ func New(cfg config.Config) (*App, error) {
 	connections := loadConnections(cfg)
 	be.SetConnections(connections)
 	be.SetCapabilityManagers(skills, web, mcpManager)
+	be.SetPluginManager(plugins)
 	be.SetArtifactStore(artifactStore)
 	be.SetCanvasStore(canvasStore)
 	be.SetAgentManager(agents)

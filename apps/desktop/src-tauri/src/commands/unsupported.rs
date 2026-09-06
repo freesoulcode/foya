@@ -700,3 +700,77 @@ pub(crate) async fn get_mcp_status() -> Result<String, String> {
 pub(crate) async fn search_mcp_registry(_query: String) -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
+
+#[tauri::command]
+pub(crate) async fn list_plugins() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn list_plugin_marketplaces() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn add_plugin_marketplace(
+    _source: String,
+    _git_ref: String,
+    _sparse_paths: Vec<String>,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn browse_plugin_marketplace(_name: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn refresh_plugin_marketplace(_name: String) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn set_plugin_marketplace_enabled(
+    _name: String,
+    _enabled: bool,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn remove_plugin_marketplace(_name: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn preview_marketplace_plugin(
+    _marketplace: String,
+    _plugin_name: String,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn install_marketplace_plugin(
+    _marketplace: String,
+    _plugin_name: String,
+    _replace: bool,
+) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn install_plugin(_source: String, _replace: bool) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn set_plugin_enabled(_name: String, _enabled: bool) -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn remove_plugin(_name: String) -> Result<(), String> {
+    Err("Windows 传输尚未实现".into())
+}

@@ -503,7 +503,7 @@ export interface SkillInfo {
   ref: string;
   name: string;
   description?: string;
-  scope: "builtin" | "global" | "user" | "project";
+  scope: "builtin" | "plugin" | "global" | "user" | "project";
   path?: string;
   root?: string;
   main_path?: string;
@@ -859,6 +859,7 @@ export interface McpStatus {
   resource_count: number;
   prompt_count: number;
   error?: string;
+  plugin_id?: string;
 }
 
 export interface McpRegistryServer {
@@ -869,6 +870,87 @@ export interface McpRegistryServer {
   installable: boolean;
   reason?: string;
   config: McpServerConfig;
+}
+
+export interface PluginAuthor {
+  name?: string;
+  email?: string;
+  url?: string;
+}
+
+export interface PluginDiagnostic {
+  component?: string;
+  path?: string;
+  code: string;
+  severity: "warning" | "error";
+  message: string;
+}
+
+export interface AgentPlugin {
+  $schema: string;
+  name: string;
+  version?: string;
+  description?: string;
+  author?: PluginAuthor;
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  keywords?: string[];
+  path: string;
+  data_path: string;
+  source?: string;
+  enabled: boolean;
+  valid: boolean;
+  skill_count: number;
+  mcp_server_count: number;
+  diagnostics?: PluginDiagnostic[];
+}
+
+export interface PluginMarketplace {
+  id: string;
+  name: string;
+  description?: string;
+  repository: string;
+  owner: PluginAuthor;
+  source: string;
+  ref?: string;
+  sparse_paths?: string[];
+  resolved_sha?: string;
+  format: "codex" | "claude" | "copilot";
+  enabled: boolean;
+}
+
+export interface MarketplacePlugin {
+  name: string;
+  description?: string;
+  version?: string;
+  author?: PluginAuthor;
+  homepage?: string;
+  repository?: string;
+  license?: string;
+  keywords?: string[];
+  category?: string;
+  tags?: string[];
+  source: string;
+  installable: boolean;
+  reason?: string;
+  installed: boolean;
+  enabled?: boolean;
+  installed_version?: string;
+}
+
+export interface PluginMarketplaceCatalog extends PluginMarketplace {
+  plugins: MarketplacePlugin[];
+}
+
+export interface MarketplacePluginPreview {
+  name: string;
+  valid: boolean;
+  compatibility: "compatible" | "partial" | "unsupported";
+  skill_count: number;
+  mcp_server_count: number;
+  unsupported_components?: string[];
+  diagnostics?: PluginDiagnostic[];
 }
 
 function parseWebSearchSettings(raw: string): WebSearchSettings {
@@ -1554,6 +1636,76 @@ export const api = {
     invoke<string>("search_mcp_registry", { query }).then(
       (r) => (JSON.parse(r) as McpRegistryServer[]) ?? []
     ),
+
+  listPlugins: () =>
+    invoke<string>("list_plugins").then(
+      (r) => (JSON.parse(r) as AgentPlugin[]) ?? []
+    ),
+
+  listPluginMarketplaces: () =>
+    invoke<string>("list_plugin_marketplaces").then(
+      (r) => (JSON.parse(r) as PluginMarketplace[]) ?? []
+    ),
+
+  addPluginMarketplace: (
+    source: string,
+    gitRef = "",
+    sparsePaths: string[] = []
+  ) =>
+    invoke<string>("add_plugin_marketplace", {
+      source,
+      gitRef,
+      sparsePaths,
+    }).then((r) => JSON.parse(r) as PluginMarketplace),
+
+  browsePluginMarketplace: (name: string) =>
+    invoke<string>("browse_plugin_marketplace", { name }).then(
+      (r) => JSON.parse(r) as PluginMarketplaceCatalog
+    ),
+
+  refreshPluginMarketplace: (name: string) =>
+    invoke<string>("refresh_plugin_marketplace", { name }).then(
+      (r) => JSON.parse(r) as PluginMarketplace
+    ),
+
+  setPluginMarketplaceEnabled: (name: string, enabled: boolean) =>
+    invoke<string>("set_plugin_marketplace_enabled", {
+      name,
+      enabled,
+    }).then((r) => (JSON.parse(r) as PluginMarketplace[]) ?? []),
+
+  removePluginMarketplace: (name: string) =>
+    invoke("remove_plugin_marketplace", { name }),
+
+  previewMarketplacePlugin: (marketplace: string, pluginName: string) =>
+    invoke<string>("preview_marketplace_plugin", {
+      marketplace,
+      pluginName,
+    }).then((r) => JSON.parse(r) as MarketplacePluginPreview),
+
+  installMarketplacePlugin: (
+    marketplace: string,
+    pluginName: string,
+    replace = false
+  ) =>
+    invoke<string>("install_marketplace_plugin", {
+      marketplace,
+      pluginName,
+      replace,
+    }).then((r) => JSON.parse(r) as AgentPlugin),
+
+  installPlugin: (source: string, replace = false) =>
+    invoke<string>("install_plugin", { source, replace }).then(
+      (r) => JSON.parse(r) as AgentPlugin
+    ),
+
+  setPluginEnabled: (name: string, enabled: boolean) =>
+    invoke<string>("set_plugin_enabled", { name, enabled }).then(
+      (r) => (JSON.parse(r) as AgentPlugin[]) ?? []
+    ),
+
+  removePlugin: (name: string) =>
+    invoke("remove_plugin", { name }),
 
   subscribeEvents: (sessionId: string, onEvent: (data: string) => void) => {
     const channel = new Channel<string>();

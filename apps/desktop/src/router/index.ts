@@ -43,6 +43,22 @@ export const router = createRouter({
           ],
         },
         {
+          path: "plugins",
+          component: () => import("@/layouts/ChatLayout.vue"),
+          children: [
+            {
+              path: "",
+              name: "plugins",
+              component: () => import("@/views/PluginsView.vue"),
+            },
+            {
+              path: ":marketplace/:plugin",
+              name: "plugin-detail",
+              component: () => import("@/views/PluginDetailView.vue"),
+            },
+          ],
+        },
+        {
           path: "settings",
           component: () => import("@/layouts/SettingsLayout.vue"),
           children: [
@@ -94,6 +110,10 @@ export const router = createRouter({
               name: "settings-mcp",
               component: () => import("@/views/settings/McpView.vue"),
               meta: { settingsSection: "mcp" },
+            },
+            {
+              path: "plugins",
+              redirect: { name: "plugins" },
             },
             {
               path: "web-search",

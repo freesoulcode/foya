@@ -8,6 +8,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   PencilIcon,
+  PackageIcon,
   PaletteIcon,
   PinIcon,
   PinOffIcon,
@@ -56,6 +57,7 @@ const props = defineProps<{
   activeId: string;
   isDraft?: boolean;
   automationsActive?: boolean;
+  pluginsActive?: boolean;
   // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
   running?: Record<string, boolean>;
   unread?: Record<string, boolean>;
@@ -88,6 +90,7 @@ const emit = defineEmits<{
   (e: "open-settings"): void;
   (e: "open-studio"): void;
   (e: "open-automations"): void;
+  (e: "open-plugins"): void;
 }>();
 
 function title(s: Session) {
@@ -250,7 +253,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
             <SidebarMenuItem>
               <SidebarMenuButton
                 class="no-drag"
-                :is-active="isDraft && !automationsActive"
+                :is-active="isDraft && !automationsActive && !pluginsActive"
                 tooltip="新建对话"
                 @click="emit('new')"
               >
@@ -277,6 +280,17 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               >
                 <Clock3Icon />
                 <span>自动化</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                class="no-drag"
+                :is-active="pluginsActive"
+                tooltip="插件"
+                @click="emit('open-plugins')"
+              >
+                <PackageIcon />
+                <span>插件</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

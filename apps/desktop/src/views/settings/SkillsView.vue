@@ -230,6 +230,9 @@ void loadSkills();
                 <span v-if="item.scope === 'builtin'" class="text-xs text-muted-foreground">
                   内置
                 </span>
+                <span v-else-if="item.scope === 'plugin'" class="text-xs text-muted-foreground">
+                  插件
+                </span>
               </div>
               <p class="truncate text-xs text-muted-foreground" :title="item.path">
                 {{ item.description || item.path }}

@@ -256,6 +256,29 @@ type MCPResourceReadRequest struct {
 	URI      string `json:"uri"`
 }
 
+type PluginInstallRequest struct {
+	Source  string `json:"source"`
+	Replace bool   `json:"replace,omitempty"`
+}
+
+type MarketplacePluginInstallRequest struct {
+	Replace bool `json:"replace,omitempty"`
+}
+
+type MarketplaceAddRequest struct {
+	Source      string   `json:"source"`
+	Ref         string   `json:"ref,omitempty"`
+	SparsePaths []string `json:"sparse_paths,omitempty"`
+}
+
+type MarketplaceEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+type PluginEnabledRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 type MCPPromptGetRequest struct {
 	ServerID string            `json:"server_id"`
 	Name     string            `json:"name"`

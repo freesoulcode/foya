@@ -36,6 +36,7 @@ import (
 	"github.com/freesoulcode/foya/internal/imagegen"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/message"
+	"github.com/freesoulcode/foya/internal/plugin"
 	"github.com/freesoulcode/foya/internal/project"
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/question"
@@ -78,6 +79,7 @@ type Backend struct {
 	skills             *skill.Manager
 	web                *websearch.Manager
 	mcp                *mcpclient.Manager
+	plugins            *plugin.Manager
 	projects           *project.Manager
 	agents             *agentdef.Manager
 	subagents          *subagent.Manager
@@ -115,6 +117,12 @@ func (b *Backend) SetCapabilityManagers(skills *skill.Manager, web *websearch.Ma
 	b.skills = skills
 	b.web = web
 	b.mcp = mcp
+}
+
+func (b *Backend) SetPluginManager(manager *plugin.Manager) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.plugins = manager
 }
 
 func (b *Backend) SetBrowserController(controller *browseruse.Controller) {
@@ -1364,6 +1372,201 @@ func (b *Backend) SearchMCPRegistry(
 	query string,
 ) ([]mcpclient.RegistryServer, error) {
 	return mcpclient.SearchRegistry(ctx, query)
+}
+
+func (b *Backend) Plugins() ([]plugin.Plugin, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	mcpManager := b.mcp
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("plugins are unavailable")
+	}
+	items, err := manager.List()
+	if err != nil || mcpManager == nil {
+		return items, err
+	}
+	statuses := mcpManager.Statuses()
+	byPlugin := make(map[string][]mcpclient.Status)
+	for _, status := range statuses {
+		if status.PluginID != "" {
+			byPlugin[status.PluginID] = append(byPlugin[status.PluginID], status)
+		}
+	}
+	for index := range items {
+		for _, status := range byPlugin[items[index].Name] {
+			if status.State == "error" {
+				items[index].Diagnostics = append(items[index].Diagnostics, plugin.Diagnostic{
+					Component: "mcp:" + status.ID,
+					Code:      "mcp_runtime_failed",
+					Severity:  "warning",
+					Message:   status.Error,
+				})
+			}
+		}
+	}
+	return items, nil
+}
+
+func (b *Backend) PluginMarketplaces() ([]plugin.MarketplaceSummary, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("plugins are unavailable")
+	}
+	return manager.Marketplaces(), nil
+}
+
+func (b *Backend) AddPluginMarketplace(
+	ctx context.Context,
+	input plugin.MarketplaceRegistrationInput,
+) (plugin.MarketplaceSummary, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.MarketplaceSummary{}, errors.New("plugins are unavailable")
+	}
+	return manager.AddMarketplace(ctx, input)
+}
+
+func (b *Backend) RefreshPluginMarketplace(
+	ctx context.Context,
+	name string,
+) (plugin.MarketplaceSummary, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.MarketplaceSummary{}, errors.New("plugins are unavailable")
+	}
+	return manager.RefreshMarketplace(ctx, name)
+}
+
+func (b *Backend) SetPluginMarketplaceEnabled(name string, enabled bool) error {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("plugins are unavailable")
+	}
+	return manager.SetMarketplaceEnabled(name, enabled)
+}
+
+func (b *Backend) RemovePluginMarketplace(name string) error {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("plugins are unavailable")
+	}
+	return manager.RemoveMarketplace(name)
+}
+
+func (b *Backend) BrowsePluginMarketplace(
+	ctx context.Context,
+	name string,
+) (plugin.MarketplaceCatalog, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.MarketplaceCatalog{}, errors.New("plugins are unavailable")
+	}
+	return manager.BrowseMarketplace(ctx, name)
+}
+
+func (b *Backend) PreviewMarketplacePlugin(
+	ctx context.Context,
+	marketplace, name string,
+) (plugin.MarketplacePluginPreview, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.MarketplacePluginPreview{}, errors.New("plugins are unavailable")
+	}
+	return manager.PreviewMarketplacePlugin(ctx, marketplace, name)
+}
+
+func (b *Backend) InstallPlugin(ctx context.Context, source string, replace bool) (plugin.Plugin, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.Plugin{}, errors.New("plugins are unavailable")
+	}
+	item, err := manager.Install(ctx, source, replace)
+	if err != nil {
+		return plugin.Plugin{}, err
+	}
+	if err := b.syncPluginMCP(); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+func (b *Backend) InstallMarketplacePlugin(
+	ctx context.Context,
+	marketplace, name string,
+	replace bool,
+) (plugin.Plugin, error) {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return plugin.Plugin{}, errors.New("plugins are unavailable")
+	}
+	item, err := manager.InstallMarketplace(ctx, marketplace, name, replace)
+	if err != nil {
+		return plugin.Plugin{}, err
+	}
+	if err := b.syncPluginMCP(); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+func (b *Backend) SetPluginEnabled(name string, enabled bool) error {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("plugins are unavailable")
+	}
+	if err := manager.SetEnabled(name, enabled); err != nil {
+		return err
+	}
+	return b.syncPluginMCP()
+}
+
+func (b *Backend) RemovePlugin(name string) error {
+	b.mu.RLock()
+	manager := b.plugins
+	b.mu.RUnlock()
+	if manager == nil {
+		return errors.New("plugins are unavailable")
+	}
+	if err := manager.Remove(name); err != nil {
+		return err
+	}
+	return b.syncPluginMCP()
+}
+
+func (b *Backend) syncPluginMCP() error {
+	b.mu.RLock()
+	plugins := b.plugins
+	mcpManager := b.mcp
+	b.mu.RUnlock()
+	if plugins == nil || mcpManager == nil {
+		return errors.New("plugin runtime is unavailable")
+	}
+	servers, err := plugins.MCPServers()
+	if err != nil {
+		return err
+	}
+	return mcpManager.SetPluginServers(servers)
 }
 
 func (b *Backend) MCPResources(ctx context.Context, serverID string) ([]*mcp.Resource, error) {
