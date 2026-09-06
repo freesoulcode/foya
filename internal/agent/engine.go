@@ -2360,6 +2360,14 @@ func (e *Engine) toolDefsForSession(
 	activeDeferred map[string]bool,
 ) []provider.ToolDef {
 	defs := e.tools.SpecsFor(activeDeferred)
+	policy, hasWorkflowPolicy := e.workflowPolicyForSession(sessionID)
+	if hasWorkflowPolicy {
+		for _, name := range policy.ExtraTools {
+			if candidate, ok := e.tools.Get(name); ok {
+				defs = appendToolDef(defs, candidate)
+			}
+		}
+	}
 	if e.sessions != nil {
 		s, ok := e.sessions.Get(sessionID)
 		if ok && s.AllowedTools != nil {
@@ -2376,10 +2384,30 @@ func (e *Engine) toolDefsForSession(
 			defs = filtered
 		}
 	}
-	if policy, ok := e.workflowPolicyForSession(sessionID); ok {
+	if hasWorkflowPolicy {
 		return filterToolDefs(defs, policy.AllowedTools)
 	}
 	return defs
+}
+
+func appendToolDef(defs []provider.ToolDef, candidate tool.Tool) []provider.ToolDef {
+	for _, def := range defs {
+		if def.Function.Name == candidate.Name() {
+			return defs
+		}
+	}
+	parameters := json.RawMessage(candidate.Spec())
+	if len(parameters) == 0 {
+		parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return append(defs, provider.ToolDef{
+		Type: "function",
+		Function: provider.FunctionDef{
+			Name:        candidate.Name(),
+			Description: candidate.Description(),
+			Parameters:  parameters,
+		},
+	})
 }
 
 func (e *Engine) ensureHistoryResultToolDef(
@@ -2398,18 +2426,7 @@ func (e *Engine) ensureHistoryResultToolDef(
 	if !ok {
 		return defs
 	}
-	parameters := json.RawMessage(historyTool.Spec())
-	if len(parameters) == 0 {
-		parameters = json.RawMessage(`{"type":"object","properties":{}}`)
-	}
-	return append(defs, provider.ToolDef{
-		Type: "function",
-		Function: provider.FunctionDef{
-			Name:        historyTool.Name(),
-			Description: historyTool.Description(),
-			Parameters:  parameters,
-		},
-	})
+	return appendToolDef(defs, historyTool)
 }
 
 func messagesContainToolResultReference(messages []message.Message) bool {

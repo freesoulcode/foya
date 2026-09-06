@@ -213,7 +213,9 @@ const draftCommands: CommandInfo[] = [
   { ref: "builtin:goal", name: "goal", description: "启动 Goal 工作流", scope: "builtin", kind: "workflow", builtin: true },
 ];
 const availableCommands = computed(() =>
-  props.hasSession ? sessionCommands.value : draftCommands
+  (props.hasSession ? sessionCommands.value : draftCommands).filter(
+    (command) => command.name !== "spec" || Boolean(props.projectId)
+  )
 );
 const slashCommands = computed<SlashOption[]>(() =>
   availableCommands.value.map((command) => ({

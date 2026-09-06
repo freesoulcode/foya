@@ -71,6 +71,7 @@ export interface ChatWorkspaceContext extends KernelBindings {
   onTurnSelect: (index: number) => void;
   onOpenDiff: (diff: string) => void;
   onOpenReviewFile: (path: string, diff: string) => void;
+  onOpenWorkflowFile: (path: string) => void;
   onViewToolInWorkbar: (toolCallId: string) => Promise<void>;
   onOpenLink: (url: string) => Promise<void>;
   onOpenBackgroundCommand: (command: BackgroundCommand) => void;

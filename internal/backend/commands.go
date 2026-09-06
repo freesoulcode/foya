@@ -90,7 +90,20 @@ func (b *Backend) SessionCommands(ctx context.Context, sessionID string) ([]comm
 	if !ok {
 		return nil, session.ErrNotFound
 	}
-	return b.Commands(ctx, "effective", s.ProjectID)
+	items, err := b.Commands(ctx, "effective", s.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if s.ProjectID != "" {
+		return items, nil
+	}
+	out := make([]command.Command, 0, len(items))
+	for _, item := range items {
+		if item.Ref != "builtin:spec" {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func (b *Backend) CreateCommand(
@@ -177,6 +190,9 @@ func (b *Backend) ExecuteCommand(
 		if err != nil {
 			return CommandExecution{}, err
 		}
+		if item.Name == string(workflow.KindSpec) && projectPath == "" {
+			return CommandExecution{}, errors.New("spec workflow requires a project")
+		}
 		record, err := manager.Start(sessionID, workflow.Kind(item.Name), args, projectPath)
 		if err != nil {
 			return CommandExecution{}, err
@@ -191,9 +207,7 @@ func (b *Backend) ExecuteCommand(
 		}
 		b.broadcastWorkflow(ctx, record)
 		prompt := args
-		if record.Kind == workflow.KindSpec {
-			prompt = "Create a concise, reviewable technical specification for this request. Do not implement code.\n\nRequest:\n" + args
-		} else if record.Kind == workflow.KindGoal {
+		if record.Kind == workflow.KindGoal {
 			prompt = "Define a durable, measurable goal with constraints and success criteria. Do not implement code.\n\nObjective:\n" + args
 		}
 		submission, err := b.SubmitInput(ctx, sessionID, message.UserInput{Text: prompt, Command: item.Name})
@@ -219,7 +233,7 @@ func (b *Backend) CompleteWorkflow(sessionID, content string) error {
 		if _, err := b.sessions.SetAgentMode(sessionID, session.AgentModePlanReady, session.AgentModeExecute); err != nil {
 			return err
 		}
-	} else {
+	} else if record.Kind == workflow.KindGoal {
 		record, err = manager.Approve(record.ID)
 		if err != nil {
 			return err
@@ -253,27 +267,59 @@ func (b *Backend) ApproveWorkflow(ctx context.Context, sessionID, id string) (Wo
 	if !ok || current.SessionID != sessionID {
 		return WorkflowApproval{}, workflow.ErrNotFound
 	}
-	if current.Kind != workflow.KindPlan || current.Status != workflow.StatusReady {
+	if (current.Kind != workflow.KindPlan && current.Kind != workflow.KindSpec) ||
+		current.Status != workflow.StatusReady {
 		return WorkflowApproval{}, workflow.ErrInvalidStatus
+	}
+	var specTasks []session.Task
+	if current.Kind == workflow.KindSpec {
+		specTasks, err = manager.SpecTaskItems(current.ID)
+		if err != nil {
+			return WorkflowApproval{}, err
+		}
 	}
 	record, err := manager.Approve(id)
 	if err != nil {
 		return WorkflowApproval{}, err
 	}
-	if _, err := b.sessions.SetAgentMode(sessionID, session.AgentModeExecute, ""); err != nil {
-		return WorkflowApproval{}, err
+	if record.Kind == workflow.KindPlan {
+		if _, err := b.sessions.SetAgentMode(sessionID, session.AgentModeExecute, ""); err != nil {
+			return WorkflowApproval{}, err
+		}
+	}
+	if record.Kind == workflow.KindSpec {
+		if _, err := b.sessions.SetTasks(sessionID, specTasks); err != nil {
+			return WorkflowApproval{}, err
+		}
 	}
 	if updated, ok := b.sessions.Get(sessionID); ok {
 		b.broadcastSession(ctx, updated)
 	}
 	b.broadcastWorkflow(ctx, record)
-	executionPrompt := fmt.Sprintf(
-		"Execute the approved plan at %s now. Do not create another plan and do not wait for another confirmation.",
-		record.Path,
-	)
+	executionPrompt := ""
+	if record.Kind == workflow.KindSpec {
+		executionPrompt = fmt.Sprintf(
+			`Implement the approved specification now.
+
+Read these files before making changes:
+- Specification: %s
+- Tasks: %s
+- Acceptance checklist: %s
+
+Use update_tasks to track the complete task list. Keep tasks.md checkboxes synchronized as tasks complete. Verify every checklist item and update checklist.md only when the criterion is actually satisfied. Do not create another specification or wait for another confirmation.`,
+			record.Artifacts.Spec,
+			record.Artifacts.Tasks,
+			record.Artifacts.Checklist,
+		)
+	} else {
+		executionPrompt = fmt.Sprintf(
+			"Execute the approved plan at %s now. Do not create another plan and do not wait for another confirmation.",
+			record.Path,
+		)
+	}
 	submission, err := b.SubmitInput(ctx, sessionID, message.UserInput{
 		Text:    executionPrompt,
-		Command: "plan",
+		Command: string(record.Kind),
 	})
 	if err != nil {
 		return WorkflowApproval{}, err

@@ -749,10 +749,17 @@ export interface WorkflowRecord {
   id: string;
   session_id: string;
   kind: "plan" | "spec" | "goal";
-  status: "active" | "ready" | "approved" | "closed";
+  status: "active" | "ready" | "approved" | "completed" | "closed";
   goal: string;
+  title?: string;
   content?: string;
   path?: string;
+  artifact_root?: string;
+  artifacts?: {
+    spec: string;
+    tasks: string;
+    checklist: string;
+  };
   revision: number;
   created_at: string;
   updated_at: string;

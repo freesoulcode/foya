@@ -252,6 +252,13 @@ function onOpenReviewFile(path: string, diff: string) {
   openWorkbarFile(projectPath.value, path, "diff", diff);
 }
 
+function onOpenWorkflowFile(path: string) {
+  const root = projectPath.value.replace(/\\/g, "/").replace(/\/+$/, "");
+  const target = path.replace(/\\/g, "/");
+  if (!root || !target.startsWith(`${root}/`)) return;
+  openWorkbarFile(projectPath.value, target.slice(root.length + 1));
+}
+
 function onOpenBackgroundCommand(command: BackgroundCommand) {
   openWorkbarBackgroundCommand(
     command.session_id,
@@ -509,6 +516,7 @@ const viewContext: ChatWorkspaceContext = {
   forkSession,
   onOpenDiff,
   onOpenReviewFile,
+  onOpenWorkflowFile,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,

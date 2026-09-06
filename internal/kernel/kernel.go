@@ -159,11 +159,32 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewAskUserTool(questions))
 	tools.Register(tool.NewReadTasksTool(sessions))
 	tools.Register(tool.NewHistoryReadToolResult(log))
+	tools.Register(workflow.NewSubmitSpecTool(workflows))
 	tools.Register(tool.NewUpdateTasksTool(sessions, func(ctx context.Context, s *session.Session) {
 		ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
 		seq, _ := log.Append(ctx, ev)
 		ev.Seq = seq
 		_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, ev)
+		record, changed, err := workflows.SyncSpecTaskProgress(s.ID, s.Tasks)
+		if err != nil {
+			failed := event.Event{
+				Kind:    event.KindError,
+				Session: s.ID,
+				Time:    time.Now(),
+				Payload: "同步 Spec 任务清单失败: " + err.Error(),
+			}
+			failed.Seq, _ = log.Append(ctx, failed)
+			_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, failed)
+		} else if changed {
+			updated := event.Event{
+				Kind:    event.KindWorkflowUpdated,
+				Session: s.ID,
+				Time:    time.Now(),
+				Payload: record,
+			}
+			updated.Seq, _ = log.Append(ctx, updated)
+			_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, updated)
+		}
 	}))
 	homeDir, _ := os.UserHomeDir()
 	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())

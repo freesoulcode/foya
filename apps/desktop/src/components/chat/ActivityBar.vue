@@ -4,6 +4,7 @@ import { useEventListener } from "@vueuse/core";
 import {
   CheckCheckIcon,
   ChevronsUpDownIcon,
+  FileTextIcon,
   FilesIcon,
   ListChecksIcon,
   ListOrderedIcon,
@@ -22,19 +23,21 @@ import type {
   BackgroundCommand,
   QueuedMessage,
   SessionTask,
+  WorkflowRecord,
 } from "@/lib/api";
 import type { PendingFileReview } from "@/composables/useKernel";
 import TaskProgress from "./TaskProgress.vue";
 import BackgroundCommandsPanel from "./BackgroundCommandsPanel.vue";
 import FileReviewBar from "./FileReviewBar.vue";
 import QueuedMessages from "./QueuedMessages.vue";
+import WorkflowPanel from "./WorkflowPanel.vue";
 
-type ActivityKind = "tasks" | "commands" | "files" | "queue";
+type ActivityKind = "workflow" | "tasks" | "commands" | "files" | "queue";
 
 interface ActivityItem {
   kind: ActivityKind;
   label: string;
-  count: string;
+  count?: string;
   icon: typeof ListChecksIcon;
   active: boolean;
 }
@@ -47,6 +50,8 @@ const props = withDefaults(
     review?: PendingFileReview;
     reviewDisabled?: boolean;
     queuedMessages: QueuedMessage[];
+    workflow?: WorkflowRecord | null;
+    canOpenWorkflowFiles?: boolean;
     streaming?: boolean;
   }>(),
   {
@@ -54,6 +59,8 @@ const props = withDefaults(
     taskRunning: false,
     review: undefined,
     reviewDisabled: false,
+    workflow: null,
+    canOpenWorkflowFiles: false,
     streaming: false,
   }
 );
@@ -69,6 +76,8 @@ const emit = defineEmits<{
   (event: "reorder-queued", id: string, position: number): void;
   (event: "dispatch-queued", id: string): void;
   (event: "delete-queued", id: string): void;
+  (event: "open-workflow-file", path: string): void;
+  (event: "approve-workflow"): void;
 }>();
 
 const open = ref(false);
@@ -82,6 +91,22 @@ const completedTasks = computed(
 
 const activities = computed<ActivityItem[]>(() => {
   const items: ActivityItem[] = [];
+  if (
+    props.workflow &&
+    (props.workflow.status === "active" || props.workflow.status === "ready")
+  ) {
+    const name = {
+      plan: "Plan",
+      spec: "Spec",
+      goal: "Goal",
+    }[props.workflow.kind];
+    items.push({
+      kind: "workflow",
+      label: `${name} ${props.workflow.status === "active" ? "生成中" : "待确认"}`,
+      icon: FileTextIcon,
+      active: props.workflow.status === "active",
+    });
+  }
   if (props.tasks.length > 0) {
     items.push({
       kind: "tasks",
@@ -190,6 +215,12 @@ function openFile(path: string, diff: string) {
           v-if="selected === 'tasks'"
           :tasks="tasks"
         />
+        <WorkflowPanel
+          v-else-if="selected === 'workflow' && workflow"
+          :workflow="workflow"
+          :can-open-files="canOpenWorkflowFiles"
+          @open-file="emit('open-workflow-file', $event)"
+        />
         <BackgroundCommandsPanel
           v-else-if="selected === 'commands'"
           :commands="runningCommands"
@@ -245,7 +276,7 @@ function openFile(path: string, diff: string) {
                 >
                   <component :is="activity.icon" class="size-4" />
                   <span
-                    v-if="activities.length > 1"
+                    v-if="activities.length > 1 && activity.count"
                     class="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-muted-foreground px-0.5 text-[8px] font-medium leading-3.5 text-background"
                   >
                     {{ activity.count }}
@@ -273,6 +304,21 @@ function openFile(path: string, diff: string) {
             </span>
             <ChevronsUpDownIcon class="size-4 shrink-0 text-muted-foreground" />
           </button>
+
+          <div
+            v-if="selected === 'workflow' && workflow?.status === 'ready'"
+            class="flex h-full shrink-0 items-center px-1.5"
+          >
+            <Button
+              type="button"
+              size="sm"
+              aria-label="确认并执行"
+              @click="emit('approve-workflow')"
+            >
+              <CheckCheckIcon class="size-4" />
+              <span class="hidden sm:inline">确认并执行</span>
+            </Button>
+          </div>
 
           <div
             v-if="selected === 'files'"

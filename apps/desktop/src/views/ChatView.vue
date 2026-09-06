@@ -5,7 +5,6 @@ import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import AskUserPanel from "@/components/chat/AskUserPanel.vue";
 import ActivityBar from "@/components/chat/ActivityBar.vue";
-import { Button } from "@/components/ui/button";
 import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
 
 const props = defineProps<{ workspace: ChatWorkspaceContext }>();
@@ -51,6 +50,7 @@ const {
   forkSession,
   onOpenDiff,
   onOpenReviewFile,
+  onOpenWorkflowFile,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,
@@ -135,6 +135,8 @@ function forkAtMessage(messageSeq: number) {
       :review="fileReview"
       :review-disabled="streaming || queuedMessages.length > 0"
       :queued-messages="queuedMessages"
+      :workflow="activeWorkflow"
+      :can-open-workflow-files="Boolean(projectPath)"
       :streaming="streaming"
       @stop-command="stopBackgroundCommand"
       @open-command="onOpenBackgroundCommand"
@@ -146,19 +148,9 @@ function forkAtMessage(messageSeq: number) {
       @reorder-queued="reorderQueuedMessage"
       @dispatch-queued="dispatchQueuedMessage"
       @delete-queued="deleteQueuedMessage"
+      @open-workflow-file="onOpenWorkflowFile"
+      @approve-workflow="approveWorkflow(activeId)"
     />
-    <div
-      v-if="activeWorkflow?.status === 'ready'"
-      class="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 border-x border-t border-border px-4 py-3"
-    >
-      <div class="min-w-0">
-        <p class="text-sm font-medium">{{ activeWorkflow.kind }} 已就绪</p>
-        <p class="truncate text-xs text-muted-foreground">{{ activeWorkflow.goal }}</p>
-      </div>
-      <Button size="sm" @click="approveWorkflow(activeId)">
-        批准并执行
-      </Button>
-    </div>
     <AskUserPanel
       :batch="activeQuestionBatch"
       @expanded-change="updateQuestionPanelExpanded"
