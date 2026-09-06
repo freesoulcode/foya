@@ -136,6 +136,47 @@ func TestBashFailsWhenExecutionBoundaryIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestBashRejectsPermanentDeletionCommands(t *testing.T) {
+	for _, command := range []string{
+		"rm -rf build",
+		"/bin/rm file.txt",
+		"find . -name '*.tmp' -delete",
+		"git clean -fd",
+		"Remove-Item -Recurse build",
+	} {
+		t.Run(command, func(t *testing.T) {
+			runner := &recordingRunner{}
+			instance := NewBashTool(allowGateway{}, runner)
+			result, err := instance.Run(context.Background(), Call{
+				Input: []byte(`{"command":` + quotedJSON(command) + `}`),
+			})
+			if err != nil || !result.IsError ||
+				!strings.Contains(result.Content[0].Text, "delete tool") {
+				t.Fatalf("result = %#v, err = %v", result, err)
+			}
+			if len(runner.calls) != 0 {
+				t.Fatalf("runner received permanent deletion command: %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestBashAllowsPermanentDeletionInFullAccess(t *testing.T) {
+	runner := &recordingRunner{}
+	instance := NewBashTool(allowGateway{}, runner)
+	ctx := approval.WithMode(context.Background(), approval.ModeFullAccess)
+
+	result, err := instance.Run(ctx, Call{
+		Input: []byte(`{"command":"rm -rf build"}`),
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.calls))
+	}
+}
+
 func onlyRunnerCall(t *testing.T, runner *recordingRunner) runnerCall {
 	t.Helper()
 	if len(runner.calls) != 1 {

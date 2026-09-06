@@ -107,7 +107,7 @@ func WorkerDefinition() Definition {
 		"worker",
 		"Complete an implementation task, including code changes and verification.",
 		[]string{
-			"read", "bash", "write", "edit",
+			"read", "bash", "write", "edit", "delete",
 			"skill_search", "skill_load", "skill_read_resource",
 		},
 		"Complete the delegated implementation task end to end. Inspect relevant code before editing, keep changes scoped, and run focused verification. Other agents may share the workspace, so do not revert changes you did not make. Do not ask the user questions or delegate to another agent.",

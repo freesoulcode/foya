@@ -69,6 +69,8 @@ const actionLabel = computed(() => {
       return "执行命令";
     case "write":
       return "写入文件";
+    case "delete":
+      return "将文件移入废纸篓";
     case "read":
       return "读取文件";
     case "network":

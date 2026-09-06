@@ -60,7 +60,7 @@ func DefaultSkillAvailableTools() map[string]bool {
 		"browser_navigate", "browser_snapshot", "browser_click",
 		"browser_type", "browser_press_key", "browser_wait",
 		"browser_scroll", "browser_extract", "browser_screenshot",
-		"edit", "memory_remember", "read", "rule_load",
+		"delete", "edit", "memory_remember", "read", "rule_load",
 		"skill_search", "skill_load", "skill_read_resource",
 		"tool_search", "web_search", "web_fetch", "write",
 	)

@@ -62,7 +62,7 @@ type Request struct {
 	Session          string `json:"session"`
 	ExecutionSession string `json:"execution_session,omitempty"`
 	ToolName         string `json:"tool_name"`
-	Action           string `json:"action"` // read / write / execute / network
+	Action           string `json:"action"` // read / write / delete / execute / network
 	Detail           string `json:"detail"`
 	Resource         string `json:"resource,omitempty"`
 	Scope            string `json:"scope,omitempty"`

@@ -50,9 +50,11 @@ func NewBashToolWithManager(
 	}
 }
 
-func (t *bashTool) Name() string        { return "bash" }
-func (t *bashTool) Exposure() Exposure  { return ExposureDirect }
-func (t *bashTool) Description() string { return "Execute a shell command and return its output." }
+func (t *bashTool) Name() string       { return "bash" }
+func (t *bashTool) Exposure() Exposure { return ExposureDirect }
+func (t *bashTool) Description() string {
+	return "Execute a shell command and return its output. Never use rm or another permanent deletion command; use the delete tool so items go to the system Trash or Recycle Bin."
+}
 
 func (t *bashTool) Spec() []byte {
 	return []byte(`{
@@ -84,6 +86,10 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 	if strings.TrimSpace(params.Command) == "" {
 		return errResult("command is empty"), nil
+	}
+	if approval.ModeFromContext(ctx) != approval.ModeFullAccess &&
+		containsPermanentDeletion(params.Command) {
+		return errResult("permanent shell deletion is disabled; use the delete tool to move the path to the system Trash or Recycle Bin"), nil
 	}
 	if params.TimeoutSeconds < 0 || params.TimeoutSeconds > 86400 {
 		return errResult("timeout_seconds must be between 0 and 86400"), nil
@@ -206,6 +212,37 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 		Content: []ContentPart{{Type: "text", Text: output}},
 		IsError: runErr != nil,
 	}, nil
+}
+
+func containsPermanentDeletion(command string) bool {
+	normalized := strings.NewReplacer(
+		"\n", " ",
+		"\r", " ",
+		";", " ",
+		"&&", " ",
+		"||", " ",
+		"|", " ",
+		"(", " ",
+		")", " ",
+	).Replace(command)
+	fields := strings.Fields(normalized)
+	for index, field := range fields {
+		token := strings.ToLower(strings.Trim(field, `"'`))
+		if slash := strings.LastIndexAny(token, `/\`); slash >= 0 {
+			token = token[slash+1:]
+		}
+		switch token {
+		case "rm", "rmdir", "unlink", "remove-item", "del", "erase", "shred":
+			return true
+		case "-delete":
+			return index > 0
+		case "clean":
+			if index > 0 && strings.EqualFold(strings.Trim(fields[index-1], `"'`), "git") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type bashProcessParams struct {

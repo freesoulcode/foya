@@ -62,7 +62,7 @@ func TestBuiltinDefinitions(t *testing.T) {
 		"explorer":   {"read", "skill_search", "skill_load", "skill_read_resource"},
 		"researcher": {"web_search", "web_fetch", "skill_search", "skill_load", "skill_read_resource"},
 		"worker": {
-			"read", "bash", "write", "edit",
+			"read", "bash", "write", "edit", "delete",
 			"skill_search", "skill_load", "skill_read_resource",
 		},
 	}

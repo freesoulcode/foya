@@ -7,6 +7,7 @@ import {
   FilePenLineIcon,
   FilePlusIcon,
   FileTextIcon,
+  Trash2Icon,
   GlobeIcon,
   ListChecksIcon,
   LoaderCircleIcon,
@@ -91,6 +92,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   read: { icon: FileTextIcon, queued: "等待读取文件", running: "正在读取文件", done: "已读取文件" },
   write: { icon: FilePlusIcon, queued: "等待写入文件", running: "正在写入文件", done: "已写入文件" },
   edit: { icon: FilePenLineIcon, queued: "等待编辑文件", running: "正在编辑文件", done: "已编辑文件" },
+  delete: { icon: Trash2Icon, queued: "等待移入废纸篓", running: "正在移入废纸篓", done: "已移入废纸篓" },
   search: { icon: SearchIcon, queued: "等待搜索", running: "正在搜索", done: "已搜索" },
   web_search: { icon: GlobeIcon, queued: "等待联网搜索", running: "正在联网搜索", done: "已联网搜索" },
   web_fetch: { icon: GlobeIcon, queued: "等待读取网页", running: "正在读取网页", done: "已读取网页" },
@@ -118,7 +120,7 @@ const errorCount = computed(
 );
 
 function actionSummary(tools: ToolCallView[]): string {
-  let filesEdited = 0;
+  let filesChanged = 0;
   let filesRead = 0;
   let commands = 0;
   let webSearches = 0;
@@ -127,7 +129,7 @@ function actionSummary(tools: ToolCallView[]): string {
   let others = 0;
 
   for (const tool of tools) {
-    if (tool.name === "write" || tool.name === "edit") filesEdited++;
+    if (tool.name === "write" || tool.name === "edit" || tool.name === "delete") filesChanged++;
     else if (tool.name === "read") filesRead++;
     else if (tool.name === "bash") commands++;
     else if (tool.name === "web_search") webSearches++;
@@ -144,7 +146,7 @@ function actionSummary(tools: ToolCallView[]): string {
   }
 
   const parts: string[] = [];
-  if (filesEdited > 0) parts.push(`编辑 ${filesEdited} 个文件`);
+  if (filesChanged > 0) parts.push(`更改 ${filesChanged} 个文件`);
   if (filesRead > 0) parts.push(`读取 ${filesRead} 个文件`);
   if (commands > 0) parts.push(`执行 ${commands} 条命令`);
   if (webSearches > 0) parts.push(`搜索 ${webSearches} 次`);
@@ -187,7 +189,11 @@ function isAgentTool(tool: ToolCallView): boolean {
 }
 
 function isFileChangeTool(tool: ToolCallView): boolean {
-  return tool.name === "write" || tool.name === "edit";
+  return tool.name === "write" || tool.name === "edit" || tool.name === "delete";
+}
+
+function showRawDetails(tool: ToolCallView): boolean {
+  return !isFileChangeTool(tool) || tool.status === "error";
 }
 
 function toolLabel(tool: ToolCallView): string {
@@ -199,7 +205,7 @@ function toolLabel(tool: ToolCallView): string {
   if (tool.name === "bash" && tool.output?.includes('"running_in_background"')) {
     return "命令已转到后台";
   }
-  if (tool.diff) return "已编辑 1 个文件";
+  if (tool.diff && tool.name !== "delete") return "已编辑 1 个文件";
   return meta.done + agentSuffix;
 }
 
@@ -317,11 +323,11 @@ function formatInput(input: string): string {
               :run="tool.agent_run"
               :messages="tool.child_messages"
             />
-            <div v-if="tool.input" class="mb-2">
+            <div v-if="showRawDetails(tool) && tool.input" class="mb-2">
               <div class="mb-1 text-[10px] uppercase text-muted-foreground">参数</div>
               <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(tool.input) }}</pre>
             </div>
-            <div v-if="tool.output">
+            <div v-if="showRawDetails(tool) && tool.output">
               <div class="mb-1 text-[10px] uppercase text-muted-foreground">输出</div>
               <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ tool.output }}</pre>
             </div>

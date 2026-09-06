@@ -567,7 +567,8 @@ async function loadFile() {
   } catch (cause) {
     if (request === fileRequest) {
       content.value = "";
-      fileError.value = String(cause);
+      fileError.value =
+        props.selectedMode === "diff" && selectedDiff.value ? "" : String(cause);
     }
   } finally {
     if (request === fileRequest) loadingFile.value = false;

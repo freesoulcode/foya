@@ -156,6 +156,7 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewReadTool(gw))
 	tools.Register(tool.NewWriteTool(gw, executionRunner))
 	tools.Register(tool.NewEditTool(gw, executionRunner))
+	tools.Register(tool.NewDeleteTool(gw))
 	tools.Register(tool.NewAskUserTool(questions))
 	tools.Register(tool.NewReadTasksTool(sessions))
 	tools.Register(tool.NewHistoryReadToolResult(log))
