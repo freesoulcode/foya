@@ -42,11 +42,13 @@ pub(crate) async fn update_session(
 pub(crate) async fn submit_turn(
     session_id: String,
     message: String,
+    skill_ref: Option<String>,
     attachments: Option<Vec<serde_json::Value>>,
     browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
+        "skill_ref": skill_ref.unwrap_or_default(),
         "attachments": attachments.unwrap_or_default(),
         "browser_elements": browser_elements.unwrap_or_default(),
     })
@@ -180,11 +182,13 @@ pub(crate) async fn list_queued_messages(session_id: String) -> Result<String, S
 pub(crate) async fn enqueue_message(
     session_id: String,
     message: String,
+    skill_ref: Option<String>,
     attachments: Option<Vec<serde_json::Value>>,
     browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
+        "skill_ref": skill_ref.unwrap_or_default(),
         "attachments": attachments.unwrap_or_default(),
         "browser_elements": browser_elements.unwrap_or_default(),
     })

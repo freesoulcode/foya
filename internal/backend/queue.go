@@ -51,7 +51,7 @@ var (
 	// ErrFileRewindFailed indicates that a verified file could not be restored.
 	ErrFileRewindFailed = errors.New("file rewind failed")
 	// ErrRewindContextUnsupported avoids silently dropping non-text user context.
-	ErrRewindContextUnsupported = errors.New("messages with attachments, browser context or commands cannot be moved back to composer")
+	ErrRewindContextUnsupported = errors.New("messages with attachments, browser context, commands or selected skills cannot be moved back to composer")
 	// ErrImageInputUnsupported rejects image input unless the selected connection
 	// explicitly declares visual input support.
 	ErrImageInputUnsupported = errors.New("selected model does not support image input")
@@ -150,6 +150,11 @@ func (b *Backend) SubmitInput(
 	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
 		return Submission{}, ErrEmptyMessage
 	}
+	skillRef, err := b.normalizeSelectedSkill(ctx, sessionID, input.SkillRef)
+	if err != nil {
+		return Submission{}, err
+	}
+	input.SkillRef = skillRef
 	browserElements, err := normalizeBrowserElements(input.BrowserElements)
 	if err != nil {
 		return Submission{}, err
@@ -300,6 +305,11 @@ func (b *Backend) EnqueueInput(
 	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
 		return queue.Message{}, ErrEmptyMessage
 	}
+	skillRef, err := b.normalizeSelectedSkill(ctx, sessionID, input.SkillRef)
+	if err != nil {
+		return queue.Message{}, err
+	}
+	input.SkillRef = skillRef
 	browserElements, err := normalizeBrowserElements(input.BrowserElements)
 	if err != nil {
 		return queue.Message{}, err
@@ -581,6 +591,7 @@ func (b *Backend) RewindTurn(
 			return RewindSubmission{}, ErrActiveUserMessageNotFound
 		}
 		if item.Command != "" ||
+			item.SkillRef != "" ||
 			len(item.Attachments) > 0 ||
 			len(item.BrowserElements) > 0 {
 			return RewindSubmission{}, ErrRewindContextUnsupported
@@ -812,6 +823,7 @@ func queueInput(item queue.Message) message.UserInput {
 	return message.UserInput{
 		Text:            item.Text,
 		Command:         item.Command,
+		SkillRef:        item.SkillRef,
 		Attachments:     append([]message.AttachmentRef(nil), item.Attachments...),
 		BrowserElements: append([]message.BrowserElement(nil), item.BrowserElements...),
 	}

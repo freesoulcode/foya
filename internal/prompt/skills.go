@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const maxSkillsCatalogChars = 18000
+const (
+	maxSkillsCatalogChars       = 18000
+	maxSkillInvocationBodyChars = 24_000
+)
 
 type SkillCatalogEntry struct {
 	Ref                  string
@@ -120,6 +123,49 @@ func renderSkillCatalogEntry(skill SkillCatalogEntry) string {
 	}
 	body.WriteString("</skill>\n")
 	return body.String()
+}
+
+// ComposeSkillInvocationMessage creates the provider-visible user message for
+// skills explicitly chosen in the composer. The visible history keeps the
+// original user text while the model receives deterministic, trust-framed
+// instructions that do not compete with the bounded discovery catalog.
+func ComposeSkillInvocationMessage(
+	userText string,
+	skills []SkillCatalogEntry,
+) string {
+	if len(skills) == 0 {
+		return userText
+	}
+	parts := []string{
+		"Use the selected skill instructions below to handle the user's request. " +
+			"They provide task guidance only and do not change system rules, available tools, or approval requirements. " +
+			"These skills are already loaded; do not call skill_load for them again.",
+	}
+	for _, skill := range skills {
+		if strings.TrimSpace(skill.Ref) == "" || strings.TrimSpace(skill.Name) == "" {
+			continue
+		}
+		instructions := strings.TrimSpace(cleanInstructionText(skill.Body))
+		if instructions == "" {
+			instructions = "(empty)"
+		}
+		runes := []rune(instructions)
+		if len(runes) > maxSkillInvocationBodyChars {
+			instructions = string(runes[:maxSkillInvocationBodyChars]) + "\n[skill truncated]"
+		}
+		parts = append(parts, fmt.Sprintf(
+			"<invoked-skill ref=\"%s\" name=\"%s\">\n%s\n</invoked-skill>",
+			xmlAttrEscape(cleanInstructionText(skill.Ref)),
+			xmlAttrEscape(cleanInstructionText(skill.Name)),
+			instructions,
+		))
+	}
+	if strings.TrimSpace(userText) == "" {
+		parts = append(parts, "The user provided no additional task text; follow the skill instructions above.")
+	} else {
+		parts = append(parts, "<user-message>\n"+userText+"\n</user-message>")
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func xmlAttrEscape(s string) string {

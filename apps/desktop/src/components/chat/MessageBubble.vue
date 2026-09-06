@@ -11,6 +11,7 @@ import {
   BrainIcon,
   FileTextIcon,
   MousePointer2Icon,
+  PackageIcon,
   RouteIcon,
   TargetIcon,
 } from "@lucide/vue";
@@ -225,6 +226,7 @@ const copiedAll = ref(false);
 const rewindUnsupported = computed(
   () =>
     !!props.message.command ||
+    !!props.message.skill_ref ||
     !!props.message.attachments?.length ||
     !!props.message.browser_elements?.length
 );
@@ -332,7 +334,7 @@ function rewindMessage() {
           :class="
             cn(
               'flex items-start gap-1.5',
-              (message.command || message.browser_elements?.length) && 'min-w-0'
+              (message.command || message.skill_ref || message.browser_elements?.length) && 'min-w-0'
             )
           "
         >
@@ -342,6 +344,16 @@ function rewindMessage() {
           >
             <component :is="commandIcon" class="size-3.5" />
             {{ message.command[0].toUpperCase() + message.command.slice(1) }}
+          </span>
+          <span
+            v-if="message.skill_ref"
+            class="mt-0.5 inline-flex max-w-48 shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
+            :title="message.skill_ref"
+          >
+            <PackageIcon class="size-3.5 shrink-0" />
+            <span class="truncate">
+              {{ message.skill_ref.split(':').slice(-1)[0] }}
+            </span>
           </span>
           <span
             v-for="element in message.browser_elements"
@@ -356,7 +368,7 @@ function rewindMessage() {
             :class="
               cn(
                 'min-w-0',
-                (message.command || message.browser_elements?.length) && 'flex-1'
+                (message.command || message.skill_ref || message.browser_elements?.length) && 'flex-1'
               )
             "
           >

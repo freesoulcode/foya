@@ -21,6 +21,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 	"github.com/freesoulcode/foya/internal/queue"
 	"github.com/freesoulcode/foya/internal/session"
+	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -131,6 +132,35 @@ func TestEnqueueInputPreservesCanonicalAttachment(t *testing.T) {
 	}
 	if err := be.DeleteArtifact(context.Background(), sessionID, ref.ID); !errors.Is(err, artifact.ErrCommitted) {
 		t.Fatalf("delete queued attachment error = %v", err)
+	}
+}
+
+func TestEnqueueInputPreservesCanonicalSelectedSkill(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	skills, err := skill.NewManager(t.TempDir(), t.TempDir(), []skill.Skill{{
+		Name: "writer",
+		Body: "Write clearly.",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.SetCapabilityManagers(skills, nil, nil)
+
+	item, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		Text:     "Draft the release notes.",
+		SkillRef: "writer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.SkillRef != "builtin:writer" {
+		t.Fatalf("selected skill ref = %q, want builtin:writer", item.SkillRef)
+	}
+	if _, err := be.EnqueueInput(context.Background(), sessionID, message.UserInput{
+		Text:     "Draft the release notes.",
+		SkillRef: "missing",
+	}); err == nil {
+		t.Fatal("missing selected skill should be rejected")
 	}
 }
 

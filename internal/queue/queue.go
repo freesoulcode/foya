@@ -15,6 +15,7 @@ type Message struct {
 	SessionID       string                   `json:"session_id"`
 	Text            string                   `json:"text"`
 	Command         string                   `json:"command,omitempty"`
+	SkillRef        string                   `json:"skill_ref,omitempty"`
 	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 	Position        int                      `json:"position"`
@@ -35,6 +36,7 @@ func NewMessage(sessionID string, input message.UserInput, position int) Message
 		SessionID:       sessionID,
 		Text:            input.Text,
 		Command:         input.Command,
+		SkillRef:        input.SkillRef,
 		Attachments:     append([]message.AttachmentRef(nil), input.Attachments...),
 		BrowserElements: append([]message.BrowserElement(nil), input.BrowserElements...),
 		Position:        position,

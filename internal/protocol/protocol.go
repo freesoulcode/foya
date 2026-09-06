@@ -36,6 +36,7 @@ type BrowserActionResultRequest struct {
 type SubmitTurnRequest struct {
 	Session         string                   `json:"session"`
 	Message         string                   `json:"message"`
+	SkillRef        string                   `json:"skill_ref,omitempty"`
 	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 }
@@ -121,6 +122,7 @@ type ResolveFileReviewRequest struct {
 // QueueMessageRequest 显式向待发送队列追加消息。
 type QueueMessageRequest struct {
 	Message         string                   `json:"message"`
+	SkillRef        string                   `json:"skill_ref,omitempty"`
 	Attachments     []message.AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 }

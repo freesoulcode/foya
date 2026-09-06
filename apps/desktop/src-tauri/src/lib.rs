@@ -121,6 +121,7 @@ pub fn run() {
             get_default_models,
             update_default_models,
             list_skills,
+            list_available_skills,
             list_agents,
             get_agent_limits,
             update_agent_limits,

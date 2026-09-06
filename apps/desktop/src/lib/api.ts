@@ -70,6 +70,7 @@ export interface QueuedMessage {
   id: string;
   session_id: string;
   text: string;
+  skill_ref?: string;
   attachments?: AttachmentRef[];
   browser_elements?: BrowserElementSelection[];
   position: number;
@@ -449,6 +450,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   command?: string;
+  skill_ref?: string;
   attachments?: AttachmentRef[];
   browser_elements?: BrowserElementSelection[];
   event_seq?: number;
@@ -1083,11 +1085,13 @@ export const api = {
     sessionId: string,
     message: string,
     attachments: AttachmentRef[] = [],
-    browserElements: BrowserElementSelection[] = []
+    browserElements: BrowserElementSelection[] = [],
+    skillRef = ""
   ) =>
     invoke<string>("submit_turn", {
       sessionId,
       message,
+      skillRef,
       attachments,
       browserElements,
     }).then(
@@ -1245,11 +1249,13 @@ export const api = {
     sessionId: string,
     message: string,
     attachments: AttachmentRef[] = [],
-    browserElements: BrowserElementSelection[] = []
+    browserElements: BrowserElementSelection[] = [],
+    skillRef = ""
   ) =>
     invoke<string>("enqueue_message", {
       sessionId,
       message,
+      skillRef,
       attachments,
       browserElements,
     }).then(
@@ -1347,6 +1353,11 @@ export const api = {
 
   listSkills: () =>
     invoke<string>("list_skills").then(
+      (r) => (JSON.parse(r) as SkillInfo[]) ?? []
+    ),
+
+  listAvailableSkills: (projectId = "") =>
+    invoke<string>("list_available_skills", { projectId }).then(
       (r) => (JSON.parse(r) as SkillInfo[]) ?? []
     ),
 

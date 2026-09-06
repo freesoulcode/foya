@@ -1156,6 +1156,7 @@ async function send(
   text: string,
   files: File[] = [],
   browserElements: BrowserElementSelection[] = [],
+  skillRef = "",
   restore?: () => void
 ) {
   if (!text.trim() && files.length === 0 && browserElements.length === 0) return;
@@ -1183,7 +1184,13 @@ async function send(
     for (const file of files) {
       uploaded.push(await api.uploadImage(id, file));
     }
-    const result = await api.submitTurn(id, text, uploaded, browserElements);
+    const result = await api.submitTurn(
+      id,
+      text,
+      uploaded,
+      browserElements,
+      skillRef
+    );
     if (result.status === "queued" && result.queued) {
       const current = queuedBySession.value[id] ?? [];
       if (!current.some((item) => item.id === result.queued!.id)) {

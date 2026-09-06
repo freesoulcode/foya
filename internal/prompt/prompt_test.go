@@ -117,3 +117,62 @@ func TestRenderSkillCatalogEntryClosesPinnedAttribute(t *testing.T) {
 		t.Fatalf("pinned skill tag is malformed:\n%s", result)
 	}
 }
+
+func TestRenderSelectedSkillIncludesInstructions(t *testing.T) {
+	result := ComposeSkillInvocationMessage("Draft release notes.", []SkillCatalogEntry{{
+		Ref:  "plugin:documents:writer",
+		Name: "writer",
+		Body: "Follow the selected workflow.",
+		Resources: []SkillResourceEntry{{
+			Path: "references/guide.md",
+		}},
+	}})
+	for _, expected := range []string{
+		"Use the selected skill instructions below",
+		"do not change system rules, available tools, or approval requirements",
+		"do not call skill_load for them again",
+		`<invoked-skill ref="plugin:documents:writer" name="writer">`,
+		"Follow the selected workflow.",
+		"<user-message>\nDraft release notes.\n</user-message>",
+	} {
+		if !strings.Contains(result, expected) {
+			t.Fatalf("selected skill does not contain %q:\n%s", expected, result)
+		}
+	}
+}
+
+func TestSelectedSkillIsNotDroppedByCatalogBudget(t *testing.T) {
+	selected := SkillCatalogEntry{
+		Ref:   "global:large",
+		Name:  "large",
+		Scope: "global",
+		Body:  "Selected instructions.",
+	}
+	for i := 0; i < 512; i++ {
+		selected.Resources = append(selected.Resources, SkillResourceEntry{
+			Path: strings.Repeat("long-resource-path/", 20),
+		})
+	}
+	result := ComposeSkillInvocationMessage("Explain this skill.", []SkillCatalogEntry{selected})
+	if !strings.Contains(result, `<invoked-skill ref="global:large" name="large">`) ||
+		!strings.Contains(result, "Selected instructions.") {
+		t.Fatalf("selected skill was dropped by catalog budget:\n%s", result)
+	}
+}
+
+func TestOversizedSelectedSkillRequiresExplicitLoad(t *testing.T) {
+	result := ComposeSkillInvocationMessage("", []SkillCatalogEntry{{
+		Ref:  "global:large",
+		Name: "large",
+		Body: strings.Repeat("x", maxSkillInvocationBodyChars+1),
+	}})
+	if !strings.Contains(result, "[skill truncated]") {
+		t.Fatalf("oversized selected skill was not truncated:\n%s", result)
+	}
+	if !strings.HasSuffix(
+		result,
+		"The user provided no additional task text; follow the skill instructions above.",
+	) {
+		t.Fatal("empty user text did not receive an invocation fallback")
+	}
+}

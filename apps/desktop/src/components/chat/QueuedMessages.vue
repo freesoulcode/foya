@@ -5,6 +5,7 @@ import {
   GripVerticalIcon,
   ImageIcon,
   MousePointer2Icon,
+  PackageIcon,
   PencilIcon,
   SendIcon,
   Trash2Icon,
@@ -217,6 +218,16 @@ watch(
               >
                 {{ item.text }}
               </p>
+              <div
+                v-if="item.skill_ref"
+                class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
+                :title="item.skill_ref"
+              >
+                <PackageIcon class="size-3 shrink-0" />
+                <span class="truncate">
+                  {{ item.skill_ref.split(':').slice(-1)[0] }}
+                </span>
+              </div>
               <div
                 v-if="item.attachments?.length"
                 class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"

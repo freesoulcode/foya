@@ -15,6 +15,7 @@ import {
   RefreshCwIcon,
   PaperclipIcon,
   FileTextIcon,
+  PackageIcon,
   RouteIcon,
   TargetIcon,
 } from "@lucide/vue";
@@ -39,6 +40,7 @@ import {
   type ContextUsage as ContextUsageData,
   type CommandInfo,
   type ProjectInfo,
+  type SkillInfo,
   type BrowserElementSelection,
   api,
 } from "@/lib/api";
@@ -102,6 +104,7 @@ const emit = defineEmits<{
     text: string,
     files: File[],
     browserElements: BrowserElementSelection[],
+    skillRef: string,
     restore: () => void
   ): void;
   (e: "command", name: string, args: string): void;
@@ -122,6 +125,7 @@ const emit = defineEmits<{
 
 const input = ref("");
 const editorRef = ref<InstanceType<typeof InlineComposerEditor> | null>(null);
+const commandMenuRef = ref<HTMLElement | null>(null);
 const inputFocused = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachmentError = ref("");
@@ -184,14 +188,19 @@ function onDrop(event: DragEvent) {
 
 onUnmounted(clearPendingImages);
 
-interface SlashCommand {
+interface SlashOption {
+  kind: "command" | "skill";
+  ref: string;
   value: string;
   label: string;
   description: string;
+  scope?: SkillInfo["scope"];
 }
 
 const sessionCommands = ref<CommandInfo[]>([]);
+const availableSkills = ref<SkillInfo[]>([]);
 const selectedSlashCommand = ref<CommandInfo | null>(null);
+const selectedSkill = ref<SkillInfo | null>(null);
 const commandError = ref("");
 const selectedCommandIndex = ref(0);
 const commandMenuDismissed = ref(false);
@@ -206,12 +215,26 @@ const draftCommands: CommandInfo[] = [
 const availableCommands = computed(() =>
   props.hasSession ? sessionCommands.value : draftCommands
 );
-const slashCommands = computed<SlashCommand[]>(() =>
+const slashCommands = computed<SlashOption[]>(() =>
   availableCommands.value.map((command) => ({
+    kind: "command",
+    ref: command.ref,
     value: `/${command.name}`,
     label: command.name[0].toUpperCase() + command.name.slice(1),
     description: commandDescription(command),
   }))
+);
+const slashSkills = computed<SlashOption[]>(() =>
+  availableSkills.value
+    .filter((skill) => skill.enabled)
+    .map((skill) => ({
+      kind: "skill",
+      ref: skill.ref,
+      value: `/${skill.name}`,
+      label: skill.name,
+      description: skill.description || "Agent Skill",
+      scope: skill.scope,
+    }))
 );
 
 function commandDescription(command: CommandInfo): string {
@@ -220,26 +243,57 @@ function commandDescription(command: CommandInfo): string {
   if (command.name === "goal") return "定义持久化的完成目标";
   return command.description || "自定义 Prompt 命令";
 }
-const matchingCommands = computed(() => {
+
+function skillScopeLabel(scope?: SkillInfo["scope"]): string {
+  return {
+    builtin: "系统",
+    plugin: "插件",
+    global: "全局",
+    user: "个人",
+    project: "项目",
+  }[scope ?? "global"];
+}
+const matchingOptions = computed(() => {
   const query = commandToken.value.toLowerCase();
   if (query !== commandQuery.value.toLowerCase()) return [];
   if (props.streaming || !/^\/\S*$/.test(query)) return [];
-  return slashCommands.value.filter(
-    (command) =>
-      command.value.startsWith(query) ||
-      command.label.toLowerCase().includes(query.slice(1))
+  const term = query.slice(1);
+  return [...slashCommands.value, ...slashSkills.value].filter(
+    (option) =>
+      option.value.toLowerCase().startsWith(query) ||
+      option.label.toLowerCase().includes(term) ||
+      option.description.toLowerCase().includes(term) ||
+      option.ref.toLowerCase().includes(term)
   );
 });
+const matchingGroups = computed(() =>
+  (["command", "skill"] as const)
+    .map((kind) => ({
+      kind,
+      label: kind === "command" ? "命令" : "技能",
+      items: matchingOptions.value
+        .map((option, index) => ({ option, index }))
+        .filter((item) => item.option.kind === kind),
+    }))
+    .filter((group) => group.items.length > 0)
+);
 const commandMenuOpen = computed(
   () =>
     inputFocused.value &&
     !props.disabled &&
     !commandMenuDismissed.value &&
-    matchingCommands.value.length > 0
+    matchingOptions.value.length > 0
 );
 const activeCommand = computed(
-  () => matchingCommands.value[selectedCommandIndex.value]
+  () => matchingOptions.value[selectedCommandIndex.value]
 );
+
+watch(selectedCommandIndex, async (index) => {
+  await nextTick();
+  commandMenuRef.value
+    ?.querySelector<HTMLElement>(`[data-option-index="${index}"]`)
+    ?.scrollIntoView({ block: "nearest" });
+});
 
 watch(input, () => {
   selectedCommandIndex.value = 0;
@@ -259,6 +313,7 @@ watch(
     if (lastRestoreNonce.value === signal.nonce) return;
     lastRestoreNonce.value = signal.nonce;
     selectedSlashCommand.value = null;
+    selectedSkill.value = null;
     commandError.value = "";
     commandMenuDismissed.value = true;
     attachmentError.value = "";
@@ -284,16 +339,41 @@ async function loadCommands() {
   }
 }
 
+async function loadSkills() {
+  try {
+    const items = await api.listAvailableSkills(props.projectId);
+    availableSkills.value = items;
+    if (
+      selectedSkill.value &&
+      !items.some((item) => item.ref === selectedSkill.value?.ref && item.enabled)
+    ) {
+      selectedSkill.value = null;
+    }
+  } catch (cause) {
+    availableSkills.value = [];
+    commandError.value = `无法加载技能：${String(cause)}`;
+  }
+}
+
 watch(
-  () => [props.sessionId, props.hasSession] as const,
-  () => void loadCommands(),
+  () => [props.sessionId, props.hasSession, props.projectId] as const,
+  () => {
+    void loadCommands();
+    void loadSkills();
+  },
   { immediate: true }
 );
 
-function completeCommand(command: SlashCommand) {
-  selectedSlashCommand.value = availableCommands.value.find(
-    (item) => `/${item.name}` === command.value
-  ) ?? null;
+function completeOption(option: SlashOption) {
+  if (option.kind === "command") {
+    selectedSlashCommand.value =
+      availableCommands.value.find((item) => item.ref === option.ref) ?? null;
+    selectedSkill.value = null;
+  } else {
+    selectedSkill.value =
+      availableSkills.value.find((item) => item.ref === option.ref) ?? null;
+    selectedSlashCommand.value = null;
+  }
   completingCommand = true;
   input.value = "";
   commandMenuDismissed.value = true;
@@ -302,19 +382,22 @@ function completeCommand(command: SlashCommand) {
 
 function clearSelectedCommand() {
   selectedSlashCommand.value = null;
+  selectedSkill.value = null;
   commandError.value = "";
   void nextTick(() => editorRef.value?.focus());
 }
 
 function selectedCommandIcon() {
+  if (selectedSkill.value) return PackageIcon;
   if (selectedSlashCommand.value?.name === "plan") return RouteIcon;
   if (selectedSlashCommand.value?.name === "spec") return FileTextIcon;
   return TargetIcon;
 }
 
-function commandIcon(command: SlashCommand) {
-  if (command.value === "/plan") return RouteIcon;
-  if (command.value === "/spec") return FileTextIcon;
+function commandIcon(option: SlashOption) {
+  if (option.kind === "skill") return PackageIcon;
+  if (option.value === "/plan") return RouteIcon;
+  if (option.value === "/spec") return FileTextIcon;
   return TargetIcon;
 }
 
@@ -477,11 +560,14 @@ async function submit() {
   const files = pendingImages.value.map((item) => item.file);
   const browserElements =
     editorRef.value?.orderedElements() ?? [...props.browserElements];
+  const submittedSkill = selectedSkill.value;
   input.value = "";
+  selectedSkill.value = null;
   clearPendingImages();
   emit("clear-browser-elements");
-  emit("send", text, files, browserElements, () => {
+  emit("send", text, files, browserElements, submittedSkill?.ref ?? "", () => {
     if (!input.value) input.value = text;
+    if (!selectedSkill.value) selectedSkill.value = submittedSkill;
     addImages(files);
     emit("restore-browser-elements", browserElements);
   });
@@ -491,7 +577,7 @@ function onKeydown(e: KeyboardEvent) {
   if (e.isComposing) return;
   if (
     e.key === "Backspace" &&
-    selectedSlashCommand.value &&
+    (selectedSlashCommand.value || selectedSkill.value) &&
     input.value.length === 0
   ) {
     e.preventDefault();
@@ -503,8 +589,8 @@ function onKeydown(e: KeyboardEvent) {
       e.preventDefault();
       const direction = e.key === "ArrowDown" ? 1 : -1;
       selectedCommandIndex.value =
-        (selectedCommandIndex.value + direction + matchingCommands.value.length) %
-        matchingCommands.value.length;
+        (selectedCommandIndex.value + direction + matchingOptions.value.length) %
+        matchingOptions.value.length;
       return;
     }
     if (e.key === "Escape") {
@@ -514,9 +600,9 @@ function onKeydown(e: KeyboardEvent) {
     }
     if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
       const command = activeCommand.value;
-      if (command && commandQuery.value !== command.value) {
+      if (command) {
         e.preventDefault();
-        completeCommand(command);
+        completeOption(command);
         return;
       }
     }
@@ -540,38 +626,56 @@ function onKeydown(e: KeyboardEvent) {
         <div
           v-if="commandMenuOpen"
           id="composer-command-menu"
-          class="absolute bottom-full left-0 z-20 mb-2 w-[min(28rem,100%)] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+          ref="commandMenuRef"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-[min(28rem,60vh)] w-full overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
           role="listbox"
-          aria-label="可用命令"
+          aria-label="可用命令和技能"
         >
-          <button
-            v-for="(command, index) in matchingCommands"
-            :id="`composer-command-${index}`"
-            :key="command.value"
-            type="button"
-            role="option"
-            :aria-selected="index === selectedCommandIndex"
-            class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors"
-            :class="
-              index === selectedCommandIndex
-                ? 'bg-accent text-accent-foreground'
-                : 'hover:bg-muted'
-            "
-            @mouseenter="selectedCommandIndex = index"
-            @mousedown.prevent
-            @click="completeCommand(command)"
-          >
-            <component :is="commandIcon(command)" class="size-4 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1">
-              <span class="block truncate text-sm font-medium">{{ command.label }}</span>
-            </span>
-            <code class="shrink-0 font-mono text-xs text-muted-foreground">
-              {{ command.value }}
-            </code>
-            <span class="shrink-0 truncate text-xs text-muted-foreground">
-              {{ command.description }}
-            </span>
-          </button>
+          <template v-for="group in matchingGroups" :key="group.kind">
+            <div
+              class="px-2.5 pb-1 pt-2 text-xs font-medium text-muted-foreground"
+            >
+              {{ group.label }}
+            </div>
+            <button
+              v-for="item in group.items"
+              :id="`composer-command-${item.index}`"
+              :key="`${item.option.kind}:${item.option.ref}`"
+              :data-option-index="item.index"
+              type="button"
+              role="option"
+              :aria-selected="item.index === selectedCommandIndex"
+              class="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors"
+              :class="
+                item.index === selectedCommandIndex
+                  ? 'bg-accent text-accent-foreground'
+                  : 'hover:bg-muted'
+              "
+              @mouseenter="selectedCommandIndex = item.index"
+              @mousedown.prevent
+              @click="completeOption(item.option)"
+            >
+              <component
+                :is="commandIcon(item.option)"
+                class="size-4 shrink-0 text-muted-foreground"
+              />
+              <span class="flex min-w-0 flex-1 items-baseline gap-2">
+                <span class="min-w-0 truncate text-sm font-medium">
+                  {{ item.option.label }}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {{ item.option.description }}
+                </span>
+              </span>
+              <span class="max-w-36 shrink-0 truncate text-xs text-muted-foreground">
+                {{
+                  item.option.kind === "skill"
+                    ? skillScopeLabel(item.option.scope)
+                    : item.option.value
+                }}
+              </span>
+            </button>
+          </template>
         </div>
 
         <div v-if="pendingImages.length" class="flex gap-2 overflow-x-auto px-3 pt-3">
@@ -607,14 +711,22 @@ function onKeydown(e: KeyboardEvent) {
         />
         <div class="flex items-start px-4">
           <button
-            v-if="selectedSlashCommand"
+            v-if="selectedSlashCommand || selectedSkill"
             type="button"
             class="mt-3 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            title="取消命令"
+            title="取消选择"
             @click="clearSelectedCommand"
           >
             <component :is="selectedCommandIcon()" class="size-3.5" />
-            <span>{{ selectedSlashCommand.name[0].toUpperCase() + selectedSlashCommand.name.slice(1) }}</span>
+            <span>
+              {{
+                selectedSkill?.name ||
+                (selectedSlashCommand
+                  ? selectedSlashCommand.name[0].toUpperCase() +
+                    selectedSlashCommand.name.slice(1)
+                  : "")
+              }}
+            </span>
             <XIcon class="size-3" />
           </button>
           <InlineComposerEditor
@@ -632,9 +744,11 @@ function onKeydown(e: KeyboardEvent) {
                 ? '继续输入，发送后加入待发送队列…'
                 : selectedSlashCommand
                   ? `输入 ${selectedSlashCommand.name} 的目标`
+                  : selectedSkill
+                    ? `输入 ${selectedSkill.name} 的任务`
                   : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
             "
-            :class="selectedSlashCommand && 'pl-2'"
+            :class="(selectedSlashCommand || selectedSkill) && 'pl-2'"
             :disabled="disabled"
             @focus="inputFocused = true"
             @blur="inputFocused = false"

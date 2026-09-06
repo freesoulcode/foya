@@ -71,6 +71,19 @@ pub(crate) async fn list_skills() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub(crate) async fn list_available_skills(project_id: String) -> Result<String, String> {
+    let path = if project_id.trim().is_empty() {
+        "/skills?invocable=true".to_string()
+    } else {
+        format!(
+            "/projects/{}/skills?invocable=true",
+            encode_query_component(project_id.trim())
+        )
+    };
+    kernel::request("GET", &path, None).await
+}
+
+#[tauri::command]
 pub(crate) async fn list_agents() -> Result<String, String> {
     kernel::request("GET", "/agents", None).await
 }
@@ -346,7 +359,10 @@ pub(crate) async fn delete_project(project_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn list_project_skills(project_id: String) -> Result<String, String> {
-    let path = format!("/projects/{}/skills", encode_query_component(&project_id));
+    let path = format!(
+        "/projects/{}/skills?all=true",
+        encode_query_component(&project_id)
+    );
     kernel::request("GET", &path, None).await
 }
 

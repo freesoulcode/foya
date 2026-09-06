@@ -25,6 +25,7 @@ pub(crate) fn update_session(
 pub(crate) fn submit_turn(
     _session_id: String,
     _message: String,
+    _skill_ref: Option<String>,
     _attachments: Option<Vec<serde_json::Value>>,
     _browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
@@ -154,6 +155,7 @@ pub(crate) fn list_queued_messages(_session_id: String) -> Result<String, String
 pub(crate) fn enqueue_message(
     _session_id: String,
     _message: String,
+    _skill_ref: Option<String>,
     _attachments: Option<Vec<serde_json::Value>>,
     _browser_elements: Option<Vec<serde_json::Value>>,
 ) -> Result<String, String> {
@@ -410,6 +412,11 @@ pub(crate) async fn delete_session(_session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn list_skills() -> Result<String, String> {
+    Err("Windows 传输尚未实现".into())
+}
+
+#[tauri::command]
+pub(crate) async fn list_available_skills(_project_id: String) -> Result<String, String> {
     Err("Windows 传输尚未实现".into())
 }
 

@@ -1337,6 +1337,9 @@ func (e *Engine) runTurn(
 		attribute.String("foya.project.id", e.resolveProjectID(sessionID)),
 		attribute.String("gen_ai.request.model", model),
 	}
+	if input.SkillRef != "" {
+		turnAttrs = append(turnAttrs, attribute.String("foya.skill.ref", input.SkillRef))
+	}
 	if prov != nil {
 		turnAttrs = append(turnAttrs, attribute.String("gen_ai.system", prov.Name()))
 	}
@@ -1514,6 +1517,13 @@ func (e *Engine) runTurn(
 		}
 	}
 
+	selectedSkill, err := e.selectedSkillEntry(ctx, sessionID, input.SkillRef)
+	if err != nil {
+		e.emit(ctx, sessionID, event.KindError, err.Error(), true)
+		completeTurn(turnStatusFailed, turnReasonError)
+		return err
+	}
+
 	promptHook := e.runHook(ctx, sessionID, hookRequest(
 		hooks.EventUserPromptSubmit,
 		runID,
@@ -1557,12 +1567,21 @@ func (e *Engine) runTurn(
 	}
 
 	// 用户消息入日志。
+	modelUserText := ""
+	if selectedSkill != nil {
+		modelUserText = prompt.ComposeSkillInvocationMessage(
+			userText,
+			[]prompt.SkillCatalogEntry{*selectedSkill},
+		)
+	}
 	userMsg := message.Message{
-		Role:            message.RoleUser,
-		Content:         userText,
-		Command:         input.Command,
-		Attachments:     append([]message.AttachmentRef(nil), input.Attachments...),
-		BrowserElements: append([]message.BrowserElement(nil), input.BrowserElements...),
+		Role:                 message.RoleUser,
+		Content:              userText,
+		ModelContentOverride: modelUserText,
+		Command:              input.Command,
+		SkillRef:             input.SkillRef,
+		Attachments:          append([]message.AttachmentRef(nil), input.Attachments...),
+		BrowserElements:      append([]message.BrowserElement(nil), input.BrowserElements...),
 	}
 	e.emit(context.WithoutCancel(ctx), sessionID, event.KindMessageEnd, userMsg, true)
 	e.emit(context.WithoutCancel(ctx), sessionID, event.KindTurnStarted, turnStartedPayload{
@@ -1602,7 +1621,7 @@ func (e *Engine) runTurn(
 			Rules:        rules,
 			RuleIndex:    ruleIndex,
 			Memories:     memories,
-			Skills:       e.skillCatalog(ctx, sessionID),
+			Skills:       e.skillCatalog(ctx, sessionID, selectedSkill),
 		})
 		if instructions := e.agentInstructions(sessionID); instructions != "" {
 			sysPrompt += `
@@ -2505,7 +2524,11 @@ func (e *Engine) persistentContext(
 	return resolve(e.resolveProjectID(sessionID), activity)
 }
 
-func (e *Engine) skillCatalog(ctx context.Context, sessionID string) []prompt.SkillCatalogEntry {
+func (e *Engine) skillCatalog(
+	ctx context.Context,
+	sessionID string,
+	selected *prompt.SkillCatalogEntry,
+) []prompt.SkillCatalogEntry {
 	e.mu.RLock()
 	manager := e.skills
 	e.mu.RUnlock()
@@ -2523,27 +2546,73 @@ func (e *Engine) skillCatalog(ctx context.Context, sessionID string) []prompt.Sk
 		if !item.Enabled || !skill.IsInvocable(item, availableTools, capabilities) {
 			continue
 		}
-		resources := make([]prompt.SkillResourceEntry, 0, len(item.Resources))
-		for _, resource := range item.Resources {
-			resources = append(resources, prompt.SkillResourceEntry{
-				Path:      resource.Path,
-				MediaType: resource.MediaType,
-			})
+		if selected != nil && item.Ref == selected.Ref {
+			continue
 		}
-		out = append(out, prompt.SkillCatalogEntry{
-			Ref:                  item.Ref,
-			Name:                 item.Name,
-			Description:          item.Description,
-			Scope:                string(item.Scope),
-			Pinned:               item.Pinned,
-			AllowedTools:         append([]string(nil), item.AllowedTools...),
-			RequiredTools:        append([]string(nil), item.RequiredTools...),
-			RequiredCapabilities: append([]string(nil), item.RequiredCapabilities...),
-			Resources:            resources,
-			Body:                 item.Body,
-		})
+		out = append(out, promptSkillCatalogEntry(item))
 	}
 	return out
+}
+
+func (e *Engine) selectedSkillEntry(
+	ctx context.Context,
+	sessionID, ref string,
+) (*prompt.SkillCatalogEntry, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, nil
+	}
+	e.mu.RLock()
+	manager := e.skills
+	e.mu.RUnlock()
+	if manager == nil {
+		return nil, errors.New("skills are unavailable")
+	}
+	item, err := manager.Get(
+		ctx,
+		e.resolveProjectID(sessionID),
+		e.resolveProjectPath(sessionID),
+		ref,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load selected skill %q: %w", ref, err)
+	}
+	if missingTools, missingCapabilities := skill.MissingRequirements(
+		item,
+		tool.DefaultSkillAvailableTools(),
+		tool.DefaultSkillCapabilities(),
+	); len(missingTools) > 0 || len(missingCapabilities) > 0 {
+		return nil, fmt.Errorf(
+			"selected skill %q requirements are not satisfied: missing_tools=%v missing_capabilities=%v",
+			item.Name,
+			missingTools,
+			missingCapabilities,
+		)
+	}
+	entry := promptSkillCatalogEntry(item)
+	return &entry, nil
+}
+
+func promptSkillCatalogEntry(item skill.Skill) prompt.SkillCatalogEntry {
+	resources := make([]prompt.SkillResourceEntry, 0, len(item.Resources))
+	for _, resource := range item.Resources {
+		resources = append(resources, prompt.SkillResourceEntry{
+			Path:      resource.Path,
+			MediaType: resource.MediaType,
+		})
+	}
+	return prompt.SkillCatalogEntry{
+		Ref:                  item.Ref,
+		Name:                 item.Name,
+		Description:          item.Description,
+		Scope:                string(item.Scope),
+		Pinned:               item.Pinned,
+		AllowedTools:         append([]string(nil), item.AllowedTools...),
+		RequiredTools:        append([]string(nil), item.RequiredTools...),
+		RequiredCapabilities: append([]string(nil), item.RequiredCapabilities...),
+		Resources:            resources,
+		Body:                 item.Body,
+	}
 }
 
 // resultText 把工具结果拼成文本,用于回灌模型和事件负载。

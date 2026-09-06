@@ -1339,6 +1339,8 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	)
 	if r.URL.Query().Get("all") == "true" {
 		items, err = s.backend.AllSkills(r.Context())
+	} else if r.URL.Query().Get("invocable") == "true" {
+		items, err = s.backend.InvocableSkills(r.Context())
 	} else {
 		items, err = s.backend.Skills(r.Context())
 	}
@@ -1416,7 +1418,15 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProjectSkills(w http.ResponseWriter, r *http.Request) {
-	items, err := s.backend.ProjectSkills(r.Context(), r.PathValue("id"))
+	var (
+		items any
+		err   error
+	)
+	if r.URL.Query().Get("all") == "true" {
+		items, err = s.backend.ProjectSkills(r.Context(), r.PathValue("id"))
+	} else {
+		items, err = s.backend.InvocableProjectSkills(r.Context(), r.PathValue("id"))
+	}
 	if err != nil {
 		if errors.Is(err, project.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "project_not_found", err.Error())
@@ -2386,6 +2396,7 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.backend.SubmitInput(r.Context(), id, message.UserInput{
 		Text:            req.Message,
+		SkillRef:        req.SkillRef,
 		Attachments:     req.Attachments,
 		BrowserElements: req.BrowserElements,
 	})
@@ -2631,6 +2642,7 @@ func (s *Server) handleEnqueueMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.backend.EnqueueInput(r.Context(), r.PathValue("id"), message.UserInput{
 		Text:            req.Message,
+		SkillRef:        req.SkillRef,
 		Attachments:     req.Attachments,
 		BrowserElements: req.BrowserElements,
 	})
