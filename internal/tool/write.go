@@ -13,7 +13,7 @@ import (
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
-// WriteParams 是 write 工具的参数。
+// WriteParams contains arguments for the write tool.
 type WriteParams struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -24,7 +24,7 @@ type writeTool struct {
 	runner sandbox.Runner
 }
 
-// NewWriteTool 创建 write 工具:整体覆盖写入一个文件。
+// NewWriteTool creates a tool that replaces a complete file.
 func NewWriteTool(gw approval.Gateway, runner sandbox.Runner) Tool {
 	return &writeTool{gw: gw, runner: runner}
 }
@@ -59,34 +59,34 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "write",
 		Action:   "write",
-		Detail:   fmt.Sprintf("写入文件: %s", path),
+		Detail:   fmt.Sprintf("Write file: %s", path),
 		Resource: path,
 		Scope:    approvalPathScope(ctx, path),
 	})
 	if err != nil {
-		return errResult("审批中断: " + err.Error()), nil
+		return errResult("Approval interrupted: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
-		return errResult("用户拒绝写入文件"), nil
+		return errResult("User denied file write"), nil
 	}
 
-	// 读取旧内容用于生成 diff 和可验证的回退记录。
+	// Read previous content for the diff and reversible change record.
 	oldData, readErr := os.ReadFile(path)
 	beforeExists := readErr == nil
 	if readErr != nil && !os.IsNotExist(readErr) {
-		return errResult(fmt.Sprintf("读取原文件失败: %v", readErr)), nil
+		return errResult(fmt.Sprintf("Failed to read original file: %v", readErr)), nil
 	}
 	var beforeMode os.FileMode
 	if beforeExists {
 		info, err := os.Stat(path)
 		if err != nil {
-			return errResult(fmt.Sprintf("读取原文件属性失败: %v", err)), nil
+			return errResult(fmt.Sprintf("Failed to read original file metadata: %v", err)), nil
 		}
 		beforeMode = info.Mode()
 	}
 
 	if err := writeFileAtBoundary(ctx, t.runner, path, []byte(params.Content)); err != nil {
-		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
+		return errResult(fmt.Sprintf("Write failed: %v", err)), nil
 	}
 	afterMode := beforeMode
 	if !beforeExists {
@@ -105,7 +105,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 		)
 	}
 	return Result{
-		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已写入 %d 字节到 %s", len(params.Content), path)}},
+		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("Wrote %d bytes to %s", len(params.Content), path)}},
 		Diff:       UnifiedDiff(path, string(oldData), params.Content),
 		FileChange: change,
 	}, nil

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { cn } from "@/lib/utils";
 import {
   HoverCard,
@@ -16,34 +17,34 @@ const props = defineProps<{
   turns: TurnPoint[];
   active: number;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   select: [index: number];
 }>();
 
-// HoverCard 自身管理 hover 显隐;点击后主动关闭。
+// HoverCard manages hover visibility; selection closes it explicitly.
 const open = ref(false);
 
-// 指示器内部滚动容器,用于把当前回合点保持在可视区。
+// Keep the active turn visible inside the indicator rail.
 const railRef = ref<HTMLElement | null>(null);
 const dotRefs = ref<HTMLElement[]>([]);
 
 const points = computed(() =>
   Array.from({ length: Math.max(0, props.turns.length) }, (_, i) => ({
     index: i,
-    label: props.turns[i]?.label || `第 ${i + 1} 回合`,
+    label: props.turns[i]?.label || t("Turn {number}", { number: i + 1 }),
   }))
 );
 
-// ScrollArea 的 viewport 使用 100% 高度，因此必须给根节点明确高度。
-// 每行 36px，加上下 8px 内边距，最多展示 8 行。
+// ScrollArea needs an explicit root height. Show at most eight 36px rows.
 const pickerHeight = computed(() => Math.min(points.value.length * 36 + 8, 296));
 
 function setDotRef(el: HTMLElement | null, i: number) {
   if (el) dotRefs.value[i] = el;
 }
 
-// 当前回合变化时,把对应圆点滚动到 rail 中部(回合超出可视高度时)。
+// Center the active dot when it moves outside the visible rail.
 watch(
   () => props.active,
   async () => {
@@ -67,7 +68,7 @@ function onSelect(i: number) {
     <HoverCardTrigger as-child>
       <div
         class="rounded-full border border-border/50 bg-card/60 px-1 py-2 shadow-sm backdrop-blur"
-        aria-label="对话回合导航"
+        :aria-label="$t('Chat turn navigation')"
       >
         <div
           ref="railRef"

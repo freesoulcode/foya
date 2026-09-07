@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   BotIcon,
   BrainIcon,
@@ -17,6 +18,7 @@ const props = defineProps<{
   run: AgentRunSnapshot;
   messages?: ChatMessage[];
 }>();
+const { locale, t } = useI18n();
 
 const now = ref(Date.now());
 let timer: number | undefined;
@@ -31,17 +33,17 @@ onBeforeUnmount(() => {
 const statusMeta = computed(() => {
   switch (props.run.status) {
     case "queued":
-      return { label: "排队中", icon: Clock3Icon, tone: "text-muted-foreground" };
+      return { label: t("Queued"), icon: Clock3Icon, tone: "text-muted-foreground" };
     case "running":
-      return { label: "执行中", icon: LoaderCircleIcon, tone: "text-primary" };
+      return { label: t("Running"), icon: LoaderCircleIcon, tone: "text-primary" };
     case "completed":
-      return { label: "已完成", icon: CheckCircle2Icon, tone: "text-emerald-600" };
+      return { label: t("Completed"), icon: CheckCircle2Icon, tone: "text-emerald-600" };
     case "cancelled":
-      return { label: "已取消", icon: CircleStopIcon, tone: "text-muted-foreground" };
+      return { label: t("Cancelled"), icon: CircleStopIcon, tone: "text-muted-foreground" };
     case "interrupted":
-      return { label: "已中断", icon: CircleStopIcon, tone: "text-amber-600" };
+      return { label: t("Interrupted"), icon: CircleStopIcon, tone: "text-amber-600" };
     default:
-      return { label: "失败", icon: XCircleIcon, tone: "text-destructive" };
+      return { label: t("Failed"), icon: XCircleIcon, tone: "text-destructive" };
   }
 });
 
@@ -71,7 +73,9 @@ const elapsed = computed(() => {
         {{ statusMeta.label }}
       </span>
       <span>{{ elapsed }}</span>
-      <span v-if="run.tokens_used">{{ run.tokens_used.toLocaleString() }} tokens</span>
+      <span v-if="run.tokens_used">
+        {{ $t("{count} tokens", { count: run.tokens_used.toLocaleString(locale) }) }}
+      </span>
     </div>
 
     <div
@@ -94,7 +98,7 @@ const elapsed = computed(() => {
         <div class="flex items-center gap-1.5">
           <WrenchIcon :class="['size-3.5', tool.status === 'running' && 'animate-pulse']" />
           <span>{{ tool.name }}</span>
-          <span>{{ tool.status === "running" ? "执行中" : tool.status === "error" ? "失败" : "完成" }}</span>
+          <span>{{ tool.status === "running" ? $t("Running") : tool.status === "error" ? $t("Failed") : $t("Completed") }}</span>
         </div>
         <pre
           v-if="tool.output"

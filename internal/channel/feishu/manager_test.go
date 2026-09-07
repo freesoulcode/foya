@@ -30,6 +30,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 
 	state, err := manager.Create(UpdateInput{
 		Name:         "飞书 Bot",
+		Locale:       "en-US",
 		Enabled:      true,
 		AppID:        "cli_test",
 		AppSecret:    "secret",
@@ -39,7 +40,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Status != StatusRunning || !state.HasAppSecret {
+	if state.Status != StatusRunning || !state.HasAppSecret || state.Locale != "en-US" {
 		t.Fatalf("state = %#v", state)
 	}
 	if len(state.AllowedUsers) != 1 || state.AllowedUsers[0] != "ou_1" {
@@ -60,6 +61,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 
 	state, err = manager.Update(state.ID, UpdateInput{
 		Name:         "更新后的 Bot",
+		Locale:       "en-US",
 		Enabled:      true,
 		AppID:        "cli_updated",
 		ApprovalMode: approval.ModeAuto,
@@ -85,7 +87,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	if len(reloadedItems) != 1 {
 		t.Fatalf("reloaded items = %#v", reloadedItems)
 	}
-	if got := reloadedItems[0]; got.Status != StatusRunning || !got.Enabled {
+	if got := reloadedItems[0]; got.Status != StatusRunning || !got.Enabled || got.Locale != "en-US" {
 		t.Fatalf("reloaded state = %#v", got)
 	}
 	if len(channels) != 3 {

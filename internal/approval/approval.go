@@ -1,8 +1,8 @@
-// Package approval 是审批网关:工具执行前决定自动放行 / 问用户 / 拒绝。
+// Package approval decides whether a tool runs automatically, asks the user, or is denied.
 //
-// 内核内部用 channel 同步阻塞实现,对外表现为「SSE 出请求 + REST 回决策」
-// 的异步对,靠 requestID 关联。多客户端场景下,任一端(如手机)回决策,
-// 内核解除阻塞并广播结果,其它端(如桌面)自动同步。
+// Internally, a channel blocks execution. Externally, an SSE request and REST
+// decision form an asynchronous pair keyed by request ID. Any connected client
+// can resolve the request and the result is broadcast to the others.
 package approval
 
 import (
@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Mode 是审批档位。
+// Mode is an approval policy.
 type Mode string
 
 const (
@@ -40,7 +40,7 @@ func ValidMode(mode Mode) bool {
 	}
 }
 
-// Decision 是审批决策。
+// Decision is the outcome of an approval request.
 type Decision string
 
 const (
@@ -56,7 +56,7 @@ var (
 	ErrGuardianUnavailable = errors.New("guardian is unavailable")
 )
 
-// Request 是一次审批请求。
+// Request describes one approval request.
 type Request struct {
 	ID               string `json:"id"`
 	Session          string `json:"session"`
@@ -77,17 +77,16 @@ type Reviewer interface {
 	Review(context.Context, Request) (Review, error)
 }
 
-// Gateway 是审批网关。
+// Gateway coordinates approval requests.
 type Gateway interface {
-	// Request 由工具内部就地调用;内部阻塞直到收到决策或 ctx 取消。
+	// Request blocks until a decision arrives or the context is cancelled.
 	Request(ctx context.Context, req Request) (Decision, error)
-	// Resolve 由客户端经 REST 回执触发;按 requestID 解除阻塞。
-	// 采用 take 语义:同一请求只有第一个决策生效(多端竞争安全)。
+	// Resolve unblocks a request by ID. Only the first decision takes effect.
 	Resolve(requestID string, d Decision) error
 	ClearSession(sessionID string)
 }
 
-// ctxKey 是审批相关上下文值的键类型。
+// ctxKey identifies approval values stored in a context.
 type ctxKey int
 
 const (
@@ -99,12 +98,12 @@ const (
 	ctxKeyRequestHook
 )
 
-// WithMode 把审批档位注入上下文。
+// WithMode stores an approval mode in a context.
 func WithMode(ctx context.Context, mode Mode) context.Context {
 	return context.WithValue(ctx, ctxKeyMode, mode)
 }
 
-// WithSession 把会话 ID 注入上下文。
+// WithSession stores a chat ID in a context.
 func WithSession(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, ctxKeySession, sessionID)
 }
@@ -150,7 +149,7 @@ type grantKey struct {
 	resource string
 }
 
-// gateway 是 Gateway 的内存实现。
+// gateway is the in-memory Gateway implementation.
 type gateway struct {
 	mu      sync.Mutex
 	pending map[string]pendingRequest
@@ -159,7 +158,7 @@ type gateway struct {
 	log     state.Log
 }
 
-// NewGateway 创建内存版审批网关。
+// NewGateway creates an in-memory approval gateway.
 func NewGateway(bus *broker.Broker[event.Event], log state.Log) Gateway {
 	return &gateway{
 		pending: make(map[string]pendingRequest),
@@ -169,7 +168,7 @@ func NewGateway(bus *broker.Broker[event.Event], log state.Log) Gateway {
 	}
 }
 
-// Request 由工具内部调用。根据审批档位决定自动放行/拒绝/等待用户。
+// Request applies the approval mode and may wait for user input.
 func (g *gateway) Request(ctx context.Context, req Request) (decision Decision, resultErr error) {
 	mode := ModeFromContext(ctx)
 	if !ValidMode(mode) {
@@ -291,7 +290,7 @@ func (g *gateway) Request(ctx context.Context, req Request) (decision Decision, 
 	}
 }
 
-// Resolve 由客户端经 REST 回执触发。take 语义:只有第一个决策生效。
+// Resolve applies the first client decision for a pending request.
 func (g *gateway) Resolve(requestID string, d Decision) error {
 	if d != DecisionApproved && d != DecisionApprovedForSession && d != DecisionDenied {
 		return fmt.Errorf("%w: %q", ErrInvalidDecision, d)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { AlertCircleIcon, LoaderCircleIcon, SquareIcon } from "@lucide/vue";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
@@ -16,6 +17,7 @@ const props = defineProps<{
 }>();
 
 const { theme } = useTheme();
+const { locale, t } = useI18n();
 const host = ref<HTMLElement | null>(null);
 const snapshot = ref<BackgroundCommand | null>(null);
 const error = ref("");
@@ -105,10 +107,12 @@ function render(next: BackgroundCommand) {
   renderedStdout = stdout;
   renderedStderr = stderr;
   if (!next.running && !exitRendered) {
+    const exitMessage =
+      next.exit_code !== undefined
+        ? t("Process exited with code {code}", { code: next.exit_code })
+        : t("Process exited");
     terminal.write(
-      `\r\n\x1b[2m[进程已退出${
-        next.exit_code !== undefined ? `，退出码 ${next.exit_code}` : ""
-      }]\x1b[0m\r\n`
+      `\r\n\x1b[2m[${exitMessage}]\x1b[0m\r\n`
     );
     exitRendered = true;
   }
@@ -123,7 +127,7 @@ async function refresh() {
   } catch (cause) {
     const message = String(cause);
     error.value = message.includes("background_command_not_found")
-      ? "命令记录已结束或内核已重启"
+      ? t("Command history ended or the kernel restarted")
       : message;
   }
 }
@@ -142,6 +146,16 @@ async function stop() {
 
 watch(theme, (value) => {
   if (terminal) terminal.options.theme = terminalTheme(value);
+});
+
+watch(locale, () => {
+  if (!terminal || !snapshot.value) return;
+  terminal.reset();
+  renderedStdout = "";
+  renderedStderr = "";
+  stderrStarted = false;
+  exitRendered = false;
+  render(snapshot.value);
 });
 
 watch(
@@ -186,9 +200,9 @@ onBeforeUnmount(() => {
           {{
             snapshot?.running
               ? snapshot.backgrounded_by
-                ? "后台运行中"
-                : "命令运行中"
-              : "命令已结束"
+                ? $t("Running in background")
+                : $t("Command running")
+              : $t("Command finished")
           }}
         </span>
       </div>
@@ -196,8 +210,8 @@ onBeforeUnmount(() => {
         v-if="snapshot?.running"
         type="button"
         class="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-        title="终止后台命令"
-        aria-label="终止后台命令"
+        :title="$t('Stop background command')"
+        :aria-label="$t('Stop background command')"
         :disabled="stopping"
         @click="stop"
       >

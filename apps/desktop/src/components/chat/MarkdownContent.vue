@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   CheckIcon,
   CopyIcon,
@@ -26,6 +27,7 @@ const props = withDefaults(
     renderMermaid: true,
   }
 );
+const { locale, t } = useI18n();
 
 const root = ref<HTMLElement | null>(null);
 const previewOpen = ref(false);
@@ -53,15 +55,15 @@ function diagramElement(key: string, svg: string): HTMLElement {
   copy.type = "button";
   copy.className = "mermaid-copy-source";
   copy.dataset.mermaidKey = key;
-  copy.textContent = "复制源码";
+  copy.textContent = t("Copy source");
   header.append(label, copy);
 
   const preview = document.createElement("button");
   preview.type = "button";
   preview.className = "mermaid-preview-trigger";
   preview.dataset.mermaidKey = key;
-  preview.title = "预览 Mermaid 图表";
-  preview.setAttribute("aria-label", "预览 Mermaid 图表");
+  preview.title = t("Preview Mermaid diagram");
+  preview.setAttribute("aria-label", t("Preview Mermaid diagram"));
   preview.innerHTML = svg;
 
   wrapper.append(header, preview);
@@ -80,7 +82,7 @@ function copyText(text: string): Promise<void> {
   textarea.select();
   const copied = document.execCommand("copy");
   textarea.remove();
-  return copied ? Promise.resolve() : Promise.reject(new Error("复制失败"));
+  return copied ? Promise.resolve() : Promise.reject(new Error("Copy failed"));
 }
 
 async function copyPreviewSource() {
@@ -115,12 +117,12 @@ async function onContentClick(event: MouseEvent) {
     if (!diagram) return;
     try {
       await copyText(diagram.source);
-      copy.textContent = "已复制";
+      copy.textContent = t("Copied");
       window.setTimeout(() => {
-        if (copy.isConnected) copy.textContent = "复制源码";
+        if (copy.isConnected) copy.textContent = t("Copy source");
       }, 1_500);
     } catch {
-      copy.textContent = "复制失败";
+      copy.textContent = t("Copy failed");
     }
     return;
   }
@@ -195,7 +197,7 @@ async function renderContent() {
 }
 
 watch(
-  () => [props.source, props.renderMermaid] as const,
+  () => [props.source, props.renderMermaid, locale.value] as const,
   () => void renderContent(),
   { flush: "post" }
 );
@@ -227,13 +229,13 @@ onBeforeUnmount(() => {
       >
         <div class="flex items-center gap-0.5 border-b border-border px-2">
           <DialogTitle class="min-w-0 flex-1 truncate text-xs font-medium">
-            Mermaid 预览
+            {{ $t("Mermaid preview") }}
           </DialogTitle>
           <Button
             size="icon-xs"
             variant="ghost"
-            title="缩小"
-            aria-label="缩小"
+            :title="$t('Zoom out')"
+            :aria-label="$t('Zoom out')"
             :disabled="previewZoom <= 0.5"
             @click="changeZoom(-0.25)"
           >
@@ -245,8 +247,8 @@ onBeforeUnmount(() => {
           <Button
             size="icon-xs"
             variant="ghost"
-            title="放大"
-            aria-label="放大"
+            :title="$t('Zoom in')"
+            :aria-label="$t('Zoom in')"
             :disabled="previewZoom >= 3"
             @click="changeZoom(0.25)"
           >
@@ -255,8 +257,8 @@ onBeforeUnmount(() => {
           <Button
             size="icon-xs"
             variant="ghost"
-            title="恢复原始大小"
-            aria-label="恢复原始大小"
+            :title="$t('Reset zoom')"
+            :aria-label="$t('Reset zoom')"
             :disabled="previewZoom === 1"
             @click="previewZoom = 1"
           >
@@ -269,13 +271,13 @@ onBeforeUnmount(() => {
           >
             <CheckIcon v-if="previewCopied" class="size-3.5" />
             <CopyIcon v-else class="size-3.5" />
-            {{ previewCopied ? "已复制" : "复制源码" }}
+            {{ previewCopied ? $t("Copied") : $t("Copy source") }}
           </Button>
           <Button
             size="icon-xs"
             variant="ghost"
-            title="关闭"
-            aria-label="关闭"
+            :title="$t('Close')"
+            :aria-label="$t('Close')"
             @click="previewOpen = false"
           >
             <XIcon class="size-3.5" />

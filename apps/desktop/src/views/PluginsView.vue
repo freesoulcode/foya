@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, type Component } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import {
   BlocksIcon,
@@ -59,6 +60,7 @@ type CatalogScope = "marketplace" | "local";
 type PluginDescriptor = { name: string; description?: string };
 
 const router = useRouter();
+const { t } = useI18n();
 const plugins = ref<AgentPlugin[]>([]);
 const marketplaces = ref<PluginMarketplace[]>([]);
 const catalog = ref<PluginMarketplaceCatalog | null>(null);
@@ -123,14 +125,15 @@ function inferredCategory(item: MarketplacePlugin): string {
 }
 
 function categoryLabel(category: string): string {
-  return {
-    productivity: "生产力",
-    data: "数据",
-    quality: "质量与安全",
-    cloud: "云与 DevOps",
-    design: "设计与前端",
-    development: "开发工具",
-  }[category] ?? category;
+  const keys: Record<string, string> = {
+    productivity: "Productivity",
+    data: "Data",
+    quality: "Quality and security",
+    cloud: "Cloud and DevOps",
+    design: "Design and frontend",
+    development: "Developer tools",
+  };
+  return keys[category] ? t(keys[category]) : category;
 }
 
 const categoryOptions = computed(() => {
@@ -165,7 +168,7 @@ const filteredMarketplacePlugins = computed(() => {
 const catalogGroups = computed(() => {
   const items = filteredMarketplacePlugins.value;
   if (query.value.trim() || categoryFilter.value) {
-    return [{ id: "results", title: "搜索结果", items }];
+    return [{ id: "results", title: t("Search results"), items }];
   }
   const grouped = new Map<string, MarketplacePlugin[]>();
   for (const item of items) {
@@ -482,9 +485,9 @@ void refreshAll();
       class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border/70 px-5"
     >
       <div class="no-drag flex items-center gap-1">
-        <Button size="sm" variant="secondary">插件</Button>
+        <Button size="sm" variant="secondary">{{ $t("Plugins") }}</Button>
         <Button size="sm" variant="ghost" class="text-muted-foreground" @click="openSkills">
-          技能
+          {{ $t("Skills") }}
         </Button>
       </div>
       <div class="no-drag flex items-center gap-1">
@@ -492,8 +495,8 @@ void refreshAll();
           size="icon-sm"
           variant="ghost"
           :disabled="loading || marketplaceLoading"
-          title="刷新"
-          aria-label="刷新插件"
+          :title="$t('Refresh')"
+          :aria-label="$t('Refresh plugins')"
           @click="refreshAll"
         >
           <RefreshCwIcon
@@ -506,8 +509,8 @@ void refreshAll();
         <Button
           size="icon-sm"
           variant="ghost"
-          title="管理插件市场"
-          aria-label="管理插件市场"
+          :title="$t('Manage plugin marketplaces')"
+          :aria-label="$t('Manage plugin marketplaces')"
           @click="marketplaceManageOpen = true"
         >
           <SettingsIcon class="size-4" />
@@ -515,19 +518,19 @@ void refreshAll();
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
             <Button size="sm" class="ml-2">
-              添加
+              {{ $t("Add") }}
               <ChevronDownIcon class="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem @click="openMarketplaceAdd">
               <PlusIcon class="size-4" />
-              添加插件市场
+              {{ $t("Add plugin marketplace") }}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem @click="openSourceInstall">
               <PackageIcon class="size-4" />
-              从来源安装
+              {{ $t("Install from source") }}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -537,9 +540,9 @@ void refreshAll();
     <main class="min-h-0 flex-1 overflow-y-auto">
       <div class="mx-auto w-full max-w-6xl px-5 pb-14 pt-10 sm:px-8 lg:px-12">
         <section>
-          <h1 class="text-3xl font-semibold tracking-normal">插件</h1>
+          <h1 class="text-3xl font-semibold tracking-normal">{{ $t("Plugins") }}</h1>
           <p class="mt-2 text-base text-muted-foreground">
-            扩展 Foya 的技能与工具
+            {{ $t("Extend Foya with skills and tools") }}
           </p>
 
           <div class="relative mt-8">
@@ -549,18 +552,18 @@ void refreshAll();
             <Input
               v-model="query"
               class="h-12 pl-12 text-base"
-              placeholder="搜索插件"
+              :placeholder="$t('Search plugins')"
             />
           </div>
         </section>
 
         <section class="mt-10">
           <div class="flex items-center justify-between border-b border-border pb-3">
-            <h2 class="text-lg font-medium">已安装</h2>
+            <h2 class="text-lg font-medium">{{ $t("Installed") }}</h2>
             <Button
               size="icon-sm"
               variant="ghost"
-              title="管理已安装插件"
+              :title="$t('Manage installed plugins')"
               @click="installedOpen = true"
             >
               <SettingsIcon class="size-4" />
@@ -592,7 +595,7 @@ void refreshAll();
             v-else-if="!loading"
             class="flex min-h-24 items-center px-2 text-sm text-muted-foreground"
           >
-            暂无已安装插件
+            {{ $t("No installed plugins") }}
           </p>
         </section>
 
@@ -604,14 +607,14 @@ void refreshAll();
                 :variant="catalogScope === 'marketplace' ? 'secondary' : 'ghost'"
                 @click="catalogScope = 'marketplace'"
               >
-                市场
+                {{ $t("Marketplace") }}
               </Button>
               <Button
                 size="sm"
                 :variant="catalogScope === 'local' ? 'secondary' : 'ghost'"
                 @click="catalogScope = 'local'"
               >
-                本地
+                {{ $t("Local") }}
               </Button>
             </div>
 
@@ -621,7 +624,7 @@ void refreshAll();
                 @update:model-value="selectMarketplace"
               >
                 <SelectTrigger class="h-8 w-44">
-                  <SelectValue placeholder="选择市场" />
+                  <SelectValue :placeholder="$t('Select marketplace')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem
@@ -639,20 +642,20 @@ void refreshAll();
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    title="筛选分类"
-                    aria-label="筛选分类"
+                    :title="$t('Filter categories')"
+                    :aria-label="$t('Filter categories')"
                   >
                     <SlidersHorizontalIcon class="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>分类</DropdownMenuLabel>
+                  <DropdownMenuLabel>{{ $t("Category") }}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem @click="categoryFilter = ''">
                     <CheckIcon
                       :class="['size-4', categoryFilter && 'opacity-0']"
                     />
-                    全部
+                    {{ $t("All") }}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     v-for="category in categoryOptions"
@@ -678,10 +681,10 @@ void refreshAll();
               class="flex flex-col items-center justify-center border-y border-border py-16 text-center"
             >
               <PackageIcon class="size-8 text-muted-foreground" />
-              <p class="mt-4 text-sm font-medium">还没有插件市场</p>
+              <p class="mt-4 text-sm font-medium">{{ $t("No plugin marketplaces") }}</p>
               <Button size="sm" class="mt-5" @click="openMarketplaceAdd">
                 <PlusIcon class="size-4" />
-                添加插件市场
+                {{ $t("Add plugin marketplace") }}
               </Button>
             </div>
             <div
@@ -689,7 +692,7 @@ void refreshAll();
               class="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground"
             >
               <RefreshCwIcon class="size-4 animate-spin" />
-              正在加载
+              {{ $t("Loading") }}
             </div>
 
             <template v-else-if="catalog">
@@ -742,8 +745,8 @@ void refreshAll();
                       :title="
                         item.installable
                           ? installedPlugin(item.name)
-                            ? `更新 ${item.name}`
-                            : `查看 ${item.name}`
+                            ? $t('Update {name}', { name: item.name })
+                            : $t('View {name}', { name: item.name })
                           : item.reason
                       "
                       @click.stop="
@@ -776,7 +779,7 @@ void refreshAll();
                 v-if="catalogGroups.length === 0"
                 class="py-16 text-center text-sm text-muted-foreground"
               >
-                没有匹配的插件
+                {{ $t("No matching plugins") }}
               </p>
             </template>
 
@@ -790,7 +793,7 @@ void refreshAll();
 
           <div v-else class="mt-8">
             <h3 class="border-b border-border pb-3 text-base font-medium">
-              本地插件
+              {{ $t("Local plugins") }}
             </h3>
             <div class="grid grid-cols-1 gap-x-12 lg:grid-cols-2">
               <button
@@ -823,7 +826,7 @@ void refreshAll();
               v-if="localPlugins.length === 0"
               class="py-16 text-center text-sm text-muted-foreground"
             >
-              暂无本地插件
+              {{ $t("No local plugins") }}
             </p>
           </div>
         </section>
@@ -838,9 +841,9 @@ void refreshAll();
   <Dialog v-model:open="installedOpen">
     <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col gap-0 p-0">
       <DialogHeader class="border-b border-border px-5 py-4">
-        <DialogTitle>已安装插件</DialogTitle>
+        <DialogTitle>{{ $t("Installed plugins") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          启停、更新或卸载插件
+          {{ $t("Enable, update, or uninstall plugins") }}
         </DialogDescription>
       </DialogHeader>
       <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
@@ -875,7 +878,7 @@ void refreshAll();
           <Checkbox
             :checked="item.enabled"
             :disabled="saving || !item.valid"
-            :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
+            :aria-label="item.enabled ? $t('Disable {name}', { name: item.name }) : $t('Enable {name}', { name: item.name })"
             @update:checked="togglePlugin(item)"
           />
           <Button
@@ -883,7 +886,7 @@ void refreshAll();
             size="icon-sm"
             variant="ghost"
             :disabled="saving || installingName === item.name"
-            title="更新插件"
+            :title="$t('Update plugin')"
             @click="updatePlugin(item)"
           >
             <RefreshCwIcon
@@ -898,7 +901,7 @@ void refreshAll();
             variant="ghost"
             class="text-muted-foreground hover:text-destructive"
             :disabled="saving"
-            title="卸载插件"
+            :title="$t('Uninstall plugin')"
             @click="pendingRemove = item"
           >
             <Trash2Icon class="size-4" />
@@ -908,7 +911,7 @@ void refreshAll();
           v-if="!loading && sortedPlugins.length === 0"
           class="px-5 py-10 text-center text-sm text-muted-foreground"
         >
-          暂无已安装插件
+          {{ $t("No installed plugins") }}
         </p>
       </div>
     </DialogContent>
@@ -917,30 +920,30 @@ void refreshAll();
   <Dialog v-model:open="marketplaceAddOpen">
     <DialogContent class="max-w-xl">
       <DialogHeader>
-        <DialogTitle>添加插件市场</DialogTitle>
+        <DialogTitle>{{ $t("Add plugin marketplace") }}</DialogTitle>
         <DialogDescription>
-          从 GitHub 仓库、Git URL 或本地目录添加。
+          {{ $t("Add from a GitHub repository, Git URL, or local directory.") }}
         </DialogDescription>
       </DialogHeader>
       <div class="space-y-4">
         <div class="space-y-1.5">
-          <label class="text-sm font-medium">来源</label>
+          <label class="text-sm font-medium">{{ $t("Source") }}</label>
           <Input
             v-model="marketplaceSource"
-            placeholder="owner/repo、Git URL 或本地目录"
+            :placeholder="$t('owner/repo, Git URL, or local directory')"
             :disabled="saving"
           />
         </div>
         <div class="space-y-1.5">
-          <label class="text-sm font-medium">Git 引用</label>
+          <label class="text-sm font-medium">{{ $t("Git reference") }}</label>
           <Input
             v-model="marketplaceRef"
-            placeholder="主分支"
+            :placeholder="$t('Default branch')"
             :disabled="saving"
           />
         </div>
         <div class="space-y-1.5">
-          <label class="text-sm font-medium">稀疏路径</label>
+          <label class="text-sm font-medium">{{ $t("Sparse paths") }}</label>
           <Textarea
             v-model="marketplaceSparsePaths"
             class="min-h-24"
@@ -961,13 +964,13 @@ void refreshAll();
           :disabled="saving"
           @click="marketplaceAddOpen = false"
         >
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button
           :disabled="saving || !marketplaceSource.trim()"
           @click="addMarketplace"
         >
-          {{ saving ? "添加中..." : "添加市场" }}
+          {{ saving ? $t("Adding") : $t("Add marketplace") }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -976,9 +979,9 @@ void refreshAll();
   <Dialog v-model:open="marketplaceManageOpen">
     <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col gap-0 p-0">
       <DialogHeader class="border-b border-border px-5 py-4">
-        <DialogTitle>插件市场</DialogTitle>
+        <DialogTitle>{{ $t("Plugin marketplaces") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          刷新、停用或移除插件市场
+          {{ $t("Refresh, disable, or remove plugin marketplaces") }}
         </DialogDescription>
       </DialogHeader>
       <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
@@ -1011,14 +1014,14 @@ void refreshAll();
           <Checkbox
             :checked="item.enabled"
             :disabled="saving"
-            :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
+            :aria-label="item.enabled ? $t('Disable {name}', { name: item.name }) : $t('Enable {name}', { name: item.name })"
             @update:checked="toggleMarketplace(item)"
           />
           <Button
             size="icon-sm"
             variant="ghost"
             :disabled="saving"
-            title="刷新市场"
+            :title="$t('Refresh marketplace')"
             @click="refreshMarketplace(item)"
           >
             <RefreshCwIcon class="size-4" />
@@ -1028,7 +1031,7 @@ void refreshAll();
             variant="ghost"
             class="text-muted-foreground hover:text-destructive"
             :disabled="saving"
-            title="移除市场"
+            :title="$t('Remove marketplace')"
             @click="confirmMarketplaceRemove(item)"
           >
             <Trash2Icon class="size-4" />
@@ -1038,16 +1041,16 @@ void refreshAll();
           v-if="marketplaces.length === 0"
           class="px-5 py-10 text-center text-sm text-muted-foreground"
         >
-          暂无插件市场
+          {{ $t("No plugin marketplaces") }}
         </p>
       </div>
       <DialogFooter class="border-t border-border px-5 py-4">
         <Button variant="outline" @click="marketplaceManageOpen = false">
-          完成
+          {{ $t("Done") }}
         </Button>
         <Button @click="openMarketplaceAdd">
           <PlusIcon class="size-4" />
-          添加市场
+          {{ $t("Add marketplace") }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -1056,33 +1059,33 @@ void refreshAll();
   <Dialog v-model:open="sourceOpen">
     <DialogContent class="max-w-lg">
       <DialogHeader>
-        <DialogTitle>从来源安装</DialogTitle>
+        <DialogTitle>{{ $t("Install from source") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          输入 GitHub 仓库或本地插件目录
+          {{ $t("Enter a GitHub repository or local plugin directory") }}
         </DialogDescription>
       </DialogHeader>
       <div class="space-y-3">
         <Input
           v-model="installSource"
-          placeholder="owner/repo、Git URL 或本地目录"
+          :placeholder="$t('owner/repo, Git URL, or local directory')"
           :disabled="saving"
           @keydown.enter.prevent="installFromSource"
         />
         <label class="flex items-center gap-2 text-xs text-muted-foreground">
           <Checkbox v-model:checked="replaceExisting" :disabled="saving" />
-          替换同名插件
+          {{ $t("Replace plugin with the same name") }}
         </label>
         <p v-if="error" class="break-all text-sm text-destructive">{{ error }}</p>
       </div>
       <DialogFooter>
         <Button variant="outline" :disabled="saving" @click="sourceOpen = false">
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button
           :disabled="saving || !installSource.trim()"
           @click="installFromSource"
         >
-          {{ saving ? "处理中..." : replaceExisting ? "更新" : "安装" }}
+          {{ saving ? $t("Processing") : replaceExisting ? $t("Update") : $t("Install") }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -1094,9 +1097,9 @@ void refreshAll();
   >
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>移除插件市场</DialogTitle>
+        <DialogTitle>{{ $t("Remove plugin marketplace") }}</DialogTitle>
         <DialogDescription>
-          将移除“{{ pendingMarketplaceRemove?.name }}”及其本地目录快照。已安装插件不会被卸载。
+          {{ $t("Remove marketplace confirmation", { name: pendingMarketplaceRemove?.name ?? "" }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter>
@@ -1105,14 +1108,14 @@ void refreshAll();
           :disabled="saving"
           @click="pendingMarketplaceRemove = null"
         >
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button
           variant="destructive"
           :disabled="saving"
           @click="removeMarketplace"
         >
-          {{ saving ? "移除中..." : "移除" }}
+          {{ saving ? $t("Removing") : $t("Remove") }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -1124,17 +1127,17 @@ void refreshAll();
   >
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>卸载插件</DialogTitle>
+        <DialogTitle>{{ $t("Uninstall plugin") }}</DialogTitle>
         <DialogDescription>
-          将卸载“{{ pendingRemove?.name }}”。插件数据目录会保留。
+          {{ $t("Uninstall plugin confirmation", { name: pendingRemove?.name ?? "" }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter>
         <Button variant="outline" :disabled="saving" @click="pendingRemove = null">
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button variant="destructive" :disabled="saving" @click="removePlugin">
-          {{ saving ? "卸载中..." : "卸载" }}
+          {{ saving ? $t("Uninstalling") : $t("Uninstall") }}
         </Button>
       </DialogFooter>
     </DialogContent>

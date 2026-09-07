@@ -1,11 +1,9 @@
-// Package openai 是 OpenAI 兼容(Chat Completions)的流式 provider。
+// Package openai implements an OpenAI-compatible streaming provider.
 //
-// BYOK:拿用户自带的 base_url + api_key 直连,token 流量不经任何第三方。
-// 适配任何 OpenAI 兼容端点(官方、本地 vLLM/MLX/Ollama、各类网关)。
+// BYOK requests connect directly to the configured endpoint.
 //
-// 底层用官方 openai-go SDK 处理线格式、SSE 解析与工具调用分片拼接;
-// 对于非标准扩展字段(如 vLLM/MLX 的 reasoning_content 思考内容),
-// 通过 SDK 的 ExtraFields 机制读取。
+// The official SDK handles wire formats and SSE. Non-standard fields such as
+// reasoning_content are read through ExtraFields.
 package openai
 
 import (
@@ -28,7 +26,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 )
 
-// Provider 是 OpenAI 兼容 provider。
+// Provider implements the OpenAI-compatible protocol.
 type Provider struct {
 	model         string
 	contextWindow int64
@@ -38,7 +36,7 @@ type Provider struct {
 	capabilities  map[string]provider.ModelCapabilities
 }
 
-// Config 是 provider 装配参数。
+// Config contains provider construction settings.
 type Config struct {
 	BaseURL       string
 	APIKey        string
@@ -48,10 +46,10 @@ type Config struct {
 
 const defaultContextWindow int64 = 200_000
 
-// New 创建一个 OpenAI 兼容 provider。
+// New creates an OpenAI-compatible provider.
 func New(cfg Config) *Provider {
 	opts := []option.RequestOption{}
-	// SDK 要求 baseURL 指向 /v1 根(如 http://127.0.0.1:8000/v1)。
+	// The SDK expects baseURL to point at a /v1 root.
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(strings.TrimRight(cfg.BaseURL, "/")+"/"))
 	}
@@ -67,7 +65,7 @@ func New(cfg Config) *Provider {
 	}
 }
 
-// Name 返回 provider 名。
+// Name returns the provider identifier.
 func (p *Provider) Name() string { return "openai" }
 
 func (p *Provider) ModelCapabilities(model string) provider.ModelCapabilities {
@@ -160,9 +158,9 @@ func (p *Provider) SearchWeb(ctx context.Context, model, query string, limit int
 	return results, nil
 }
 
-// ---- 类型转换 ----
+// Type conversion.
 
-// toChatMsgs 把已物化的 Provider 消息转为 SDK 参数。
+// toChatMsgs converts materialized messages to SDK parameters.
 func toChatMsgs(msgs []provider.InputMessage) []oai.ChatCompletionMessageParamUnion {
 	out := make([]oai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
@@ -269,7 +267,7 @@ func userContentParts(parts []provider.InputPart) []oai.ChatCompletionContentPar
 	return out
 }
 
-// toChatToolDefs 把 provider.ToolDef 转为 SDK 工具参数。
+// toChatToolDefs converts normalized tools to SDK parameters.
 func toChatToolDefs(tools []provider.ToolDef) []oai.ChatCompletionToolParam {
 	if len(tools) == 0 {
 		return nil
@@ -291,19 +289,18 @@ func toChatToolDefs(tools []provider.ToolDef) []oai.ChatCompletionToolParam {
 	return out
 }
 
-// ---- 流式请求 ----
+// Streaming requests.
 
-// Stream 发起流式 Chat Completions 请求,把增量编码为 StreamEvent。
-// 错误一律编码进事件流,不 panic。
-// 除标准的 content / tool_calls 外,还提取非标准的 reasoning_content
-// (vLLM/MLX/Ollama 思考内容扩展),编码为 reasoning_delta 事件。
+// Stream starts Chat Completions and converts chunks to StreamEvent values.
+// Errors are reported through the stream. Non-standard reasoning_content is
+// exposed as reasoning_delta events.
 func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
 	model := req.Model
 	if model == "" {
 		model = p.model
 	}
 	if model == "" {
-		return nil, fmt.Errorf("尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key")
+		return nil, fmt.Errorf("No model service is configured; set the Base URL, model, and API key in Settings")
 	}
 
 	params := oai.ChatCompletionNewParams{
@@ -352,19 +349,19 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 				}
 			}
 			for _, c := range chunk.Choices {
-				// 非标准思考内容(reasoning_content):走 ExtraFields 提取。
+				// Read non-standard reasoning_content through ExtraFields.
 				if reasoning := extractReasoning(c.Delta); reasoning != "" {
 					if !emit(provider.StreamEvent{Type: "reasoning_delta", Text: reasoning}) {
 						return
 					}
 				}
-				// 文本增量
+				// Text delta.
 				if c.Delta.Content != "" {
 					if !emit(provider.StreamEvent{Type: "text_delta", Text: c.Delta.Content}) {
 						return
 					}
 				}
-				// 工具调用增量(分片,按 Index 拼接由 engine 层完成)
+				// Tool-call delta assembled by index in the engine.
 				for _, tc := range c.Delta.ToolCalls {
 					if !emit(provider.StreamEvent{
 						Type:        "tool_call_delta",
@@ -382,7 +379,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 			}
 		}
 		if err := stream.Err(); err != nil {
-			// ctx 取消:交由上层按 ctx.Err() 静默处理。
+			// The caller handles context cancellation through ctx.Err.
 			ch <- provider.StreamEvent{Type: "error", Text: err.Error()}
 			return
 		}
@@ -392,10 +389,8 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	return ch, nil
 }
 
-// extractReasoning 从流片 delta 中提取非标准的 reasoning_content 字段。
-// 该字段不属于 OpenAI 官方协议,由 vLLM/MLX/Ollama 等在思考模型上返回。
-// 注意:未建模字段落在 ExtraFields 中,其 respjson.Field.Valid() 对扩展字段
-// 恒为 false(SDK 不为其做类型校验),故只能据 Raw() 是否为空来判断存在性。
+// extractReasoning reads the non-standard reasoning_content field used by
+// providers such as vLLM, MLX, and Ollama.
 func extractReasoning(delta oai.ChatCompletionChunkChoiceDelta) string {
 	f, ok := delta.JSON.ExtraFields["reasoning_content"]
 	if !ok {
@@ -412,8 +407,7 @@ func extractReasoning(delta oai.ChatCompletionChunkChoiceDelta) string {
 	return s
 }
 
-// Complete 发起非流式 Chat Completions 请求,返回完整文本。
-// 用于标题生成等一次性短文本旁路任务。不携带工具定义。
+// Complete performs a non-streaming request for short side tasks.
 func (p *Provider) Complete(ctx context.Context, req provider.Request) (string, error) {
 	completion, err := p.CompleteDetailed(ctx, req)
 	if err != nil {
@@ -433,7 +427,7 @@ func (p *Provider) CompleteDetailed(
 	}
 	if model == "" {
 		return provider.Completion{}, fmt.Errorf(
-			"尚未配置模型服务,请在「设置」中填写 Base URL、模型和 API Key",
+			"No model service is configured; set the Base URL, model, and API key in Settings",
 		)
 	}
 
@@ -471,8 +465,7 @@ func (p *Provider) CompleteDetailed(
 	}, nil
 }
 
-// ListModels 请求 OpenAI 兼容的 /models 接口,返回模型 ID 与上下文窗口。
-// 复用已配置的 baseURL 与 api_key,直连用户自带端点(BYOK)。
+// ListModels returns model IDs and context windows from the configured endpoint.
 func (p *Provider) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
 	page, err := p.client.Models.List(ctx)
 	if err != nil {
@@ -567,7 +560,7 @@ func extractContextWindow(fields map[string]respjson.Field) int64 {
 	return 0
 }
 
-// 确保实现了接口。
+// Compile-time interface checks.
 var (
 	_ provider.Provider           = (*Provider)(nil)
 	_ provider.ModelLister        = (*Provider)(nil)

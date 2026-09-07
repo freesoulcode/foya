@@ -166,8 +166,8 @@ type UsageSummary struct {
 	ModelUsage    []UsageModelTotal
 }
 
-// Projection 从事件日志派生某种视图。
+// Projection derives a view from the event log.
 type Projection[V any] interface {
-	// Project 将某会话到指定序号为止的事件投影成视图。
+	// Project builds a chat view through the requested sequence.
 	Project(ctx context.Context, session string, upto event.Seq) (V, error)
 }

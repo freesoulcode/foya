@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ArrowLeftIcon,
   FileTextIcon,
@@ -35,6 +36,7 @@ const props = defineProps<{
   currentProjectId?: string;
   revision?: number;
 }>();
+const { locale, t } = useI18n();
 
 const scope = ref<ContextItemScope>(props.currentProjectId ? "project" : "global");
 const projectId = ref(props.currentProjectId ?? "");
@@ -55,7 +57,7 @@ const memoryEnabled = ref(true);
 const memorySettingsSupported = ref(true);
 const error = ref("");
 
-const title = computed(() => (props.kind === "rule" ? "规则" : "记忆"));
+const title = computed(() => (props.kind === "rule" ? t("Rules") : t("Memory")));
 const selected = computed(
   () => items.value.find((item) => item.id === selectedId.value) ?? null
 );
@@ -63,10 +65,10 @@ const canCreate = computed(
   () => scope.value === "global" || Boolean(projectId.value)
 );
 const triggerLabels: Record<RuleTrigger, string> = {
-  always: "始终生效",
-  glob: "路径匹配",
-  model_decision: "模型判断",
-  manual: "手动调用",
+  always: "Always active",
+  glob: "Path match",
+  model_decision: "Model decision",
+  manual: "Manual invocation",
 };
 const triggerClasses: Record<RuleTrigger, string> = {
   always: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300",
@@ -76,7 +78,9 @@ const triggerClasses: Record<RuleTrigger, string> = {
 };
 
 function unsupportedContextMessage() {
-  return `当前内核未加载${title.value}接口，重启桌面端后可用`;
+  return t("The kernel has not loaded the {name} API. Restart the desktop app to use it.", {
+    name: title.value,
+  });
 }
 
 function isNotFound(cause: unknown) {
@@ -127,9 +131,12 @@ function ruleLocation(item: ContextItem) {
 
 function ruleGlobSummary(item: ContextItem) {
   const globs = item.globs ?? [];
-  if (globs.length === 0) return "未设置";
+  if (globs.length === 0) return t("Not set");
   if (globs.length === 1) return globs[0];
-  return `${globs[0]} 等 ${globs.length} 条`;
+  return t("{first} and {count} total", {
+    first: globs[0],
+    count: globs.length,
+  });
 }
 
 async function loadItems(preserveSelection = true) {
@@ -212,7 +219,7 @@ async function load() {
 
 async function toggleMemory() {
   if (!memorySettingsSupported.value) {
-    error.value = "当前内核未加载记忆开关接口，重启桌面端后可用";
+    error.value = t("The kernel has not loaded the memory settings API. Restart the desktop app to use it.");
     return;
   }
   settingsSaving.value = true;
@@ -271,7 +278,7 @@ function parsedGlobs(): string[] {
 async function save() {
   const content = draft.value.trim();
   if (!content) {
-    error.value = `${title.value}内容不能为空`;
+    error.value = t("{name} content cannot be empty", { name: title.value });
     return;
   }
   saving.value = true;
@@ -310,6 +317,10 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString(locale.value);
 }
 
 async function remove() {
@@ -360,8 +371,8 @@ onMounted(() => void load());
     :title="title"
     :description="
       kind === 'rule'
-        ? '为 Agent 设定可复用的行为约束。'
-        : '记录跨会话可复用的偏好、事实和经验。'
+        ? $t('Define reusable behavioral constraints for the agent.')
+        : $t('Record preferences, facts, and experience that can be reused across chats.')
     "
   >
     <template #actions>
@@ -372,19 +383,19 @@ onMounted(() => void load());
           @click="startNewRule"
         >
           <PlusIcon class="size-4" />
-          新建规则
+          {{ $t("New rule") }}
         </Button>
         <div
           v-if="kind === 'memory'"
           class="inline-flex h-9 shrink-0 items-center gap-3 whitespace-nowrap rounded-md border border-border bg-background px-3 text-sm"
         >
-          <span class="leading-none text-muted-foreground">启用记忆</span>
+          <span class="leading-none text-muted-foreground">{{ $t("Enable memory") }}</span>
           <button
             type="button"
             role="switch"
             :aria-checked="memoryEnabled"
             :disabled="settingsSaving || loading || !memorySettingsSupported"
-            :title="memorySettingsSupported ? '切换记忆功能' : '重启桌面端后可用'"
+            :title="memorySettingsSupported ? $t('Toggle memory') : $t('Available after restarting the desktop app')"
             class="relative inline-flex h-5 w-10 shrink-0 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             :class="memoryEnabled ? 'border-primary bg-primary' : 'border-input bg-muted'"
             @click="toggleMemory"
@@ -399,8 +410,8 @@ onMounted(() => void load());
           size="icon-sm"
           variant="ghost"
           :disabled="loading || saving || settingsSaving"
-          :title="`刷新${title}`"
-          :aria-label="`刷新${title}`"
+          :title="$t('Refresh {name}', { name: title })"
+          :aria-label="$t('Refresh {name}', { name: title })"
           @click="loadItems()"
         >
           <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
@@ -408,13 +419,13 @@ onMounted(() => void load());
     </template>
 
     <div class="mb-5 flex flex-wrap items-center gap-3">
-      <ButtonGroup :aria-label="`${title}范围`">
+      <ButtonGroup :aria-label="$t('{name} scope', { name: title })">
         <Button
           size="sm"
           :variant="scope === 'global' ? 'default' : 'outline'"
           @click="setScope('global')"
         >
-          全局
+          {{ $t("Global") }}
         </Button>
         <Button
           size="sm"
@@ -422,7 +433,7 @@ onMounted(() => void load());
           :disabled="projects.length === 0"
           @click="setScope('project')"
         >
-          项目
+          {{ $t("Project") }}
         </Button>
       </ButtonGroup>
       <Select
@@ -432,7 +443,7 @@ onMounted(() => void load());
         @update:model-value="setProject"
       >
         <SelectTrigger size="sm" class="min-w-52 max-w-full">
-          <SelectValue placeholder="选择项目" />
+          <SelectValue :placeholder="$t('Select project')" />
         </SelectTrigger>
         <SelectContent>
           <SelectItem
@@ -449,11 +460,11 @@ onMounted(() => void load());
     <section v-if="kind === 'rule'" class="flex min-h-[520px] flex-1 flex-col">
       <div v-if="!ruleEditorOpen" class="flex min-h-0 flex-1 flex-col border-y border-border bg-background">
         <div class="grid h-11 shrink-0 grid-cols-[minmax(0,1.5fr)_minmax(120px,0.7fr)_minmax(112px,0.5fr)_minmax(120px,0.7fr)_132px] items-center gap-3 border-b border-border px-4 text-xs font-medium text-muted-foreground">
-          <span>规则文件</span>
-          <span>位置</span>
-          <span>生效方式</span>
-          <span>匹配路径</span>
-          <span class="text-right">更新时间</span>
+          <span>{{ $t("Rule file") }}</span>
+          <span>{{ $t("Location") }}</span>
+          <span>{{ $t("Activation") }}</span>
+          <span>{{ $t("Matching paths") }}</span>
+          <span class="text-right">{{ $t("Updated") }}</span>
         </div>
         <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
           <button
@@ -467,7 +478,7 @@ onMounted(() => void load());
               <FileTextIcon class="size-4 shrink-0 text-muted-foreground" />
               <span class="min-w-0">
                 <span class="block truncate text-sm font-medium">
-                  {{ item.name || "未命名规则" }}
+                  {{ item.name || $t("Unnamed rule") }}
                 </span>
                 <span v-if="item.description" class="mt-0.5 block truncate text-xs text-muted-foreground">
                   {{ item.description }}
@@ -481,13 +492,13 @@ onMounted(() => void load());
               class="w-fit rounded-full border px-2 py-0.5 text-xs"
               :class="triggerClasses[item.trigger ?? 'always']"
             >
-              {{ triggerLabels[item.trigger ?? "always"] }}
+              {{ $t(triggerLabels[item.trigger ?? "always"]) }}
             </span>
             <span class="truncate font-mono text-xs text-muted-foreground">
               {{ ruleGlobSummary(item) }}
             </span>
             <span class="truncate text-right text-xs text-muted-foreground">
-              {{ new Date(item.updated_at).toLocaleString() }}
+              {{ formatDate(item.updated_at) }}
             </span>
           </button>
           <div
@@ -496,9 +507,9 @@ onMounted(() => void load());
           >
             <FileTextIcon class="size-8 text-muted-foreground/50" />
             <div>
-              <p class="text-sm font-medium">暂无规则</p>
+              <p class="text-sm font-medium">{{ $t("No rules") }}</p>
               <p class="mt-1 text-xs text-muted-foreground">
-                新建规则后会在这里按文件形式管理
+                {{ $t("New rules will appear here as files") }}
               </p>
             </div>
           </div>
@@ -506,7 +517,7 @@ onMounted(() => void load());
         <div class="flex min-h-11 shrink-0 items-center justify-between gap-3 border-t border-border px-4">
           <p class="truncate text-sm text-destructive">{{ error }}</p>
           <p v-if="!error" class="text-xs text-muted-foreground">
-            {{ items.length }} 条规则
+            {{ $t("{count} rules", { count: items.length }) }}
           </p>
         </div>
       </div>
@@ -517,18 +528,18 @@ onMounted(() => void load());
             <Button
               size="icon-sm"
               variant="ghost"
-              title="返回规则列表"
-              aria-label="返回规则列表"
+              :title="$t('Back to rule list')"
+              :aria-label="$t('Back to rule list')"
               @click="backToRuleList"
             >
               <ArrowLeftIcon class="size-4" />
             </Button>
             <div class="min-w-0">
               <h3 class="truncate text-sm font-medium">
-                {{ selected ? "编辑规则" : "新建规则" }}
+                {{ selected ? $t("Edit rule") : $t("New rule") }}
               </h3>
               <p class="truncate text-xs text-muted-foreground">
-                {{ scope === "global" ? "全局规则" : rulePath || ".foya/rules/" }}
+                {{ scope === "global" ? $t("Global rules") : rulePath || ".foya/rules/" }}
               </p>
             </div>
           </div>
@@ -539,8 +550,8 @@ onMounted(() => void load());
               variant="ghost"
               class="text-muted-foreground hover:text-destructive"
               :disabled="saving"
-              title="删除规则"
-              aria-label="删除规则"
+              :title="$t('Delete rule')"
+              :aria-label="$t('Delete rule')"
               @click="remove"
             >
               <Trash2Icon class="size-4" />
@@ -550,7 +561,7 @@ onMounted(() => void load());
               @click="save"
             >
               <SaveIcon class="size-4" />
-              {{ saving ? "保存中…" : "保存" }}
+              {{ saving ? $t("Saving") : $t("Save") }}
             </Button>
           </div>
         </div>
@@ -558,27 +569,27 @@ onMounted(() => void load());
           <div class="grid gap-4 border-b border-border p-4">
             <div class="grid gap-4 lg:grid-cols-[minmax(220px,1fr)_minmax(260px,1.2fr)]">
               <div class="grid gap-2">
-                <Label for="rule-name">规则名称</Label>
+                <Label for="rule-name">{{ $t("Rule name") }}</Label>
                 <Input
                   id="rule-name"
                   v-model="ruleName"
-                  placeholder="例如：go-testing"
+                  :placeholder="$t('For example: go-testing')"
                   :disabled="!canCreate || loading"
                 />
               </div>
               <div class="grid gap-2">
-                <Label for="rule-description">描述</Label>
+                <Label for="rule-description">{{ $t("Description") }}</Label>
                 <Input
                   id="rule-description"
                   v-model="ruleDescription"
-                  placeholder="供模型判断是否需要加载"
+                  :placeholder="$t('Used by the model to decide whether to load it')"
                   :disabled="!canCreate || loading"
                 />
               </div>
             </div>
             <div class="grid gap-4 lg:grid-cols-2">
               <div class="grid gap-2">
-                <Label for="rule-trigger">生效方式</Label>
+                <Label for="rule-trigger">{{ $t("Activation") }}</Label>
                 <Select
                   :model-value="ruleTrigger"
                   :disabled="!canCreate || loading"
@@ -588,15 +599,15 @@ onMounted(() => void load());
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="always">始终生效</SelectItem>
-                    <SelectItem value="glob">路径匹配</SelectItem>
-                    <SelectItem value="model_decision">模型判断</SelectItem>
-                    <SelectItem value="manual">手动调用</SelectItem>
+                    <SelectItem value="always">{{ $t("Always active") }}</SelectItem>
+                    <SelectItem value="glob">{{ $t("Path match") }}</SelectItem>
+                    <SelectItem value="model_decision">{{ $t("Model decision") }}</SelectItem>
+                    <SelectItem value="manual">{{ $t("Manual invocation") }}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div v-if="ruleTrigger === 'glob'" class="grid gap-2">
-                <Label for="rule-globs">匹配路径</Label>
+                <Label for="rule-globs">{{ $t("Matching paths") }}</Label>
                 <Input
                   id="rule-globs"
                   v-model="ruleGlobs"
@@ -610,7 +621,7 @@ onMounted(() => void load());
             v-model="draft"
             class="min-h-[420px] resize-y rounded-none border-0 bg-transparent p-5 font-mono text-sm leading-6 shadow-none focus-visible:border-transparent focus-visible:ring-0"
             maxlength="6000"
-            placeholder="输入需要遵循的规则"
+            :placeholder="$t('Enter the rules to follow')"
             :disabled="!canCreate || loading"
           />
         </div>
@@ -637,7 +648,7 @@ onMounted(() => void load());
           </span>
         </div>
         <span v-if="selected" class="shrink-0 text-xs text-muted-foreground">
-          更新于 {{ new Date(selected.updated_at).toLocaleString() }}
+          {{ $t("Updated at {time}", { time: formatDate(selected.updated_at) }) }}
         </span>
       </div>
       <div class="flex min-h-0 flex-1 flex-col">
@@ -645,7 +656,7 @@ onMounted(() => void load());
           v-model="draft"
           class="min-h-80 flex-1 resize-none rounded-none border-0 bg-transparent px-3 py-5 font-mono text-sm leading-6 shadow-none focus-visible:border-transparent focus-visible:ring-0 sm:px-6"
           :maxlength="2000"
-          placeholder="记录对后续协作有价值的偏好、事实和经验"
+          :placeholder="$t('Record preferences, facts, and experience useful for future collaboration')"
           :disabled="!canCreate || loading || !memoryEnabled"
         />
         <div class="flex min-h-14 shrink-0 items-center justify-between gap-3 border-t border-border px-2 sm:px-3">
@@ -661,7 +672,7 @@ onMounted(() => void load());
             @click="save"
           >
             <SaveIcon class="size-4" />
-            {{ saving ? "保存中…" : "保存" }}
+            {{ saving ? $t("Saving") : $t("Save") }}
           </Button>
         </div>
       </div>

@@ -1,5 +1,4 @@
-// Package kernel 是内核的组合根:装配所有 service(session、agent、
-// broker、state、provider 等)并暴露给 server。
+// Package kernel is the composition root for services exposed by the server.
 package kernel
 
 import (
@@ -44,7 +43,7 @@ import (
 	"github.com/freesoulcode/foya/internal/workflow"
 )
 
-// App 是内核组合根。
+// App is the kernel composition root.
 type App struct {
 	cfg         config.Config
 	backend     *backend.Backend
@@ -58,7 +57,7 @@ type App struct {
 	database    *storage.Database
 }
 
-// New 按配置装配内核。
+// New assembles a kernel from configuration.
 func New(cfg config.Config) (*App, error) {
 	if saved, ok, err := config.LoadAgentLimits(cfg.DataDir); err != nil {
 		return nil, err
@@ -120,7 +119,7 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	// 审批网关与工具注册表。
+	// Approval gateway and tool registry.
 	gw := approval.NewGateway(bus, log)
 	questions := question.NewGateway(bus, log)
 	browserController, err := browseruse.NewController(cfg.DataDir, bus, log)
@@ -172,7 +171,7 @@ func New(cfg config.Config) (*App, error) {
 				Kind:    event.KindError,
 				Session: s.ID,
 				Time:    time.Now(),
-				Payload: "同步 Spec 任务清单失败: " + err.Error(),
+				Payload: "Failed to synchronize Spec task list: " + err.Error(),
 			}
 			failed.Seq, _ = log.Append(ctx, failed)
 			_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, failed)
@@ -439,7 +438,7 @@ func loadConnections(cfg config.Config) []config.Connection {
 	}
 	return []config.Connection{{
 		ID:       "default",
-		Name:     "已导入连接",
+		Name:     "Imported connection",
 		Kind:     legacy.Kind,
 		AuthKind: "api_key",
 		BaseURL:  legacy.BaseURL,
@@ -447,7 +446,7 @@ func loadConnections(cfg config.Config) []config.Connection {
 	}}
 }
 
-// buildProvider 按配置构造 OpenAI 兼容 provider,返回 provider 与默认模型名。
+// buildProvider creates an OpenAI-compatible provider and its default model.
 func buildProvider(pc config.Provider) (provider.Provider, string) {
 	p := openai.New(openai.Config{
 		BaseURL:       pc.BaseURL,
@@ -458,17 +457,17 @@ func buildProvider(pc config.Provider) (provider.Provider, string) {
 	return p, pc.Model
 }
 
-// Backend 暴露业务层,供 server 使用。
+// Backend exposes the transport-neutral service layer.
 func (a *App) Backend() *backend.Backend { return a.backend }
 
-// Config 返回内核配置。
+// Config returns kernel configuration.
 func (a *App) Config() config.Config { return a.cfg }
 
 func (a *App) Channels() *feishu.Manager { return a.channels }
 
 func (a *App) Automations() *automation.Manager { return a.automations }
 
-// Close 停止后台能力并释放 MCP 会话及其子进程。
+// Close stops background services and releases MCP sessions and processes.
 func (a *App) Close() {
 	a.automations.Close()
 	a.channels.Close()

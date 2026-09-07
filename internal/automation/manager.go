@@ -332,7 +332,7 @@ func (m *Manager) execute(ctx context.Context, task Task) {
 		m.finish(task.ID, "", RunStatusFailed, err)
 		return
 	}
-	_, _ = m.runtime.RenameSession(context.WithoutCancel(ctx), sessionItem.ID, "自动化: "+task.Name)
+	_, _ = m.runtime.RenameSession(context.WithoutCancel(ctx), sessionItem.ID, "Automation: "+task.Name)
 	events := m.runtime.Subscribe(ctx, sessionItem.ID)
 	if err := m.runtime.SubmitChatInput(ctx, sessionItem.ID, message.UserInput{Text: task.Prompt}); err != nil {
 		m.finish(task.ID, sessionItem.ID, RunStatusFailed, err)

@@ -18,7 +18,7 @@ func TestForkSessionRoute(t *testing.T) {
 	if forked.ID == "" || forked.ID == sourceID {
 		t.Fatalf("forked session = %#v", forked)
 	}
-	if forked.Title != "新对话 副本" {
+	if forked.Title != "New chat copy" {
 		t.Fatalf("forked title = %q", forked.Title)
 	}
 }

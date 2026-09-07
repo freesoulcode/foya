@@ -1,21 +1,19 @@
-// Package prompt 组装注入模型的系统提示词。
+// Package prompt assembles system prompts sent to models.
 //
-// 设计参考主流 harness 的通行做法,按「职责分块」拼装,而不是一整段写死:
-//   - 静态前缀(staticPrefix):身份与恒定规则,跨回合不变,刻意保持字节稳定以命中
-//     provider 的前缀缓存(prefix cache)。绝不能把日期、cwd 等易变内容塞进来。
-//   - Context Files(AGENTS.md 等):用户可控、不可信,XML 包裹并降权,有界化。
-//   - Foya Rules / Memory:内核托管并使用独立区段,保持行为约束与参考事实分离。
-//   - 权限上下文:当前审批档位/沙箱状态,低频变化。
-//   - 每回合环境尾部:工作目录、git 分支、平台、shell、日期,每回合变化,置于末尾。
+// Prompts are assembled by responsibility:
+//   - A byte-stable prefix for identity and invariant rules.
+//   - Bounded, untrusted project context wrapped in XML.
+//   - Separately managed Foya rules and memory.
+//   - Current approval and sandbox context.
+//   - Dynamic environment details appended at the end.
 //
-// 系统提示词只在调 provider 时临时前置,不写入事件日志(避免污染历史和重复)。
+// System prompts are added only to provider requests and never enter history.
 package prompt
 
-// staticPrefix 是跨回合不变的系统提示词主体。
+// staticPrefix is the byte-stable system prompt body.
 //
-// 内容为模型无关的恒定行为规则,刻意不绑定具体模型名或特定工具名(如 apply_patch),
-// 模型/工具特化指令应通过独立片段覆盖。修改此常量会使所有会话的前缀缓存失效,
-// 故仅在规则确实变更时改动。
+// Model- or tool-specific guidance belongs in separate fragments. Changing this
+// constant invalidates the provider prefix cache for every chat.
 const staticPrefix = `You are Foya, a local coding agent on the user's machine. You work in the user's own environment with their API key and their files, so care and honesty matter more than appearing capable.
 
 <how_you_work>

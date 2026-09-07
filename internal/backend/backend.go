@@ -1,9 +1,7 @@
-// Package backend 是传输无关的业务层:管理多连接、多会话、事件扇出、
-// 实例级鉴权。它不关心底层是 Unix socket 还是 TCP,server 层把请求
-// 转成对 Backend 的调用。
+// Package backend is the transport-neutral service layer for connections,
+// chats, event fan-out, and instance authentication.
 //
-// 这是「一个内核多客户端」的落地关键:session 归 Backend 所有,多个
-// 客户端连接可订阅同一 session,Backend 负责把事件扇出给所有订阅者。
+// The backend owns chats so multiple clients can subscribe to shared state.
 package backend
 
 import (
@@ -65,10 +63,10 @@ type ForkSessionOptions struct {
 	ThroughSeq event.Seq
 }
 
-// ProviderBuilder 按 provider 配置构造 provider 与默认模型名。
+// ProviderBuilder creates a provider and its default model from configuration.
 type ProviderBuilder func(config.Provider) (provider.Provider, string)
 
-// Backend 是内核业务的统一入口(传输无关)。
+// Backend is the transport-neutral kernel service entry point.
 type Backend struct {
 	sessions           session.Manager
 	log                state.Store
@@ -399,7 +397,7 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 	})
 	if generateErr != nil {
 		if errors.Is(generateErr, context.DeadlineExceeded) {
-			generateErr = fmt.Errorf("生图请求超时（超过 %s）", canvasGenerationTimeout)
+			generateErr = fmt.Errorf("Image generation timed out after %s", canvasGenerationTimeout)
 		}
 		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %v", ErrGenerationProvider, generateErr))
 	}
@@ -555,7 +553,7 @@ func (b *Backend) GenerateCanvasVideo(ctx context.Context, id string, input canv
 	})
 	if generateErr != nil {
 		if errors.Is(generateErr, context.DeadlineExceeded) {
-			generateErr = fmt.Errorf("视频生成请求超时（超过 %s）", canvasVideoGenerationTimeout)
+			generateErr = fmt.Errorf("Video generation timed out after %s", canvasVideoGenerationTimeout)
 		}
 		return b.failCanvasGeneration(ctx, store, doc, configIndex, outputIndex, fmt.Errorf("%w: %v", ErrGenerationProvider, generateErr))
 	}
@@ -1702,7 +1700,7 @@ func (b *Backend) MCPGetPrompt(ctx context.Context, serverID, name string, args 
 	return manager.GetPrompt(ctx, serverID, name, args)
 }
 
-// New 组装一个 Backend。
+// New assembles a Backend.
 func New(
 	sessions session.Manager,
 	log state.Store,
@@ -1729,7 +1727,7 @@ func New(
 	}
 }
 
-// CreateSession 新建会话。
+// CreateSession creates a chat.
 func (b *Backend) CreateSession(opts session.CreateOptions) (*session.Session, error) {
 	b.projectMu.Lock()
 	defer b.projectMu.Unlock()
@@ -1985,12 +1983,12 @@ func forkHistoryThrough(
 func defaultForkTitle(sourceTitle string) string {
 	base := strings.TrimSpace(sourceTitle)
 	if base == "" {
-		base = "新对话"
+		base = "New chat"
 	}
-	return base + " 副本"
+	return base + " copy"
 }
 
-// UpdateSession 局部更新会话可变字段。
+// UpdateSession partially updates mutable chat settings.
 func (b *Backend) UpdateSession(
 	ctx context.Context,
 	id string,
@@ -2035,7 +2033,7 @@ func (b *Backend) resolveSessionProject(opts *session.CreateOptions) error {
 	return nil
 }
 
-// RenameSession 手动改名。
+// RenameSession assigns a manual chat title.
 func (b *Backend) RenameSession(ctx context.Context, id, title string) (*session.Session, error) {
 	if err := b.sessions.Rename(id, title); err != nil {
 		return nil, err
@@ -2048,7 +2046,7 @@ func (b *Backend) RenameSession(ctx context.Context, id, title string) (*session
 	return s, nil
 }
 
-// PinSession 置顶/取消置顶会话,变更后广播 session_updated。
+// PinSession updates pin state and broadcasts session_updated.
 func (b *Backend) PinSession(ctx context.Context, id string, pinned bool) (*session.Session, error) {
 	s, err := b.sessions.SetPinned(id, pinned)
 	if err != nil {
@@ -2058,16 +2056,13 @@ func (b *Backend) PinSession(ctx context.Context, id string, pinned bool) (*sess
 	return s, nil
 }
 
-// deleteTurnGrace 是删除会话时等待活跃回合彻底收尾的上限。
+// deleteTurnGrace bounds shutdown of an active turn during deletion.
 const deleteTurnGrace = 3 * time.Second
 
-// DeleteSession 删除会话:
-//  1. 先中断正在跑的回合并等其 goroutine 彻底退出,确保清理后不再有事件写入;
-//  2. 删除会话元数据与事件日志(日志层标记删除,迟到事件在 Append 处丢弃);
-//  3. 广播 session_deleted 通知在线客户端移除。
+// DeleteSession cancels active work, removes metadata and events, then
+// broadcasts session_deleted to connected clients.
 //
-// session_deleted 属于会话目录层事件,只广播、不写入该会话分区日志——
-// 会话已不存在,持久化它没有读者,重连时靠 list_sessions 自然收敛。
+// session_deleted is broadcast but not persisted in the removed chat partition.
 func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 	if _, ok := b.sessions.Get(id); !ok {
 		return session.ErrNotFound
@@ -2130,7 +2125,7 @@ func (b *Backend) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
-// broadcastSession 把会话当前状态作为 session_updated 事件持久化并广播。
+// broadcastSession persists and publishes the current chat state.
 func (b *Backend) broadcastSession(ctx context.Context, s *session.Session) {
 	ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
 	seq, _ := b.log.Append(ctx, ev)
@@ -2138,7 +2133,7 @@ func (b *Backend) broadcastSession(ctx context.Context, s *session.Session) {
 	_ = b.bus.PublishMustDeliver(ctx, "session:"+s.ID, ev)
 }
 
-// ListSessions 列出会话。
+// ListSessions lists chats.
 func (b *Backend) ListSessions() []*session.Session {
 	all := b.sessions.List()
 	out := make([]*session.Session, 0, len(all))
@@ -2168,8 +2163,7 @@ func (b *Backend) ChildSessions(parentID string) ([]*session.Session, error) {
 	return out, nil
 }
 
-// CancelTurn 中断指定会话当前正在运行的回合(用户点停止)。
-// 队列保留且暂停自动发送,由用户选择“立即发送”或再次发送后恢复。
+// CancelTurn stops active work while preserving and pausing queued messages.
 func (b *Backend) CancelTurn(sessionID string) {
 	b.cancelCurrentTurn(sessionID)
 	b.mu.RLock()
@@ -2265,7 +2259,7 @@ func (b *Backend) StopBackgroundCommand(
 	return manager.Stop(sessionID, commandID, "user")
 }
 
-// ResolveApproval 回执一个审批决策(由客户端经 REST 触发)。
+// ResolveApproval applies a decision received through REST.
 func (b *Backend) ResolveApproval(requestID string, decision string) error {
 	d := approval.Decision(decision)
 	return b.approval.Resolve(requestID, d)
@@ -2354,17 +2348,17 @@ func (b *Backend) SubscribeTerminal(
 	return b.terminal.Subscribe(ctx, sessionID, ref, after)
 }
 
-// Subscribe 订阅某会话的事件流。
+// Subscribe returns a chat event stream.
 func (b *Backend) Subscribe(ctx context.Context, sessionID string) <-chan event.Event {
 	return b.bus.Subscribe(ctx, "session:"+sessionID)
 }
 
-// History 返回某会话的对话历史。
+// History returns projected chat history.
 func (b *Backend) History(ctx context.Context, sessionID string) ([]message.Message, error) {
 	return b.log.History(ctx, sessionID)
 }
 
-// Replay 返回某会话中序号大于 after 的历史事件。
+// Replay returns chat events with sequence numbers greater than after.
 func (b *Backend) Replay(ctx context.Context, sessionID string, after event.Seq) ([]event.Event, error) {
 	return b.log.Read(ctx, sessionID, after)
 }
@@ -2482,7 +2476,7 @@ func (b *Backend) ListModels(ctx context.Context, connectionID string, refresh b
 	return models, nil
 }
 
-// Usage 返回会话最近一次模型请求的 token 使用情况。
+// Usage returns token usage for the latest model request.
 func (b *Backend) Usage(ctx context.Context, sessionID string) (*provider.Usage, error) {
 	if _, ok := b.sessions.Get(sessionID); !ok {
 		return nil, session.ErrNotFound

@@ -14,7 +14,7 @@ onMounted(async () => {
       maximized.value = await appWindow.isMaximized();
     });
   } catch {
-    // 非 Tauri 环境忽略
+    // Ignore non-Tauri environments.
   }
 });
 
@@ -36,7 +36,7 @@ function close() {
     <button
       type="button"
       class="flex h-full w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      title="最小化"
+      :title="$t('Minimize')"
       @click="minimize"
     >
       <MinusIcon class="size-4" />
@@ -44,7 +44,7 @@ function close() {
     <button
       type="button"
       class="flex h-full w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      :title="maximized ? '还原' : '最大化'"
+      :title="maximized ? $t('Restore') : $t('Maximize')"
       @click="toggleMaximize"
     >
       <CopyIcon v-if="maximized" class="size-3.5" />
@@ -53,7 +53,7 @@ function close() {
     <button
       type="button"
       class="flex h-full w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive hover:text-white"
-      title="关闭"
+      :title="$t('Close')"
       @click="close"
     >
       <XIcon class="size-4" />

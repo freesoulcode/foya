@@ -51,19 +51,19 @@ const emit = defineEmits<{
 const { isMac } = usePlatform();
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZapIcon }> = [
-  { id: "connections", label: "连接", icon: PlugZapIcon },
-  { id: "default-models", label: "默认模型", icon: GaugeIcon },
-  { id: "rules", label: "规则", icon: ScrollTextIcon },
-  { id: "memory", label: "记忆", icon: BrainIcon },
-  { id: "skills", label: "技能", icon: BookOpenIcon },
-  { id: "commands", label: "命令", icon: CommandIcon },
+  { id: "connections", label: "Connections", icon: PlugZapIcon },
+  { id: "default-models", label: "Default models", icon: GaugeIcon },
+  { id: "rules", label: "Rules", icon: ScrollTextIcon },
+  { id: "memory", label: "Memory", icon: BrainIcon },
+  { id: "skills", label: "Skills", icon: BookOpenIcon },
+  { id: "commands", label: "Commands", icon: CommandIcon },
   { id: "hooks", label: "Hooks", icon: FileJsonIcon },
   { id: "mcp", label: "MCP", icon: BlocksIcon },
-  { id: "web-search", label: "联网搜索", icon: GlobeIcon },
-  { id: "channels", label: "消息渠道", icon: MessageCircleIcon },
+  { id: "web-search", label: "Web search", icon: GlobeIcon },
+  { id: "channels", label: "Messaging channels", icon: MessageCircleIcon },
   { id: "agents", label: "Agent", icon: BotIcon },
-  { id: "usage", label: "使用统计", icon: ChartNoAxesColumnIncreasingIcon },
-  { id: "appearance", label: "外观", icon: PaletteIcon },
+  { id: "usage", label: "Usage", icon: ChartNoAxesColumnIncreasingIcon },
+  { id: "appearance", label: "Appearance", icon: PaletteIcon },
 ];
 </script>
 
@@ -81,7 +81,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
             <SidebarMenuItem>
               <SidebarMenuButton @click="emit('close')">
                 <ArrowLeftIcon />
-                <span>返回工作区</span>
+                <span>{{ $t("Back to workspace") }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -96,7 +96,7 @@ const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZap
                 @click="emit('select', item.id)"
               >
                 <component :is="item.icon" />
-                <span>{{ item.label }}</span>
+                <span>{{ $t(item.label) }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

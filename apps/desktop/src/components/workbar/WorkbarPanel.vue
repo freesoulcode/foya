@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   FileIcon,
   FolderIcon,
@@ -58,6 +59,7 @@ const emit = defineEmits<{
 }>();
 
 const { showCustomWindowControls } = usePlatform();
+const { t } = useI18n();
 const {
   items,
   tabs,
@@ -128,11 +130,17 @@ const launcherItems = computed<
   }>
 >(() => [
   ...(props.projectPath
-    ? [{ kind: "files" as const, title: "文件", icon: FolderIcon }]
+    ? [{ kind: "files" as const, title: "Files", icon: FolderIcon }]
     : []),
-  { kind: "browser", title: "浏览器", icon: GlobeIcon },
-  { kind: "terminal", title: "终端", icon: TerminalIcon },
+  { kind: "browser", title: "Browser", icon: GlobeIcon },
+  { kind: "terminal", title: "Terminal", icon: TerminalIcon },
 ]);
+
+function tabTitle(tab: WorkbarTab): string {
+  return tab.titleKey
+    ? t(tab.titleKey, { number: tab.titleNumber ?? "" })
+    : tab.title;
+}
 
 async function addFeature(kind: WorkbarLaunchKind) {
   addTab(kind);
@@ -253,12 +261,12 @@ onBeforeUnmount(() => stopResize?.());
       !resizing && 'transition-[width] duration-150',
     ]"
     :style="panelStyle"
-    aria-label="工作台"
+    :aria-label="$t('Workspace')"
   >
     <button
       type="button"
       class="absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize touch-none"
-      aria-label="调整工作台宽度"
+      :aria-label="$t('Resize workspace')"
       @pointerdown="startResize"
     >
       <span class="absolute left-1/2 top-1/2 h-10 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-border opacity-0 transition-opacity hover:opacity-100" />
@@ -282,17 +290,17 @@ onBeforeUnmount(() => stopResize?.());
             <button
               type="button"
               class="flex min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1 text-sm"
-              :title="tab.title"
+              :title="tabTitle(tab)"
               @click="activateTab(tab)"
             >
               <component :is="icons[tab.kind]" class="size-3.5 shrink-0" />
-              <span class="truncate">{{ tab.title }}</span>
+              <span class="truncate">{{ tabTitle(tab) }}</span>
             </button>
             <button
               type="button"
               class="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background/80 hover:text-foreground"
-              :title="`关闭${tab.title}`"
-              :aria-label="`关闭${tab.title}`"
+              :title="$t('Close {name}', { name: tabTitle(tab) })"
+              :aria-label="$t('Close {name}', { name: tabTitle(tab) })"
               @click.stop="closeWorkbarTab(tab)"
             >
               <XIcon class="size-3.5" />
@@ -306,8 +314,8 @@ onBeforeUnmount(() => stopResize?.());
                 size="icon"
                 variant="ghost"
                 class="no-drag size-8 shrink-0 rounded-lg"
-                title="新建标签页"
-                aria-label="新建标签页"
+                :title="$t('New tab')"
+                :aria-label="$t('New tab')"
               >
                 <PlusIcon class="size-4" />
               </Button>
@@ -331,7 +339,7 @@ onBeforeUnmount(() => stopResize?.());
                   :is="icons[item.kind]"
                   class="size-3.5 shrink-0 text-muted-foreground"
                 />
-                <span>{{ item.title }}</span>
+                <span>{{ $t(item.titleKey) }}</span>
               </Button>
             </PopoverContent>
           </Popover>
@@ -343,8 +351,8 @@ onBeforeUnmount(() => stopResize?.());
             size="icon"
             variant="ghost"
             class="mr-1 size-8 shrink-0 rounded-lg"
-            title="关闭右侧工作区"
-            aria-label="关闭右侧工作区"
+            :title="$t('Close side workspace')"
+            :aria-label="$t('Close side workspace')"
             @click="closeWorkbar"
           >
             <PanelRightCloseIcon class="size-4" />
@@ -372,7 +380,7 @@ onBeforeUnmount(() => stopResize?.());
                 :is="item.icon"
                 class="size-4 shrink-0 text-muted-foreground"
               />
-              <span>{{ item.title }}</span>
+              <span>{{ $t(item.title) }}</span>
             </Button>
           </div>
         </div>

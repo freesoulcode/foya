@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from "vue";
+import { useI18n } from "vue-i18n";
 import { PanelRightIcon } from "@lucide/vue";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import WindowControls from "@/components/WindowControls.vue";
@@ -12,6 +13,7 @@ const props = defineProps<{
   session?: Session;
   projectPath?: string;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (e: "rename", id: string, title: string): void;
@@ -23,9 +25,9 @@ const { open: workbarOpen, toggle: toggleWorkbar } = useWorkbar();
 
 const isCollapsed = computed(() => state.value === "collapsed");
 
-const displayTitle = computed(() => props.session?.title || "新对话");
+const displayTitle = computed(() => props.session?.title || t("New chat"));
 
-// 双击改名:标题文字标记 no-drag,避免与窗口拖拽冲突。
+// Keep the title non-draggable so double-click rename works in the drag region.
 const editing = ref(false);
 const editText = ref("");
 const inputEl = ref<HTMLInputElement | null>(null);
@@ -60,7 +62,7 @@ function cancel() {
       class="no-drag text-muted-foreground"
     />
 
-    <!-- 会话标题,靠左;容器空白区可拖,文字本身 no-drag 可双击改名 -->
+    <!-- The empty header area is draggable; the title remains interactive. -->
     <div data-tauri-drag-region class="flex min-w-0 flex-1 items-center">
       <input
         v-if="editing"
@@ -91,8 +93,8 @@ function cancel() {
         v-if="!workbarOpen"
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        title="打开右侧工作区"
-        aria-label="打开右侧工作区"
+        :title="$t('Open side workspace')"
+        :aria-label="$t('Open side workspace')"
         @click="toggleWorkbar"
       >
         <PanelRightIcon class="size-4" />

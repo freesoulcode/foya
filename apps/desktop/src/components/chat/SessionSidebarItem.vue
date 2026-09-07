@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   CircleAlertIcon,
   GitForkIcon,
@@ -22,6 +23,7 @@ const props = defineProps<{
   unread?: boolean;
   needsAttention?: boolean;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "select", id: string): void;
@@ -36,7 +38,7 @@ const editingText = ref("");
 const editInput = ref<HTMLInputElement | null>(null);
 
 function title() {
-  return props.session.title || "新对话";
+  return props.session.title || t("New chat");
 }
 
 async function startRename() {
@@ -105,19 +107,19 @@ function requestDelete(event: Event) {
         <CircleAlertIcon
           v-if="needsAttention && !editing"
           class="ml-auto size-3.5 shrink-0 text-amber-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
-          aria-label="需要处理"
-          title="需要处理"
+          :aria-label="$t('Needs attention')"
+          :title="$t('Needs attention')"
         />
         <Loader2Icon
           v-else-if="running && !editing"
           class="ml-auto size-3.5 shrink-0 animate-spin text-primary group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
-          aria-label="AI 正在运行"
+          :aria-label="$t('AI is running')"
         />
         <span
           v-else-if="unread && !editing"
           class="ml-auto size-2 shrink-0 rounded-full bg-emerald-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
-          aria-label="有未读结果"
-          title="有未读结果"
+          :aria-label="$t('Unread result')"
+          :title="$t('Unread result')"
         />
       </SidebarMenuButton>
       <span
@@ -127,8 +129,8 @@ function requestDelete(event: Event) {
         <button
           type="button"
           class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground disabled:cursor-not-allowed disabled:opacity-40"
-          title="复制会话"
-          aria-label="复制会话"
+          :title="$t('Duplicate chat')"
+          :aria-label="$t('Duplicate chat')"
           :disabled="running || needsAttention"
           @click="requestFork"
         >
@@ -137,7 +139,7 @@ function requestDelete(event: Event) {
         <button
           type="button"
           class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-          :title="session.pinned ? '取消置顶' : '置顶'"
+          :title="session.pinned ? $t('Unpin') : $t('Pin')"
           @click="togglePin"
         >
           <PinIcon v-if="!session.pinned" class="size-3.5" />
@@ -146,7 +148,7 @@ function requestDelete(event: Event) {
         <button
           type="button"
           class="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/15 hover:text-destructive"
-          title="删除"
+          :title="$t('Delete')"
           @click="requestDelete"
         >
           <Trash2Icon class="size-3.5" />

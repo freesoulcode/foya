@@ -29,6 +29,7 @@ type Config struct {
 	Model        string
 	ProjectID    string
 	ApprovalMode approval.Mode
+	Locale       string
 	SessionPath  string
 	AllowedUsers []string
 	AllowedChats []string
@@ -61,6 +62,9 @@ func New(config Config, runtime foyachannel.Runtime, channel Channel, logger *lo
 	}
 	if config.ApprovalMode == "" {
 		config.ApprovalMode = approval.ModeAuto
+	}
+	if config.Locale != "en-US" && config.Locale != "zh-CN" {
+		config.Locale = "zh-CN"
 	}
 	if config.ApprovalMode != approval.ModeAuto && config.ApprovalMode != approval.ModeFullAccess {
 		return nil, errors.New("Feishu bot approval mode must be auto or full_access")
@@ -170,10 +174,10 @@ func (b *Bot) enqueue(ctx context.Context, incoming *types.NormalizedMessage) er
 		if sessionID := b.store.Get(incoming.ChatID); sessionID != "" {
 			b.backend.CancelTurn(sessionID)
 			b.acknowledge(ctx, incoming)
-			return b.sendText(ctx, incoming, "已停止当前任务。")
+			return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "task_stopped"))
 		}
 		b.acknowledge(ctx, incoming)
-		return b.sendText(ctx, incoming, "当前没有可停止的任务。")
+		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "no_task_to_stop"))
 	}
 
 	b.mu.Lock()
@@ -198,7 +202,7 @@ func (b *Bot) enqueue(ctx context.Context, incoming *types.NormalizedMessage) er
 	case <-runCtx.Done():
 		return runCtx.Err()
 	default:
-		return b.sendText(ctx, incoming, "消息队列已满，请稍后重试。")
+		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "queue_full"))
 	}
 }
 
@@ -244,7 +248,7 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 		if _, err := b.createSession(incoming.ChatID); err != nil {
 			return b.replyError(turnCtx, incoming, err)
 		}
-		return b.sendText(turnCtx, incoming, "已开启新会话。")
+		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "new_chat"))
 	}
 
 	sessionID, err := b.sessionForChat(incoming.ChatID)
@@ -256,7 +260,7 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 		return b.replyError(turnCtx, incoming, err)
 	}
 	if content == "" && len(attachments) == 0 {
-		return b.sendText(turnCtx, incoming, "暂时只支持文本和图片消息。")
+		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "unsupported_message"))
 	}
 
 	events := b.backend.Subscribe(turnCtx, sessionID)
@@ -314,7 +318,7 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 					response += responseErr.Error()
 				}
 				if response == "" {
-					response = "任务已结束，但没有生成文本回复。"
+					response = localizedMessage(b.config.Locale, "empty_response")
 				}
 				return b.sendMarkdown(turnCtx, incoming, response)
 			}
@@ -356,14 +360,18 @@ func (b *Bot) imageAttachments(
 ) ([]message.AttachmentRef, error) {
 	for _, resource := range incoming.Resources {
 		if resource.Type != "image" {
-			return nil, fmt.Errorf("暂时不支持 %s 类型的附件", resource.Type)
+			return nil, errors.New(localizedMessage(
+				b.config.Locale,
+				"unsupported_attachment",
+				resource.Type,
+			))
 		}
 	}
 	attachments := make([]message.AttachmentRef, 0, len(incoming.Resources))
 	for index, resource := range incoming.Resources {
 		data, err := b.channel.DownloadFile(ctx, resource.FileKey, "image")
 		if err != nil {
-			return nil, fmt.Errorf("下载图片失败: %w", err)
+			return nil, errors.New(localizedMessage(b.config.Locale, "download_image_failed", err))
 		}
 		name := strings.TrimSpace(resource.FileName)
 		if name == "" {
@@ -371,7 +379,7 @@ func (b *Bot) imageAttachments(
 		}
 		ref, err := b.backend.PutImage(ctx, sessionID, filepath.Base(name), bytes.NewReader(data))
 		if err != nil {
-			return nil, fmt.Errorf("导入图片失败: %w", err)
+			return nil, errors.New(localizedMessage(b.config.Locale, "import_image_failed", err))
 		}
 		attachments = append(attachments, ref)
 	}
@@ -389,7 +397,7 @@ func (b *Bot) allowed(incoming *types.NormalizedMessage) bool {
 }
 
 func (b *Bot) replyError(ctx context.Context, incoming *types.NormalizedMessage, err error) error {
-	sendErr := b.sendText(ctx, incoming, "请求失败："+err.Error())
+	sendErr := b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "request_failed", err))
 	return errors.Join(err, sendErr)
 }
 

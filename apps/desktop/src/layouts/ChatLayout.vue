@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { RouterView, useRoute, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useKernel } from "@/composables/useKernel";
@@ -27,6 +28,7 @@ import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
 
 const router = useRouter();
 const route = useRoute();
+const { t } = useI18n();
 const { isMac } = usePlatform();
 const {
   open: workbarOpen,
@@ -111,7 +113,7 @@ const pluginsActive = computed(
 );
 const workspacePageActive = computed(() => route.name !== "chat");
 
-// 每个 user 消息对应一个回合;摘要取该条用户消息的前若干字。
+// Each user message starts a turn; its leading text becomes the summary.
 const TURN_LABEL_MAX = 40;
 const turnPoints = computed(() =>
   messages.value
@@ -122,12 +124,12 @@ const turnPoints = computed(() =>
         label:
           text.length > TURN_LABEL_MAX
             ? `${text.slice(0, TURN_LABEL_MAX)}…`
-            : text || "新对话",
+            : text || t("New chat"),
       };
     })
 );
 
-// 新回合产生(用户发消息)或切会话时,默认高亮最新回合;滚动时由 MessageList 覆盖。
+// Select the latest turn by default; MessageList updates it while scrolling.
 watch(
   () => turnPoints.value.length,
   (n) => {
@@ -163,7 +165,7 @@ async function executeComposerCommand(name: string, args: string) {
   await api.executeCommand(sessionID, name, args);
 }
 
-// 输入框当前展示的模型/工作目录/审批档位:草稿态读 draft,已建会话读 activeSession。
+// Draft settings come from draft state; existing chats use active session state.
 const composerModel = computed(() =>
   isDraft.value ? draft.model : activeSession.value?.model ?? ""
 );
@@ -278,7 +280,7 @@ async function onOpenLink(url: string) {
     try {
       await openUrl(url);
     } catch (error) {
-      console.error("使用系统浏览器打开链接失败:", error);
+      console.error("Failed to open link in system browser:", error);
     }
     return;
   }
@@ -341,11 +343,11 @@ async function onBrowserActionResult(
   try {
     await api.resolveBrowserAction(request.session_id, request.id, result);
   } catch (cause) {
-    console.error("浏览器动作回执失败:", cause);
+    console.error("Failed to resolve browser action:", cause);
   }
 }
 
-// 统一处理输入框里的配置变更:草稿态直接改本地 draft;已建会话调用 PATCH 实时落库。
+// Apply composer settings locally for drafts and persist them for existing chats.
 function onModelConfigChange(value: {
   connectionID: string;
   model: string;
@@ -408,12 +410,12 @@ function onApprovalChange(value: ApprovalMode) {
   }
 }
 
-// 侧边栏手动改名:调用内核 PATCH,置 title_is_manual。
+// Manual sidebar renames are persisted and disable generated title replacement.
 function onRename(id: string, title: string) {
   void renameSession(id, title);
 }
 
-// 置顶/取消置顶:走 PATCH pinned 字段,内核广播后本地项更新。
+// Pin changes are persisted and reflected through the kernel event stream.
 function onPin(id: string, pinned: boolean) {
   void pinSession(id, pinned);
 }
@@ -421,11 +423,11 @@ function onPin(id: string, pinned: boolean) {
 function onFork(id: string) {
   if (workspacePageActive.value) void router.push("/chat");
   void forkSession(id).catch((error) => {
-    console.error("复制会话失败:", error);
+    console.error("Failed to fork chat:", error);
   });
 }
 
-// 删除会话:内核中断回合、清历史并广播,前端移除并按需切换会话。
+// Deleting a chat cancels its turn, removes history, and updates all clients.
 function onDelete(id: string) {
   void deleteSession(id).then(() => removeWorkbarSession(id));
 }
@@ -436,7 +438,7 @@ async function onDeleteProject(id: string) {
     sessions.value = await api.listSessions();
     await refreshProjects();
   } catch (error) {
-    console.error("删除项目失败:", error);
+    console.error("Failed to delete project:", error);
   }
 }
 
@@ -445,7 +447,7 @@ async function onRenameProject(id: string, name: string) {
     await api.updateProject(id, { name });
     await refreshProjects();
   } catch (error) {
-    console.error("重命名项目失败:", error);
+    console.error("Failed to rename project:", error);
   }
 }
 
@@ -454,7 +456,7 @@ async function onPinProject(id: string, pinned: boolean) {
     await api.updateProject(id, { pinned });
     await refreshProjects();
   } catch (error) {
-    console.error("更新项目置顶状态失败:", error);
+    console.error("Failed to update project pin state:", error);
   }
 }
 

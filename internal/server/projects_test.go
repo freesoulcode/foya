@@ -96,8 +96,8 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 	}, &defaultProject); code != http.StatusCreated {
 		t.Fatalf("create default project status = %d", code)
 	}
-	if defaultProject.Name != "新项目" {
-		t.Fatalf("default project name = %q, want %q", defaultProject.Name, "新项目")
+	if defaultProject.Name != "New project" {
+		t.Fatalf("default project name = %q, want %q", defaultProject.Name, "New project")
 	}
 	if defaultProject.ID == createdProject.ID || defaultProject.Path != createdProject.Path {
 		t.Fatalf("shared folder project = %#v", defaultProject)

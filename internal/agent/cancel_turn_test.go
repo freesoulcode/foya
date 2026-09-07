@@ -149,7 +149,7 @@ func TestCancelledToolCallPersistsInterruptedResult(t *testing.T) {
 			break
 		}
 	}
-	if toolResult == nil || toolResult.Content != "已中断" {
+	if toolResult == nil || toolResult.Content != "Interrupted" {
 		t.Fatalf("interrupted tool result was not persisted: %#v", history)
 	}
 }

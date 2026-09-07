@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { api, type AgentLimits } from "@/lib/api";
 import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ const agentLimits = ref<AgentLimits>({
   max_per_root: 4,
   max_tree_tokens: 0,
 });
+const { t } = useI18n();
 const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
@@ -39,7 +41,7 @@ async function saveAgentLimits() {
     !Number.isInteger(limits.max_tree_tokens) ||
     limits.max_tree_tokens < 0
   ) {
-    error.value = "请检查输入范围：并发 1~256，Token 上限 >= 0";
+    error.value = t("Check the input ranges: concurrency 1-256 and token limit at least 0");
     return;
   }
   saving.value = true;
@@ -57,14 +59,14 @@ void loadAgentLimits();
 
 <template>
   <SettingsPage
-    title="Agent 调度"
-    description="配置子 Agent 并发与任务树资源限制。"
+    :title="$t('Agent scheduling')"
+    :description="$t('Configure sub-agent concurrency and task tree resource limits.')"
   >
     <div class="max-w-4xl divide-y divide-border border-y border-border">
       <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
         <span class="min-w-0">
-          <span class="block text-sm font-medium">全局并发</span>
-          <span class="block text-xs text-muted-foreground">整个内核同时运行的 Child 数</span>
+          <span class="block text-sm font-medium">{{ $t("Global concurrency") }}</span>
+          <span class="block text-xs text-muted-foreground">{{ $t("Children running across the entire kernel") }}</span>
         </span>
         <Input
           v-model.number="agentLimits.max_global_concurrency"
@@ -77,8 +79,8 @@ void loadAgentLimits();
       </label>
       <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
         <span class="min-w-0">
-          <span class="block text-sm font-medium">单任务并发</span>
-          <span class="block text-xs text-muted-foreground">单个根任务同时运行的 Child 数</span>
+          <span class="block text-sm font-medium">{{ $t("Per-task concurrency") }}</span>
+          <span class="block text-xs text-muted-foreground">{{ $t("Children running under one root task") }}</span>
         </span>
         <Input
           v-model.number="agentLimits.max_per_root"
@@ -91,8 +93,8 @@ void loadAgentLimits();
       </label>
       <label class="grid grid-cols-[minmax(0,1fr)_8rem] items-center gap-6 py-4">
         <span class="min-w-0">
-          <span class="block text-sm font-medium">任务树 Token 上限</span>
-          <span class="block text-xs text-muted-foreground">0 表示不限制</span>
+          <span class="block text-sm font-medium">{{ $t("Task tree token limit") }}</span>
+          <span class="block text-xs text-muted-foreground">{{ $t("0 means unlimited") }}</span>
         </span>
         <Input
           v-model.number="agentLimits.max_tree_tokens"
@@ -109,7 +111,7 @@ void loadAgentLimits();
         :disabled="loading || saving"
         @click="saveAgentLimits"
       >
-        {{ saving ? "保存中..." : "保存" }}
+        {{ saving ? $t("Saving") : $t("Save") }}
       </Button>
     </div>
   </SettingsPage>

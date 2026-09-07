@@ -74,7 +74,7 @@ pub(crate) async fn upload_canvas_asset(
         body,
     )
     .await?;
-    String::from_utf8(response).map_err(|e| format!("画布资产响应不是 UTF-8: {e}"))
+    String::from_utf8(response).map_err(|e| format!("Canvas asset response is not UTF-8: {e}"))
 }
 
 #[tauri::command]
@@ -129,5 +129,5 @@ pub(crate) async fn subscribe_canvas_events(
     });
     ready_rx
         .await
-        .map_err(|_| "画布事件订阅在连接前意外结束".to_string())?
+        .map_err(|_| "Canvas event subscription ended before connecting".to_string())?
 }

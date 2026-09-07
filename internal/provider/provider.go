@@ -1,6 +1,6 @@
-// Package provider 抽象多个 LLM provider,屏蔽协议差异,统一流式接口。
+// Package provider defines a protocol-neutral interface for LLM providers.
 //
-// BYOK:拿用户自带的 key 直连 provider,token 流量不经任何第三方。
+// BYOK requests connect directly to providers without proxying token traffic.
 package provider
 
 import (
@@ -16,21 +16,21 @@ var (
 	ErrNativeCompactionUnsupported = errors.New("provider native compaction is unsupported")
 )
 
-// FunctionDef 是一个函数工具的定义。
+// FunctionDef describes a callable function tool.
 type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// ToolDef 是喂给模型的工具定义(OpenAI tool-calling 格式)。
+// ToolDef is the normalized tool definition sent to a model.
 type ToolDef struct {
-	Type     string      `json:"type"` // 固定 "function"
+	Type     string      `json:"type"` // Always "function".
 	Function FunctionDef `json:"function"`
 }
 
-// Usage 是单次模型请求的 token 使用情况。
-// CachedTokens 是 InputTokens 的子集,仍占用上下文窗口。
+// Usage contains token counts for one model request.
+// CachedTokens is a subset of InputTokens and still consumes context.
 type Usage struct {
 	Model        string `json:"model"`
 	InputTokens  int64  `json:"input_tokens"`
@@ -39,7 +39,7 @@ type Usage struct {
 	CachedTokens int64  `json:"cached_tokens"`
 }
 
-// ModelInfo 是模型列表中的可用元数据。ContextWindow 为 0 表示端点未提供。
+// ModelInfo contains catalog metadata. A zero ContextWindow means unknown.
 type ModelInfo struct {
 	ID            string            `json:"id"`
 	ContextWindow int64             `json:"context_window,omitempty"`
@@ -103,7 +103,7 @@ func TextMessages(items []message.Message) []InputMessage {
 	return out
 }
 
-// SearchResult 是跨 Provider 统一的网页搜索结果。
+// SearchResult is a provider-neutral web search result.
 type SearchResult struct {
 	Title   string `json:"title"`
 	URL     string `json:"url"`
@@ -112,28 +112,27 @@ type SearchResult struct {
 	Rank    int    `json:"rank"`
 }
 
-// NativeWebSearcher 是 Provider 的可选能力。实现仅在对应模型与协议确实
-// 支持原生联网搜索时返回结果；不支持时返回 ErrNativeSearchUnsupported。
+// NativeWebSearcher is an optional provider capability.
 type NativeWebSearcher interface {
 	SearchWeb(ctx context.Context, model, query string, limit int) ([]SearchResult, error)
 }
 
-// StreamEvent 是模型流式响应的一个增量。
+// StreamEvent is one model response stream delta.
 type StreamEvent struct {
 	Type  string // text_delta / reasoning_delta / tool_call_delta / done / error
 	Text  string
 	Usage *Usage
 
-	// tool_call_delta 字段
-	ToolIndex   int    // 该工具调用在本批次中的序号(用于分片拼接)
-	ToolCallID  string // 首片携带
-	ToolName    string // 首片携带
-	ToolArgsDlt string // 参数 JSON 的增量片段
+	// Tool-call delta fields.
+	ToolIndex   int    // Index within the current tool-call batch.
+	ToolCallID  string // Present on the first delta.
+	ToolName    string // Present on the first delta.
+	ToolArgsDlt string // JSON argument fragment.
 
-	FinishReason string // stop / tool_calls / length / error(仅 done 事件)
+	FinishReason string // stop / tool_calls / length / error on done events.
 }
 
-// Request 是一次模型请求,携带完整对话历史(多轮上下文)与可用工具。
+// Request contains full conversation context and available tools.
 type Request struct {
 	Model           string
 	ReasoningEffort string
@@ -149,15 +148,14 @@ type ContextState struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// Provider 是统一的 LLM 接入点。
+// Provider is the normalized LLM entry point.
 type Provider interface {
 	Name() string
-	// Stream 发起流式请求;实现必须把错误编码进事件流,不 panic。
+	// Stream starts a request and reports failures through the event stream.
 	Stream(ctx context.Context, req Request) (<-chan StreamEvent, error)
 }
 
-// ModelLister 是可选能力:支持列出该 provider 上可用的模型。
-// OpenAI 兼容服务通常通过 GET /models 返回模型列表;不支持的 provider 可不实现。
+// ModelLister is an optional capability for listing available models.
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
@@ -168,8 +166,7 @@ type CapabilityResolver interface {
 	ModelCapabilities(model string) ModelCapabilities
 }
 
-// Completer 是可选能力:非流式一次性生成短文本。
-// 用于标题生成等旁路任务;不支持的 provider 可不实现,调用方走截断兜底。
+// Completer is an optional non-streaming capability for short side tasks.
 type Completer interface {
 	Complete(ctx context.Context, req Request) (string, error)
 }

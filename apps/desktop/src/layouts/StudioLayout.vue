@@ -108,12 +108,12 @@ function close() {
       <SidebarContent>
         <SidebarGroup class="p-2 pt-1">
           <div class="flex h-9 items-center justify-between px-2">
-            <span class="truncate text-lg font-semibold text-sidebar-foreground">创作项目</span>
+            <span class="truncate text-lg font-semibold text-sidebar-foreground">{{ $t("Creative projects") }}</span>
             <Button
               size="icon"
               variant="ghost"
               class="no-drag size-7"
-              title="新建创作项目"
+              :title="$t('New creative project')"
               :disabled="creating"
               @click="createProject"
             >
@@ -138,18 +138,18 @@ function close() {
                 </SidebarMenuButton>
                 <DropdownMenu>
                   <DropdownMenuTrigger as-child>
-                    <SidebarMenuAction show-on-hover title="项目操作" @click.stop>
+                    <SidebarMenuAction show-on-hover :title="$t('Project actions')" @click.stop>
                       <MoreHorizontalIcon />
                     </SidebarMenuAction>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent side="right" align="start">
                     <DropdownMenuItem @select="openRename(project)">
                       <PencilIcon />
-                      重命名
+                      {{ $t("Rename") }}
                     </DropdownMenuItem>
                     <DropdownMenuItem class="text-destructive" @select="pendingDelete = project">
                       <Trash2Icon />
-                      删除
+                      {{ $t("Delete") }}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -158,11 +158,11 @@ function close() {
 
             <div v-if="loading" class="flex items-center gap-2 px-2 py-3 text-xs text-sidebar-foreground/60">
               <LoaderCircleIcon class="size-4 animate-spin" />
-              <span>正在读取项目</span>
+              <span>{{ $t("Loading projects") }}</span>
             </div>
 
             <div v-else-if="projects.length === 0" class="px-2 py-3 text-xs text-sidebar-foreground/60">
-              暂无项目
+              {{ $t("No projects") }}
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -172,11 +172,11 @@ function close() {
         <Button
           variant="ghost"
           class="no-drag w-full justify-start gap-2"
-          title="返回对话"
+          :title="$t('Back to chat')"
           @click="close"
         >
           <ArrowLeftIcon class="size-4" />
-          <span>返回对话</span>
+          <span>{{ $t("Back to chat") }}</span>
         </Button>
       </SidebarFooter>
     </Sidebar>
@@ -210,14 +210,14 @@ function close() {
     <Dialog :open="Boolean(pendingDelete)" @update:open="(open) => { if (!open) pendingDelete = null }">
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>删除创作项目</DialogTitle>
+          <DialogTitle>{{ $t("Delete creative project") }}</DialogTitle>
           <DialogDescription>
-            “{{ pendingDelete?.title }}”中的画布和素材将被永久删除。
+            {{ $t("Delete creative project confirmation", { name: pendingDelete?.title ?? "" }) }}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" @click="pendingDelete = null">取消</Button>
-          <Button variant="destructive" @click="deleteProject">删除</Button>
+          <Button variant="outline" @click="pendingDelete = null">{{ $t("Cancel") }}</Button>
+          <Button variant="destructive" @click="deleteProject">{{ $t("Delete") }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -225,18 +225,18 @@ function close() {
     <Dialog :open="Boolean(pendingRename)" @update:open="(open) => { if (!open) pendingRename = null }">
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>重命名创作项目</DialogTitle>
-          <DialogDescription>修改项目在创作工作台中的显示名称。</DialogDescription>
+          <DialogTitle>{{ $t("Rename creative project") }}</DialogTitle>
+          <DialogDescription>{{ $t("Change the project display name in the creative workspace.") }}</DialogDescription>
         </DialogHeader>
         <Input
           v-model="renameValue"
           autofocus
-          placeholder="项目名称"
+          :placeholder="$t('Project name')"
           @keyup.enter="submitRename"
         />
         <DialogFooter>
-          <Button variant="outline" @click="pendingRename = null">取消</Button>
-          <Button :disabled="!renameValue.trim()" @click="submitRename">保存</Button>
+          <Button variant="outline" @click="pendingRename = null">{{ $t("Cancel") }}</Button>
+          <Button :disabled="!renameValue.trim()" @click="submitRename">{{ $t("Save") }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

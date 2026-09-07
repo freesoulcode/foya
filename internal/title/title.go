@@ -1,7 +1,6 @@
-// Package title 根据会话首条用户消息生成标题。
+// Package title generates chat titles from the first user message.
 //
-// 标题生成是旁路任务:在首个 turn 开始时由后台 goroutine 触发,
-// 不阻塞主回合。生成失败时由调用方走截断兜底。
+// Generation runs in a background goroutine and never blocks the main turn.
 package title
 
 import (
@@ -16,18 +15,17 @@ import (
 )
 
 const (
-	// DefaultTitle 是无任何可提炼文本时的兜底标题。
-	DefaultTitle = "新对话"
-	// MaxTitleChars 是标题硬上限(字符数,非字节)。
+	// DefaultTitle is used when no meaningful text can be extracted.
+	DefaultTitle = "New chat"
+	// MaxTitleChars is the hard title limit in characters.
 	MaxTitleChars = 50
-	// MaxSourceBytes 是喂给模型的首条消息上限,超出截断。
+	// MaxSourceBytes limits the first message sent to the title model.
 	MaxSourceBytes = 8 * 1024
-	// generateTimeout 是标题生成的整体超时。
+	// generateTimeout bounds the complete title request.
 	generateTimeout = 15 * time.Second
 )
 
-// systemPrompt 是标题生成的系统提示:硬约束输出为单行、无前后缀,
-// 并对 CJK 等语言给出与字母语言不同的长度指引。
+// systemPrompt requires one concise title in the user's language.
 const systemPrompt = `You generate a short title for a conversation, based on the user's first message.
 
 <rules>
@@ -35,7 +33,7 @@ const systemPrompt = `You generate a short title for a conversation, based on th
 - The title must summarize what the user wants to do, not repeat it verbatim.
 - Hard limit: no more than 50 characters.
 - Exactly one line. Never use a second line or more than one sentence.
-- No quotes, no colons, no "Title:" / "标题：" prefix, no markdown, no list numbering.
+- No quotes, no colons, no localized "Title:" prefix, no markdown, no list numbering.
 - Do not include any thinking, explanation, or preamble.
 - The entire text you return is used verbatim as the title.
 </rules>`
@@ -46,13 +44,12 @@ const userPromptTpl = `Generate a title for this first user message:
 
 var (
 	thinkTagRe       = regexp.MustCompile(`(?is)<think>.*?(?:</think>|$)`)
-	prefixRe         = regexp.MustCompile(`(?i)^\s*(?:title|标题)\s*[:：]\s*`)
+	prefixRe         = regexp.MustCompile(`(?i)^\s*(?:title|\x{6807}\x{9898})\s*[:\x{ff1a}]\s*`)
 	systemReminderRe = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
 	userMessageTagRe = regexp.MustCompile(`(?is)<user-message>(.*?)</user-message>`)
 )
 
-// Generate 调模型生成标题。任何失败(超时、provider 不支持、返回空)都返回空串,
-// 由调用方走 Fallback。
+// Generate asks the model for a title and returns an empty string on failure.
 func Generate(
 	ctx context.Context,
 	c provider.Completer,
@@ -83,7 +80,7 @@ func Generate(
 	return cleanTitle(text)
 }
 
-// Fallback 在模型生成不可用时,用首条消息首行截断兜底。
+// Fallback derives a title from the first line of the user's message.
 func Fallback(userText string) string {
 	source := normalizeSource(userText)
 	if source == "" {
@@ -95,7 +92,7 @@ func Fallback(userText string) string {
 	return DefaultTitle
 }
 
-// normalizeSource 清洗首条用户消息:剥标签、取首行、截断到上限。
+// normalizeSource removes wrappers and bounds the first user message.
 func normalizeSource(text string) string {
 	if m := userMessageTagRe.FindStringSubmatch(text); len(m) > 1 {
 		text = m[1]
@@ -108,7 +105,7 @@ func normalizeSource(text string) string {
 	return text
 }
 
-// cleanTitle 清洗模型输出:剥 think 块、去前缀/引号、取首行、trim、截断。
+// cleanTitle removes reasoning, prefixes, quotes, extra lines, and overflow.
 func cleanTitle(text string) string {
 	text = thinkTagRe.ReplaceAllString(text, "")
 	text = prefixRe.ReplaceAllString(text, "")

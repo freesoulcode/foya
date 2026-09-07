@@ -1,8 +1,7 @@
-// Package protocol 定义客户端 ↔ 内核的线格式类型(REST + SSE)。
+// Package protocol defines REST and SSE wire types shared by clients and the kernel.
 //
-// 指令走 REST(Submission 方向),事件流走 SSE(Event 方向),靠 RunID
-// 关联。SSE 事件带单调序号,支持 Last-Event-ID 断线补发。传输管道可换
-// (本地 Unix socket / 远端 TCP+TLS),协议不变。
+// Commands use REST and events use SSE, correlated by run ID. Monotonic event
+// sequences support Last-Event-ID replay across local or remote transports.
 package protocol
 
 import (
@@ -32,7 +31,7 @@ type BrowserActionResultRequest struct {
 	Error            string         `json:"error,omitempty"`
 }
 
-// SubmitTurnRequest 发起一个回合。
+// SubmitTurnRequest starts a turn.
 type SubmitTurnRequest struct {
 	Session         string                   `json:"session"`
 	Message         string                   `json:"message"`
@@ -45,8 +44,7 @@ type ArtifactResponse struct {
 	Attachment message.AttachmentRef `json:"attachment"`
 }
 
-// CreateSessionRequest 新建会话时的可选参数。
-// 留空的字段由内核用当前 provider 默认值/默认审批档位填充。
+// CreateSessionRequest contains optional settings for a new chat.
 type CreateSessionRequest struct {
 	ConnectionID    string `json:"connection_id,omitempty"`
 	Model           string `json:"model,omitempty"`
@@ -60,19 +58,18 @@ type ForkSessionRequest struct {
 	ThroughSeq uint64 `json:"through_seq,omitempty"`
 }
 
-// UpdateSessionRequest 局部更新会话配置。
-// ProjectID 只能首次绑定，已有非空值后不可更换或清空。
+// UpdateSessionRequest partially updates chat settings.
 type UpdateSessionRequest struct {
 	ConnectionID    *string `json:"connection_id,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
 	ProjectID       *string `json:"project_id,omitempty"`
 	ApprovalMode    *string `json:"approval_mode,omitempty"`
-	Title           *string `json:"title,omitempty"`  // 手动改名;置 TitleIsManual=true
-	Pinned          *bool   `json:"pinned,omitempty"` // 置顶/取消置顶
+	Title           *string `json:"title,omitempty"`  // Manual rename.
+	Pinned          *bool   `json:"pinned,omitempty"` // Pin state.
 }
 
-// SubmitTurnResponse 表示消息已直接启动或进入待发送队列。
+// SubmitTurnResponse reports whether a message started or was queued.
 type SubmitTurnResponse struct {
 	RunID  string         `json:"run_id,omitempty"`
 	Status string         `json:"status"` // started / queued
@@ -119,7 +116,7 @@ type ResolveFileReviewRequest struct {
 	ForceFileKeys      []string `json:"force_file_keys,omitempty"`
 }
 
-// QueueMessageRequest 显式向待发送队列追加消息。
+// QueueMessageRequest explicitly appends a queued message.
 type QueueMessageRequest struct {
 	Message         string                   `json:"message"`
 	SkillRef        string                   `json:"skill_ref,omitempty"`
@@ -127,8 +124,7 @@ type QueueMessageRequest struct {
 	BrowserElements []message.BrowserElement `json:"browser_elements,omitempty"`
 }
 
-// UpdateQueuedMessageRequest 修改队列消息正文或位置。
-// Position 从 0 开始;省略字段表示保持不变。
+// UpdateQueuedMessageRequest changes queued message content or position.
 type UpdateQueuedMessageRequest struct {
 	Message  *string `json:"message,omitempty"`
 	Position *int    `json:"position,omitempty"`
@@ -173,23 +169,22 @@ type ConnectionModelsResponse struct {
 	Capabilities   map[string]provider.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
-// ProviderConfig 是 provider 配置的线格式(读写设置界面用)。
-// 读取时 APIKey 脱敏(仅返回是否已设置),写入时按需带上明文。
+// ProviderConfig is the provider wire format. API keys are write-only.
 type ProviderConfig struct {
 	Kind      string `json:"kind"`
 	BaseURL   string `json:"base_url"`
 	Model     string `json:"model"`
-	APIKey    string `json:"api_key,omitempty"`     // 仅写入方向携带
-	HasAPIKey bool   `json:"has_api_key,omitempty"` // 仅读取方向返回:是否已配置 key
+	APIKey    string `json:"api_key,omitempty"`     // Write requests only.
+	HasAPIKey bool   `json:"has_api_key,omitempty"` // Read responses only.
 }
 
-// ModelsResponse 是 GET /config/models 的响应。
+// ModelsResponse is returned by model catalog endpoints.
 type ModelsResponse struct {
 	Models         []string         `json:"models"`
 	ContextWindows map[string]int64 `json:"context_windows,omitempty"`
 }
 
-// CompactSessionResponse 是一次手动上下文压缩的结果。
+// CompactSessionResponse describes a manual context compaction.
 type CompactSessionResponse struct {
 	CheckpointID          string `json:"checkpoint_id,omitempty"`
 	Phase                 string `json:"phase,omitempty"`
@@ -219,7 +214,7 @@ type TerminalResizeRequest struct {
 	Rows uint16 `json:"rows"`
 }
 
-// ApprovalDecisionRequest 是客户端回执一个审批决策。
+// ApprovalDecisionRequest resolves an approval request.
 type ApprovalDecisionRequest struct {
 	RequestID string `json:"request_id"`
 	Decision  string `json:"decision"`
@@ -287,14 +282,14 @@ type MCPPromptGetRequest struct {
 	Args     map[string]string `json:"args,omitempty"`
 }
 
-// SetCredentialRequest 配置凭证(独立安全通道,不进事件流)。
+// SetCredentialRequest writes a secret outside the event stream.
 type SetCredentialRequest struct {
 	ConnectionID string `json:"connection_id"`
 	Kind         string `json:"kind"`
 	Secret       string `json:"secret"`
 }
 
-// ErrorResponse 是统一错误返回。
+// ErrorResponse is the stable error envelope used by every REST endpoint.
 type ErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

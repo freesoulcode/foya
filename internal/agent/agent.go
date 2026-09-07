@@ -1,55 +1,55 @@
-// Package agent 是回合引擎:驱动「组装上下文 → 请求模型 → 解析工具调用
-// → 执行 → 回灌 → 判断是否继续」的单回合循环。
+// Package agent implements the turn engine that builds context, calls a model,
+// executes tool calls, feeds results back, and decides whether to continue.
 //
-// 回合是可取消的后台 goroutine,主循环永远能响应中断。每个 session
-// 串行执行回合,多 session 并发。
+// Turns run in cancellable background goroutines. Each chat is serial while
+// different chats can run concurrently.
 package agent
 
 import "context"
 
-// TurnKind 标识回合类型。
+// TurnKind identifies a turn type.
 type TurnKind string
 
 const (
-	TurnRegular  TurnKind = "regular"  // 常规聊天回合
-	TurnCompact  TurnKind = "compact"  // 上下文压缩
-	TurnSubAgent TurnKind = "subagent" // 子 agent
+	TurnRegular  TurnKind = "regular"  // Regular chat turn.
+	TurnCompact  TurnKind = "compact"  // Context compaction.
+	TurnSubAgent TurnKind = "subagent" // Sub-agent turn.
 )
 
-// StopReason 说明回合为何结束。
+// StopReason explains why a turn ended.
 type StopReason string
 
 const (
-	StopEnd       StopReason = "stop"       // 模型正常结束
-	StopToolCalls StopReason = "tool_calls" // 需执行工具后继续
-	StopLength    StopReason = "length"     // 被 token 上限截断
+	StopEnd       StopReason = "stop"       // The model finished normally.
+	StopToolCalls StopReason = "tool_calls" // Tool execution must continue.
+	StopLength    StopReason = "length"     // The token limit was reached.
 	StopError     StopReason = "error"
-	StopAborted   StopReason = "aborted" // 被取消
+	StopAborted   StopReason = "aborted" // The turn was cancelled.
 )
 
-// TurnInput 是发起一个回合的输入。
+// TurnInput contains the input for one turn.
 type TurnInput struct {
-	Message string // 占位:后续替换为结构化消息
+	Message string // Placeholder for a future structured message.
 }
 
-// TurnResult 是一个回合的结果。
+// TurnResult is the outcome of one turn.
 type TurnResult struct {
 	NeedsFollowUp bool
 	StopReason    StopReason
 }
 
-// Turn 是一个可取消的回合任务。
+// Turn is a cancellable turn task.
 type Turn interface {
 	Run(ctx context.Context, in TurnInput) (TurnResult, error)
 	Kind() TurnKind
 }
 
-// Loop 是回合引擎:每 session 串行,多 session 并发。
+// Loop runs turns serially per chat and concurrently across chats.
 type Loop interface {
-	// Submit 提交一个回合;同 session 若在跑,按策略排队或抢占。
+	// Submit starts a turn or applies the configured queue policy.
 	Submit(sessionID string, in TurnInput) (runID string, err error)
-	// Cancel 取消指定 session 的当前回合。
+	// Cancel stops the active turn for a chat.
 	Cancel(sessionID string)
-	// Steer 在回合运行中插话。
+	// Steer injects input into a running turn.
 	Steer(sessionID string, msg string)
 }

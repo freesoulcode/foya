@@ -28,6 +28,7 @@ const (
 type Settings struct {
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`
+	Locale       string        `json:"locale,omitempty"`
 	Enabled      bool          `json:"enabled"`
 	AppID        string        `json:"app_id"`
 	AppSecret    string        `json:"app_secret,omitempty"`
@@ -42,6 +43,7 @@ type Settings struct {
 
 type UpdateInput struct {
 	Name         string        `json:"name"`
+	Locale       string        `json:"locale,omitempty"`
 	Enabled      bool          `json:"enabled"`
 	AppID        string        `json:"app_id"`
 	AppSecret    string        `json:"app_secret,omitempty"`
@@ -58,6 +60,7 @@ type State struct {
 	ID           string        `json:"id"`
 	Kind         string        `json:"kind"`
 	Name         string        `json:"name"`
+	Locale       string        `json:"locale"`
 	Enabled      bool          `json:"enabled"`
 	AppID        string        `json:"app_id"`
 	HasAppSecret bool          `json:"has_app_secret"`
@@ -209,7 +212,7 @@ func (m *Manager) Create(input UpdateInput) (State, error) {
 	}
 	settings := settingsFromInput(id, input, "")
 	if settings.Name == "" {
-		settings.Name = fmt.Sprintf("飞书 Bot %d", len(m.order)+1)
+		settings.Name = fmt.Sprintf("Feishu Bot %d", len(m.order)+1)
 	}
 	if err := validateSettings(settings); err != nil {
 		return State{}, err
@@ -353,6 +356,7 @@ func (m *Manager) start(id string) error {
 		Model:        settings.Model,
 		ProjectID:    settings.ProjectID,
 		ApprovalMode: settings.ApprovalMode,
+		Locale:       settings.Locale,
 		SessionPath:  m.sessionPath(id),
 		AllowedUsers: settings.AllowedUsers,
 		AllowedChats: settings.AllowedChats,
@@ -505,7 +509,7 @@ func loadCatalog(catalogPath, legacyPath string) ([]Settings, bool, error) {
 	}
 	settings := normalizeSettings(persisted.Settings)
 	settings.ID = id
-	settings.Name = "飞书 Bot"
+	settings.Name = "Feishu Bot"
 	if err := validateSettings(settings); err != nil {
 		return nil, false, err
 	}
@@ -555,6 +559,7 @@ func settingsFromInput(id string, input UpdateInput, existingSecret string) Sett
 	return normalizeSettings(Settings{
 		ID:           id,
 		Name:         input.Name,
+		Locale:       input.Locale,
 		Enabled:      input.Enabled,
 		AppID:        input.AppID,
 		AppSecret:    secret,
@@ -571,6 +576,7 @@ func settingsFromInput(id string, input UpdateInput, existingSecret string) Sett
 func normalizeSettings(settings Settings) Settings {
 	settings.ID = strings.TrimSpace(settings.ID)
 	settings.Name = strings.TrimSpace(settings.Name)
+	settings.Locale = strings.TrimSpace(settings.Locale)
 	settings.AppID = strings.TrimSpace(settings.AppID)
 	settings.AppSecret = strings.TrimSpace(settings.AppSecret)
 	settings.ConnectionID = strings.TrimSpace(settings.ConnectionID)
@@ -580,6 +586,9 @@ func normalizeSettings(settings Settings) Settings {
 	settings.AllowedChats = cleanIDs(settings.AllowedChats)
 	if settings.ApprovalMode == "" {
 		settings.ApprovalMode = approval.ModeAuto
+	}
+	if settings.Locale != "en-US" && settings.Locale != "zh-CN" {
+		settings.Locale = "zh-CN"
 	}
 	return settings
 }
@@ -609,6 +618,7 @@ func stateFromSettings(settings Settings, status Status, lastError string) State
 		ID:           settings.ID,
 		Kind:         "feishu",
 		Name:         settings.Name,
+		Locale:       settings.Locale,
 		Enabled:      settings.Enabled,
 		AppID:        settings.AppID,
 		HasAppSecret: settings.AppSecret != "",

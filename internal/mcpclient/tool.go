@@ -49,7 +49,7 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 	}
 	decision, err := t.manager.gateway.Request(ctx, approval.Request{
 		ToolName: t.name, Action: "execute",
-		Detail:   fmt.Sprintf("调用 MCP 工具 %s/%s", t.serverID, t.remoteName),
+		Detail:   fmt.Sprintf("Call MCP tool %s/%s", t.serverID, t.remoteName),
 		Resource: t.remoteName,
 		Scope:    t.serverID,
 	})

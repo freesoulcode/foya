@@ -1,6 +1,7 @@
 import { Marked, type Tokens } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
+import { translate } from "@/i18n";
 
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
@@ -80,8 +81,8 @@ const marked = new Marked({ gfm: true, breaks: true });
 
 marked.use({
   tokenizer: {
-    // Marked 的 GFM 规则接受单个 ~ 作为删除线分隔符，会误伤
-    // “4~5 级转 3~4 级”这类范围文本。这里只保留标准的 ~~...~~。
+    // Marked accepts a single tilde as a GFM delimiter, which breaks numeric
+    // ranges such as "4~5 to 3~4". Keep only the standard ~~...~~ form.
     del(src: string): Tokens.Del | undefined {
       const match =
         /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/.exec(
@@ -106,7 +107,7 @@ marked.use({
         `<div class="code-block">` +
         `<div class="code-block-header">` +
         `<span class="code-block-lang">${langLabel}</span>` +
-        `<button type="button" class="code-block-copy" title="复制代码">复制</button>` +
+        `<button type="button" class="code-block-copy" title="${translate("Copy code")}">${translate("Copy")}</button>` +
         `</div>` +
         `<pre><code class="hljs${langClass}">${highlighted}</code></pre>` +
         `</div>`

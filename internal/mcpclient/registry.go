@@ -167,7 +167,7 @@ func registryInstall(entry registryEntry) RegistryServer {
 		}
 		result.Installable = ready
 		if !ready {
-			result.Reason = "需要额外配置"
+			result.Reason = "Additional configuration required"
 		}
 		result.Config.Transport = "stdio"
 		result.Config.Command = command
@@ -175,7 +175,7 @@ func registryInstall(entry registryEntry) RegistryServer {
 		result.Config.Env = env
 		return result
 	}
-	result.Reason = "暂无兼容的安装方式"
+	result.Reason = "No compatible installation method"
 	return result
 }
 

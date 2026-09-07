@@ -146,7 +146,7 @@ func (m *Manager) Create(path, name string) (Project, error) {
 	now := time.Now()
 	name = strings.TrimSpace(name)
 	if name == "" {
-		name = "新项目"
+		name = "New project"
 	}
 	item := storedProject{
 		ID: newID(), Name: name, Path: canonical,

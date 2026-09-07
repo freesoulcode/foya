@@ -1,4 +1,4 @@
-// Package config 管理内核配置。
+// Package config manages kernel configuration.
 package config
 
 import (
@@ -11,36 +11,36 @@ import (
 	"strconv"
 )
 
-// Transport 是内核对外的传输方式。
+// Transport identifies the kernel transport.
 type Transport string
 
 const (
-	TransportUnixSocket Transport = "unix"    // 本地:Unix domain socket
-	TransportTCP        Transport = "tcp_tls" // 远端自部署:TCP + TLS
+	TransportUnixSocket Transport = "unix"    // Local Unix domain socket.
+	TransportTCP        Transport = "tcp_tls" // Remote TCP with TLS.
 )
 
-// Lifecycle 是内核生命周期模式。
+// Lifecycle controls the kernel process lifecycle.
 type Lifecycle string
 
 const (
-	LifecycleEphemeral Lifecycle = "ephemeral" // 桌面默认:按需拉起,空闲自动退
-	LifecycleService   Lifecycle = "service"   // 常驻守护:多设备场景
+	LifecycleEphemeral Lifecycle = "ephemeral" // Desktop default; starts on demand.
+	LifecycleService   Lifecycle = "service"   // Persistent multi-device service.
 )
 
-// Config 是内核运行配置。
+// Config contains kernel runtime settings.
 type Config struct {
 	Transport  Transport
 	Lifecycle  Lifecycle
-	SocketPath string // Unix socket 路径(TransportUnixSocket 时)
-	Addr       string // 监听地址(TransportTCP 时)
-	DataDir    string // 事件日志、SQLite 索引所在目录
+	SocketPath string // Unix socket path.
+	Addr       string // TCP listen address.
+	DataDir    string // Event log and SQLite index directory.
 	Agents     AgentLimits
 	Telemetry  Telemetry
 	// DisableExternalIntegrations prevents short-lived CLI commands from
 	// starting persisted long-running transports such as the Feishu bot.
 	DisableExternalIntegrations bool
 
-	// Provider 是旧的单连接启动配置，仅用于从环境变量迁移初始 Connection。
+	// Provider is the legacy bootstrap connection loaded from the environment.
 	Provider Provider
 }
 
@@ -68,7 +68,7 @@ type Telemetry struct {
 
 var ErrInvalidAgentLimits = errors.New("invalid agent limits")
 
-// Provider 是旧版单连接启动配置(BYOK:用户自带 base_url + key + model)。
+// Provider contains legacy single-connection BYOK settings.
 type Provider struct {
 	Kind          string `json:"kind"`
 	BaseURL       string `json:"base_url"`
@@ -77,9 +77,9 @@ type Provider struct {
 	ContextWindow int64  `json:"context_window,omitempty"`
 }
 
-// Connection 是一个可独立使用的模型账号或端点。
-// 本阶段 AuthKind 固定为 api_key；后续可扩展 oauth_subscription 而不影响
-// Session 的 connection_id + model 绑定关系。
+// Connection is an independently configured model account or endpoint.
+// AuthKind currently supports api_key and can add oauth_subscription without changing
+// the session connection_id and model binding.
 type Connection struct {
 	ID            string                   `json:"id"`
 	Name          string                   `json:"name"`
@@ -156,7 +156,7 @@ func (c Connection) Provider() Provider {
 	}
 }
 
-// Default 返回本地桌面场景的默认配置。
+// Default returns configuration for the local desktop application.
 func Default() Config {
 	return Config{
 		Transport:  TransportUnixSocket,
@@ -207,7 +207,7 @@ func envInt(name string, fallback int) int {
 	return value
 }
 
-// providerFromEnv 从环境变量装配 provider 配置。
+// providerFromEnv builds provider settings from environment variables.
 func providerFromEnv() Provider {
 	return Provider{
 		Kind:          "openai",
@@ -218,8 +218,7 @@ func providerFromEnv() Provider {
 	}
 }
 
-// DefaultDataDir 返回内核数据目录(事件日志、索引)。
-// 优先用 os.UserConfigDir 下的 foya 子目录。
+// DefaultDataDir returns the kernel data directory under os.UserConfigDir.
 func DefaultDataDir() string {
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
@@ -228,13 +227,12 @@ func DefaultDataDir() string {
 	return filepath.Join(base, "foya")
 }
 
-// DefaultSocketPath 返回本地 Unix socket 路径。
-// 放在用户私有目录下,靠 0700 目录 + 0600 socket 做单用户信任边界。
+// DefaultSocketPath returns the local Unix socket in a private user directory.
 func DefaultSocketPath() string {
 	return filepath.Join(DefaultDataDir(), "kernel.sock")
 }
 
-// providerConfigPath 返回持久化 provider 配置文件路径。
+// providerConfigPath returns the persisted provider configuration path.
 func providerConfigPath(dataDir string) string {
 	return filepath.Join(dataDir, "provider.json")
 }
@@ -383,8 +381,7 @@ func SaveConnections(dataDir string, connections []Connection) error {
 	return os.WriteFile(connectionsConfigPath(dataDir), b, 0o600)
 }
 
-// LoadProvider 从 dataDir 读取持久化的 provider 配置。
-// 文件不存在时返回 (零值, false, nil),供调用方回退到环境变量。
+// LoadProvider reads persisted provider configuration from dataDir.
 func LoadProvider(dataDir string) (Provider, bool, error) {
 	b, err := os.ReadFile(providerConfigPath(dataDir))
 	if err != nil {
@@ -403,9 +400,7 @@ func LoadProvider(dataDir string) (Provider, bool, error) {
 	return p, true, nil
 }
 
-// SaveProvider 把 provider 配置持久化到 dataDir。
-// 目录权限 0700、文件权限 0600,构成单用户信任边界(脚手架阶段;
-// 后续 API Key 改为存 OS keychain)。
+// SaveProvider persists provider configuration with private filesystem permissions.
 func SaveProvider(dataDir string, p Provider) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err

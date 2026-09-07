@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   FilmIcon,
   DownloadIcon,
@@ -44,6 +45,7 @@ import {
 } from "@/lib/api";
 
 const props = defineProps<{ projectId: string }>();
+const { t } = useI18n();
 const emit = defineEmits<{
   (event: "project-change", project: CanvasDocument): void;
   (event: "selection-change", nodeIds: string[]): void;
@@ -182,7 +184,7 @@ function scheduleSave(delay = 180) {
   saveTimer = setTimeout(() => void persist(), delay);
 }
 
-function formatError(reason: unknown, fallback = "操作失败") {
+function formatError(reason: unknown, fallback = t("Operation failed")) {
   const raw = reason instanceof Error ? reason.message : String(reason);
   let message = raw;
   const jsonStart = raw.indexOf("{");
@@ -194,14 +196,14 @@ function formatError(reason: unknown, fallback = "操作失败") {
       // Keep the original transport error when the suffix is not valid JSON.
     }
   }
-  if (message.includes("TLS handshake timeout")) return "无法连接生成服务：TLS 握手超时";
-  if (message.includes("can't assign requested address")) return "无法连接生成服务：网络接口已变化，请检查代理或网络";
-  if (message.includes("upstream_error")) return "生成服务的上游暂不可用，请稍后重试或更换连接";
-  if (message.includes("fail_submit_task")) return "生成服务拒绝了任务，请检查模型、素材和账户状态";
-  if (message.includes("does not support video generation")) return "当前模型未启用视频生成能力";
-  if (message.includes("unsupported video protocol")) return "当前视频连接尚未配置协议";
-  if (message.includes("HTTP 401") || message.includes("HTTP 403")) return "生成服务鉴权失败，请检查 API Key";
-  if (message.includes("HTTP 429")) return "生成服务请求过多，请稍后重试";
+  if (message.includes("TLS handshake timeout")) return t("Unable to connect to generation service: TLS handshake timed out");
+  if (message.includes("can't assign requested address")) return t("Unable to connect to generation service: the network interface changed. Check your proxy or network.");
+  if (message.includes("upstream_error")) return t("The generation service is temporarily unavailable. Try again later or use another connection.");
+  if (message.includes("fail_submit_task")) return t("The generation service rejected the task. Check the model, assets, and account status.");
+  if (message.includes("does not support video generation")) return t("The current model does not support video generation");
+  if (message.includes("unsupported video protocol")) return t("The current video connection has no configured protocol");
+  if (message.includes("HTTP 401") || message.includes("HTTP 403")) return t("Generation service authentication failed. Check the API key.");
+  if (message.includes("HTTP 429")) return t("Too many generation requests. Try again later.");
   return message || fallback;
 }
 
@@ -234,7 +236,7 @@ async function persist() {
     emit("project-change", { ...current });
     saveError.value = "";
   } catch (reason) {
-    saveError.value = formatError(reason, "保存画布失败");
+    saveError.value = formatError(reason, t("Failed to save canvas"));
     if (String(reason).includes("409") || String(reason).includes("canvas_revision_conflict")) {
       try {
         project.value = await api.getCanvas(props.projectId);
@@ -291,7 +293,7 @@ async function downloadAsset(node: CanvasNode) {
     anchor.click();
     URL.revokeObjectURL(url);
   } catch (reason) {
-    error.value = formatError(reason, "下载素材失败");
+    error.value = formatError(reason, t("Failed to download asset"));
   }
 }
 
@@ -322,7 +324,7 @@ async function load() {
     await loadAssets();
     emit("project-change", project.value);
   } catch (reason) {
-    error.value = formatError(reason, "加载画布失败");
+    error.value = formatError(reason, t("Failed to load canvas"));
   } finally {
     loading.value = false;
   }
@@ -575,10 +577,10 @@ function addNode(type: "text" | "generation", at = centerPoint()) {
     ? preferred.model
     : generationModels("image", firstConnection?.id)[0] ?? "";
   const node: CanvasNode = type === "text"
-    ? { ...common, title: "提示词", text: "", height: 160 }
+    ? { ...common, title: t("Prompt"), text: "", height: 160 }
     : {
         ...common,
-        title: "生成",
+        title: t("Generate"),
         prompt: "",
         width: 300,
         height: 310,
@@ -603,11 +605,11 @@ async function generateMedia(node: CanvasNode) {
   if (!project.value || node.type !== "generation" || !node.generation) return;
   const mode = node.generation.mode;
   if (!generationModels(mode, node.generation.connection_id).includes(node.generation.model ?? "")) {
-    error.value = mode === "video" ? "请选择视频生成模型" : "请选择生图模型";
+    error.value = mode === "video" ? t("Select a video generation model") : t("Select an image generation model");
     return;
   }
   if (!node.generation.model?.trim()) {
-    error.value = mode === "video" ? "请先填写视频模型" : "请先填写生图模型";
+    error.value = mode === "video" ? t("Enter a video model first") : t("Enter an image model first");
     return;
   }
   if (node.status === "running") return;
@@ -621,7 +623,7 @@ async function generateMedia(node: CanvasNode) {
   const output: CanvasNode = {
     id: outputID,
     type: mode,
-    title: "生成结果",
+    title: t("Generated result"),
     status: "running",
     x: node.x + node.width + 140,
     y: node.y,
@@ -661,7 +663,10 @@ async function generateMedia(node: CanvasNode) {
     emit("project-change", updated);
     error.value = "";
   } catch (reason) {
-    error.value = formatError(reason, mode === "video" ? "视频生成失败" : "图片生成失败");
+    error.value = formatError(
+      reason,
+      mode === "video" ? t("Video generation failed") : t("Image generation failed")
+    );
     try {
       project.value = await api.getCanvas(props.projectId);
       await loadAssets();
@@ -788,7 +793,7 @@ async function uploadFiles(files: FileList | File[]) {
       await loadAssets();
       await persist();
     } catch (reason) {
-      error.value = formatError(reason, "上传素材失败");
+      error.value = formatError(reason, t("Failed to upload asset"));
     }
   }
   if (fileInput.value) fileInput.value.value = "";
@@ -992,7 +997,7 @@ onBeforeUnmount(() => {
               size="icon"
               variant="ghost"
               class="no-drag size-6 shrink-0"
-              :title="node.type === 'video' ? '下载视频' : '下载图片'"
+              :title="node.type === 'video' ? $t('Download video') : $t('Download image')"
               @pointerdown.stop
               @click.stop="downloadAsset(node)"
             >
@@ -1005,7 +1010,7 @@ onBeforeUnmount(() => {
             v-if="node.type === 'text'"
             v-model="node.text"
             class="min-h-0 flex-1 resize-none rounded-none border-0 bg-transparent p-3 text-sm leading-6 shadow-none focus-visible:ring-0"
-            placeholder="写下想法或提示词"
+            :placeholder="$t('Write an idea or prompt')"
             @pointerdown.stop
             @update:model-value="scheduleSave()"
           />
@@ -1029,21 +1034,21 @@ onBeforeUnmount(() => {
               @update:model-value="updateGenerationMode(node, $event)"
             >
               <SelectTrigger size="sm" class="w-full text-xs">
-                <SelectValue placeholder="生成类型" />
+                <SelectValue :placeholder="$t('Generation type')" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="image">图片</SelectItem>
-                <SelectItem value="video">视频</SelectItem>
+                <SelectItem value="image">{{ $t("Image") }}</SelectItem>
+                <SelectItem value="video">{{ $t("Video") }}</SelectItem>
               </SelectContent>
             </Select>
             <div class="flex items-center gap-3 text-[11px] text-muted-foreground">
-              <span>提示词 {{ inputSummary(node.id).text }}</span>
-              <span>参考图 {{ inputSummary(node.id).image }}</span>
+              <span>{{ $t("Prompts {count}", { count: inputSummary(node.id).text }) }}</span>
+              <span>{{ $t("Reference images {count}", { count: inputSummary(node.id).image }) }}</span>
             </div>
             <Textarea
               v-model="node.prompt"
               class="min-h-14 resize-none text-xs"
-              placeholder="补充描述（可选）"
+              :placeholder="$t('Additional description (optional)')"
               @update:model-value="scheduleSave()"
             />
             <Select
@@ -1051,7 +1056,7 @@ onBeforeUnmount(() => {
               @update:model-value="updateGenerationField(node, 'aspect_ratio', $event)"
             >
               <SelectTrigger size="sm" class="w-full text-xs">
-                <SelectValue placeholder="比例" />
+                <SelectValue :placeholder="$t('Aspect ratio')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem v-if="node.generation!.mode === 'image'" value="1:1">1:1</SelectItem>
@@ -1067,7 +1072,7 @@ onBeforeUnmount(() => {
               @update:model-value="updateGenerationField(node, 'model', $event)"
             >
               <SelectTrigger size="sm" class="w-full text-xs">
-                <SelectValue :placeholder="node.generation!.mode === 'video' ? '选择视频模型' : '选择生图模型'" />
+                <SelectValue :placeholder="node.generation!.mode === 'video' ? $t('Select a video generation model') : $t('Select an image generation model')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem
@@ -1086,14 +1091,14 @@ onBeforeUnmount(() => {
                 @update:model-value="updateGenerationField(node, 'quality', $event)"
               >
                 <SelectTrigger size="sm" class="w-full text-xs">
-                  <SelectValue placeholder="质量" />
+                  <SelectValue :placeholder="$t('Quality')" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">自动质量</SelectItem>
-                  <SelectItem value="low">低</SelectItem>
-                  <SelectItem value="medium">中</SelectItem>
-                  <SelectItem value="high">高</SelectItem>
-                  <SelectItem value="standard">标准</SelectItem>
+                  <SelectItem value="auto">{{ $t("Automatic quality") }}</SelectItem>
+                  <SelectItem value="low">{{ $t("Low") }}</SelectItem>
+                  <SelectItem value="medium">{{ $t("Medium") }}</SelectItem>
+                  <SelectItem value="high">{{ $t("High") }}</SelectItem>
+                  <SelectItem value="standard">{{ $t("Standard") }}</SelectItem>
                   <SelectItem value="hd">HD</SelectItem>
                 </SelectContent>
               </Select>
@@ -1103,23 +1108,23 @@ onBeforeUnmount(() => {
                 @update:model-value="updateGenerationDuration(node, $event)"
               >
                 <SelectTrigger size="sm" class="w-full text-xs">
-                  <SelectValue placeholder="时长" />
+                  <SelectValue :placeholder="$t('Duration')" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="4">4 秒</SelectItem>
-                  <SelectItem value="5">5 秒</SelectItem>
-                  <SelectItem value="6">6 秒</SelectItem>
-                  <SelectItem value="8">8 秒</SelectItem>
-                  <SelectItem value="10">10 秒</SelectItem>
-                  <SelectItem value="12">12 秒</SelectItem>
-                  <SelectItem value="15">15 秒</SelectItem>
+                  <SelectItem value="4">{{ $t("{count} seconds", { count: 4 }) }}</SelectItem>
+                  <SelectItem value="5">{{ $t("{count} seconds", { count: 5 }) }}</SelectItem>
+                  <SelectItem value="6">{{ $t("{count} seconds", { count: 6 }) }}</SelectItem>
+                  <SelectItem value="8">{{ $t("{count} seconds", { count: 8 }) }}</SelectItem>
+                  <SelectItem value="10">{{ $t("{count} seconds", { count: 10 }) }}</SelectItem>
+                  <SelectItem value="12">{{ $t("{count} seconds", { count: 12 }) }}</SelectItem>
+                  <SelectItem value="15">{{ $t("{count} seconds", { count: 15 }) }}</SelectItem>
                 </SelectContent>
               </Select>
               <Button size="sm" class="h-8" :disabled="node.status === 'running'" @click="generateMedia(node)">
                 <LoaderCircleIcon v-if="node.status === 'running'" class="size-3.5 animate-spin" />
                 <FilmIcon v-else-if="node.generation!.mode === 'video'" class="size-3.5" />
                 <SparklesIcon v-else class="size-3.5" />
-                {{ node.status === "running" ? "生成中" : node.generation!.mode === "video" ? "生成视频" : "生成图片" }}
+                {{ node.status === "running" ? $t("Generating") : node.generation!.mode === "video" ? $t("Generate video") : $t("Generate image") }}
               </Button>
             </div>
             <p v-if="node.error" class="line-clamp-2 text-[11px] text-destructive">{{ formatError(node.error) }}</p>
@@ -1128,9 +1133,9 @@ onBeforeUnmount(() => {
             <LoaderCircleIcon class="size-6 animate-spin text-muted-foreground" />
           </div>
           <div v-else-if="node.status === 'error'" class="grid min-h-0 flex-1 place-items-center px-4 text-center text-xs text-destructive">
-            {{ formatError(node.error || "生成失败") }}
+            {{ formatError(node.error || $t("Generation failed")) }}
           </div>
-          <div v-else class="grid min-h-0 flex-1 place-items-center text-xs text-muted-foreground">素材不可用</div>
+          <div v-else class="grid min-h-0 flex-1 place-items-center text-xs text-muted-foreground">{{ $t("Asset unavailable") }}</div>
 
           <button
             type="button"
@@ -1139,16 +1144,16 @@ onBeforeUnmount(() => {
               'absolute -left-2 top-1/2 size-4 -translate-y-1/2 rounded-full border bg-background transition-all',
               connectionTarget === node.id ? 'scale-125 border-primary bg-primary' : 'border-border hover:border-primary',
             ]"
-            title="输入端口"
+            :title="$t('Input port')"
             @pointerdown.stop
           />
           <button
             type="button"
             class="absolute -right-2 top-1/2 size-4 -translate-y-1/2 cursor-crosshair rounded-full border border-border bg-background transition-all hover:scale-125 hover:border-primary hover:bg-primary"
-            title="拖动以连接"
+            :title="$t('Drag to connect')"
             @pointerdown="beginConnection($event, node.id)"
           />
-          <button v-if="selected.has(node.id)" type="button" class="absolute -bottom-1.5 -right-1.5 size-3 cursor-nwse-resize border border-primary bg-background" title="调整大小" @pointerdown="startResize($event, node)" />
+          <button v-if="selected.has(node.id)" type="button" class="absolute -bottom-1.5 -right-1.5 size-3 cursor-nwse-resize border border-primary bg-background" :title="$t('Resize')" @pointerdown="startResize($event, node)" />
         </article>
       </div>
       <div v-if="marquee" class="pointer-events-none absolute border border-primary bg-primary/10" :style="{ left: marquee.x + 'px', top: marquee.y + 'px', width: marquee.width + 'px', height: marquee.height + 'px' }" />
@@ -1161,7 +1166,7 @@ onBeforeUnmount(() => {
                 <MousePointer2Icon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">选择</TooltipContent>
+            <TooltipContent side="top">{{ $t("Select") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -1169,7 +1174,7 @@ onBeforeUnmount(() => {
                 <HandIcon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">移动画布</TooltipContent>
+            <TooltipContent side="top">{{ $t("Pan canvas") }}</TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" class="mx-0.5 h-5" />
           <Tooltip>
@@ -1178,7 +1183,7 @@ onBeforeUnmount(() => {
                 <TypeIcon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">提示词</TooltipContent>
+            <TooltipContent side="top">{{ $t("Prompt") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -1186,7 +1191,7 @@ onBeforeUnmount(() => {
                 <ImagePlusIcon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">导入图片或视频</TooltipContent>
+            <TooltipContent side="top">{{ $t("Import image or video") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -1194,19 +1199,19 @@ onBeforeUnmount(() => {
                 <SparklesIcon class="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">图片或视频生成</TooltipContent>
+            <TooltipContent side="top">{{ $t("Image or video generation") }}</TooltipContent>
           </Tooltip>
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
-              <Button size="icon" variant="ghost" class="size-8" title="画布背景">
+              <Button size="icon" variant="ghost" class="size-8" :title="$t('Canvas background')">
                 <Grid2X2Icon class="size-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="top" align="center" class="w-32">
               <DropdownMenuRadioGroup :model-value="project?.background" @update:model-value="updateBackground">
-                <DropdownMenuRadioItem value="dots">点阵</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="grid">网格</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="blank">纯色</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="dots">{{ $t("Dots") }}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="grid">{{ $t("Grid") }}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="blank">{{ $t("Solid") }}</DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1216,26 +1221,26 @@ onBeforeUnmount(() => {
             <TooltipTrigger as-child>
               <Button size="icon" variant="ghost" class="size-8" :disabled="!history.length" @click="undo"><Undo2Icon class="size-4" /></Button>
             </TooltipTrigger>
-            <TooltipContent side="top">撤销</TooltipContent>
+            <TooltipContent side="top">{{ $t("Undo") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
               <Button size="icon" variant="ghost" class="size-8" :disabled="!future.length" @click="redo"><Redo2Icon class="size-4" /></Button>
             </TooltipTrigger>
-            <TooltipContent side="top">重做</TooltipContent>
+            <TooltipContent side="top">{{ $t("Redo") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
               <Button size="icon" variant="ghost" class="size-8" :disabled="!selected.size && !selectedEdge" @click="removeSelection"><Trash2Icon class="size-4" /></Button>
             </TooltipTrigger>
-            <TooltipContent side="top">删除所选</TooltipContent>
+            <TooltipContent side="top">{{ $t("Delete selected") }}</TooltipContent>
           </Tooltip>
           <Separator orientation="vertical" class="mx-0.5 h-5" />
           <Tooltip>
             <TooltipTrigger as-child>
               <Button size="icon" variant="ghost" class="size-8" @click="setZoom(zoom / 1.2)"><ZoomOutIcon class="size-4" /></Button>
             </TooltipTrigger>
-            <TooltipContent side="top">缩小</TooltipContent>
+            <TooltipContent side="top">{{ $t("Zoom out") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -1243,13 +1248,13 @@ onBeforeUnmount(() => {
                 {{ Math.round(zoom * 100) }}%
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">重置视图</TooltipContent>
+            <TooltipContent side="top">{{ $t("Reset view") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
               <Button size="icon" variant="ghost" class="size-8" @click="setZoom(zoom * 1.2)"><ZoomInIcon class="size-4" /></Button>
             </TooltipTrigger>
-            <TooltipContent side="top">放大</TooltipContent>
+            <TooltipContent side="top">{{ $t("Zoom in") }}</TooltipContent>
           </Tooltip>
           <LoaderCircleIcon v-if="showSaving" class="mx-1 size-3.5 animate-spin text-muted-foreground" />
         </TooltipProvider>

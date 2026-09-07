@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useEventListener } from "@vueuse/core";
 import {
   CheckCheckIcon,
@@ -65,6 +66,7 @@ const props = withDefaults(
     streaming: false,
   }
 );
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "stop-command", commandId: string): void;
@@ -104,7 +106,7 @@ const activities = computed<ActivityItem[]>(() => {
     }[props.workflow.kind];
     items.push({
       kind: "workflow",
-      label: `${name} ${props.workflow.status === "active" ? "生成中" : "待确认"}`,
+      label: `${name} ${props.workflow.status === "active" ? t("Generating") : t("Awaiting confirmation")}`,
       icon: FileTextIcon,
       active: props.workflow.status === "active",
     });
@@ -112,7 +114,7 @@ const activities = computed<ActivityItem[]>(() => {
   if (props.tasks.length > 0) {
     items.push({
       kind: "tasks",
-      label: `${completedTasks.value}/${props.tasks.length} 个任务`,
+      label: t("Task count", { completed: completedTasks.value, total: props.tasks.length }),
       count: `${completedTasks.value}/${props.tasks.length}`,
       icon: ListChecksIcon,
       active: Boolean(props.taskRunning),
@@ -121,7 +123,7 @@ const activities = computed<ActivityItem[]>(() => {
   if (runningCommands.value.length > 0) {
     items.push({
       kind: "commands",
-      label: `${runningCommands.value.length} 个后台命令`,
+      label: t("Background command count", { count: runningCommands.value.length }),
       count: compactCount(runningCommands.value.length),
       icon: SquareTerminalIcon,
       active: true,
@@ -130,7 +132,7 @@ const activities = computed<ActivityItem[]>(() => {
   if ((props.review?.files.length ?? 0) > 0) {
     items.push({
       kind: "files",
-      label: `${props.review!.files.length} 个文件待审查`,
+      label: t("Files awaiting review", { count: props.review!.files.length }),
       count: compactCount(props.review!.files.length),
       icon: FilesIcon,
       active: Boolean(props.review?.submitting),
@@ -139,7 +141,7 @@ const activities = computed<ActivityItem[]>(() => {
   if (props.queuedMessages.length > 0) {
     items.push({
       kind: "queue",
-      label: `${props.queuedMessages.length} 条待发送消息`,
+      label: t("Queued message count", { count: props.queuedMessages.length }),
       count: compactCount(props.queuedMessages.length),
       icon: ListOrderedIcon,
       active: Boolean(props.streaming),
@@ -203,7 +205,7 @@ function openFile(path: string, diff: string) {
   <section
     v-if="activities.length"
     class="relative shrink-0 px-4 pt-1.5"
-    aria-label="会话活动"
+    :aria-label="$t('Session activity')"
   >
     <div
       class="relative mx-auto w-full max-w-3xl"
@@ -318,23 +320,23 @@ function openFile(path: string, diff: string) {
                   size="icon-sm"
                   variant="ghost"
                   class="text-muted-foreground"
-                  aria-label="退出当前工作流"
+                  :aria-label="$t('Exit current workflow')"
                   @click="emit('close-workflow')"
                 >
                   <XIcon class="size-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">退出当前工作流</TooltipContent>
+              <TooltipContent side="top">{{ $t("Exit current workflow") }}</TooltipContent>
             </Tooltip>
             <Button
               v-if="workflow.status === 'ready'"
               type="button"
               size="sm"
-              aria-label="确认并执行"
+              :aria-label="$t('Confirm and execute')"
               @click="emit('approve-workflow')"
             >
               <CheckCheckIcon class="size-4" />
-              <span class="hidden sm:inline">确认并执行</span>
+              <span class="hidden sm:inline">{{ $t("Confirm and execute") }}</span>
             </Button>
           </div>
 
@@ -349,14 +351,14 @@ function openFile(path: string, diff: string) {
                   size="sm"
                   variant="ghost"
                   :disabled="fileActionDisabled"
-                  aria-label="全部撤销"
+                  :aria-label="$t('Undo all')"
                   @click="emit('undo-files')"
                 >
                   <Undo2Icon class="size-4" />
-                  <span class="hidden sm:inline">全部撤销</span>
+                  <span class="hidden sm:inline">{{ $t("Undo all") }}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">全部撤销</TooltipContent>
+              <TooltipContent side="top">{{ $t("Undo all") }}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
@@ -364,7 +366,7 @@ function openFile(path: string, diff: string) {
                   type="button"
                   size="sm"
                   :disabled="fileActionDisabled"
-                  aria-label="全部保留"
+                  :aria-label="$t('Keep all')"
                   @click="emit('keep-files')"
                 >
                   <LoaderCircleIcon
@@ -372,10 +374,10 @@ function openFile(path: string, diff: string) {
                     class="size-4 animate-spin"
                   />
                   <CheckCheckIcon v-else class="size-4" />
-                  <span class="hidden sm:inline">全部保留</span>
+                  <span class="hidden sm:inline">{{ $t("Keep all") }}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">全部保留</TooltipContent>
+              <TooltipContent side="top">{{ $t("Keep all") }}</TooltipContent>
             </Tooltip>
           </div>
         </TooltipProvider>

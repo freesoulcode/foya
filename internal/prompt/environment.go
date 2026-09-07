@@ -7,22 +7,18 @@ import (
 	"time"
 )
 
-// EnvInput 是每回合环境尾部所需的实时信息。
-// 这些值获取成本为零(进程已有或 time.Now),每回合变化,故置于系统提示词末尾,
-// 不进入静态前缀,避免每回合抖动前缀缓存。
+// EnvInput contains dynamic environment details appended to each turn.
 //
-// 注意:git 状态(是否仓库、当前分支)不在此处注入。它需要 fork git 进程,
-// 且分支会随用户/模型的操作变化,写死在提示词里可能过期误导。模型有 bash
-// 工具,需要时自行运行 git 命令获取最新值更可靠。
+// Git state is intentionally omitted because fetching it requires a process
+// and the result can become stale after user or model actions.
 type EnvInput struct {
 	Cwd      string
-	Platform string // 默认 runtime.GOOS
-	Shell    string // 默认从 $SHELL / %ComSpec% 推断
+	Platform string // Defaults to runtime.GOOS.
+	Shell    string // Defaults from $SHELL or %ComSpec%.
 	Now      time.Time
 }
 
-// envFragment 构造每回合环境尾部,包裹在 <session_environment> 中,
-// 并明确声明这是数据而非指令(防注入)。
+// envFragment wraps dynamic environment data in a non-authoritative section.
 func envFragment(in EnvInput) string {
 	cwd := sanitizeLine(in.Cwd)
 	platform := in.Platform
@@ -51,8 +47,7 @@ func envFragment(in EnvInput) string {
 	return strings.Join(lines, "\n")
 }
 
-// permissionFragment 构造当前审批状态片段。
-// 显式声明「仅供参考,不授予任何额外权限」,与运行时强制分离。
+// permissionFragment describes runtime permissions without granting any.
 func permissionFragment(approvalMode string) string {
 	mode := approvalMode
 	if mode == "" {
@@ -80,8 +75,7 @@ func defaultShell() string {
 	return "/bin/sh"
 }
 
-// sanitizeLine 把值压成单行,去除控制字符与首尾空白。
-// 环境值会被插进提示词,防止换行注入伪造新字段。
+// sanitizeLine removes control characters and prevents multiline injection.
 func sanitizeLine(v string) string {
 	v = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {

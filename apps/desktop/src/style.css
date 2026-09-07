@@ -296,7 +296,7 @@
     margin: 0.5rem 0;
     padding-left: 1.5rem;
   }
-  /* Tailwind preflight 会重置 list-style,这里显式恢复无序/有序列表符号 */
+  /* Restore list markers removed by Tailwind preflight. */
   .prose-chat ul {
     list-style: disc;
   }
@@ -516,7 +516,7 @@
   animation: header-shimmer 1.6s ease-in-out infinite;
 }
 
-/* 首 token 到达前的 typing 指示器:三个跳动的点 */
+/* Three-dot typing indicator shown before the first token arrives. */
 .typing-dot {
   display: inline-block;
   width: 7px;

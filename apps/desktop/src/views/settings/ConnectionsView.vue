@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   AlertCircleIcon,
   ArrowLeftIcon,
@@ -53,6 +54,7 @@ interface DragPreview {
   width: number;
 }
 
+const { t } = useI18n();
 const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high"];
 const connections = ref<ConnectionConfig[]>([]);
 const selectedID = ref<string | null>(null);
@@ -157,10 +159,10 @@ function modelCapabilities(model: string): ModelSettings {
 }
 
 function connectionTypeLabel(type?: ConnectionType) {
-  if (type === "language") return "语言";
-  if (type === "image") return "生图";
-  if (type === "video") return "视频";
-  return "未设置类型";
+  if (type === "language") return t("Language");
+  if (type === "image") return t("Image");
+  if (type === "video") return t("Video");
+  return t("Type not set");
 }
 
 const filteredImportModels = computed(() => {
@@ -341,7 +343,7 @@ async function checkConnection(connection: ConnectionConfig, force = false) {
     };
     connectionErrors.value = {
       ...connectionErrors.value,
-      [id]: connection.models?.length ? "" : "未发现可用模型",
+      [id]: connection.models?.length ? "" : t("No available models found"),
     };
     return;
   }
@@ -358,7 +360,7 @@ async function checkConnection(connection: ConnectionConfig, force = false) {
     );
     connectionErrors.value = {
       ...connectionErrors.value,
-      [id]: catalog.models.length === 0 ? "未发现可用模型" : "",
+      [id]: catalog.models.length === 0 ? t("No available models found") : "",
     };
   } catch (cause) {
     connectionErrors.value = {
@@ -458,7 +460,7 @@ function formPayload(): ConnectionConfig {
   );
   return {
     ...(selectedID.value ? { id: selectedID.value } : {}),
-    name: name.value.trim() || "未命名连接",
+    name: name.value.trim() || t("Unnamed connection"),
     type: connectionType.value,
     video_protocol: connectionType.value === "video" ? videoProtocol.value || undefined : undefined,
     kind: "openai",
@@ -608,8 +610,8 @@ void loadConnections();
 
 <template>
   <SettingsPage
-    title="连接"
-    description="管理模型服务连接、API Key 和模型能力。"
+    :title="$t('Connections')"
+    :description="$t('Manage model service connections, API keys, and model capabilities.')"
     content-class="min-h-0 flex-1 overflow-hidden"
   >
     <template #actions>
@@ -617,8 +619,8 @@ void loadConnections();
         size="icon-sm"
         variant="ghost"
         :disabled="loading || saving || deleting"
-        title="刷新模型连接"
-        aria-label="刷新模型连接"
+        :title="$t('Refresh model connections')"
+        :aria-label="$t('Refresh model connections')"
         @click="loadConnections"
       >
         <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
@@ -633,8 +635,8 @@ void loadConnections();
             <Input
               v-model="connectionQuery"
               class="h-9 pl-8 text-sm"
-              placeholder="搜索连接"
-              aria-label="搜索连接"
+              :placeholder="$t('Search connections')"
+              :aria-label="$t('Search connections')"
             />
           </div>
         </div>
@@ -670,7 +672,7 @@ void loadConnections();
               <span
                 class="size-2 shrink-0 rounded-full"
                 :class="connectionErrors[connection.id ?? ''] ? 'bg-destructive' : 'bg-emerald-500'"
-                :title="connectionErrors[connection.id ?? ''] ? '连接失败' : '连接可用'"
+                :title="connectionErrors[connection.id ?? ''] ? $t('Connection failed') : $t('Connection available')"
               />
             </button>
           </template>
@@ -686,7 +688,7 @@ void loadConnections();
           >
             <PlugZapIcon class="size-8 text-muted-foreground/50" />
             <p class="text-xs text-muted-foreground">
-              {{ connectionQuery ? "没有匹配的连接" : "暂无模型连接" }}
+              {{ connectionQuery ? $t("No matching connections") : $t("No model connections") }}
             </p>
           </div>
         </div>
@@ -698,7 +700,7 @@ void loadConnections();
           @click="startNewConnection"
         >
           <PlusIcon class="size-4" />
-          添加连接
+          {{ $t("Add connection") }}
         </Button>
       </section>
 
@@ -714,15 +716,15 @@ void loadConnections();
               v-if="modelEditor"
               size="icon-sm"
               variant="ghost"
-              title="返回连接设置"
-              aria-label="返回连接设置"
+              :title="$t('Back to connection settings')"
+              :aria-label="$t('Back to connection settings')"
               @click="closeModelEditor"
             >
               <ArrowLeftIcon class="size-4" />
             </Button>
             <div class="min-w-0 flex-1">
               <h3 class="truncate text-lg font-semibold tracking-normal">
-                {{ modelEditor ?? (isNewConnection ? "新建连接" : selectedConnection?.name) }}
+                {{ modelEditor ?? (isNewConnection ? $t("New connection") : selectedConnection?.name) }}
               </h3>
               <p v-if="!isNewConnection" class="truncate text-xs text-muted-foreground">
                 {{ selectedConnection?.base_url }}
@@ -736,40 +738,40 @@ void loadConnections();
               size="icon-sm"
               :disabled="deleting || saving"
               class="text-muted-foreground hover:text-destructive"
-              title="删除连接"
-              aria-label="删除连接"
+              :title="$t('Delete connection')"
+              :aria-label="$t('Delete connection')"
               @click="remove"
             >
               <Trash2Icon class="size-4" />
             </Button>
             <Button :disabled="saving || deleting || loading || (connectionType === 'video' && !videoProtocol)" @click="save">
-              {{ saving ? "保存中..." : isNewConnection ? "添加连接" : "保存" }}
+              {{ saving ? $t("Saving") : isNewConnection ? $t("Add connection") : $t("Save") }}
             </Button>
           </div>
         </div>
         <div v-if="!modelEditor" class="flex min-h-0 max-w-4xl flex-1 flex-col gap-5 overflow-hidden py-6">
           <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label for="connection-name" class="text-sm text-muted-foreground">名称</Label>
-            <Input id="connection-name" v-model="name" class="h-9 text-sm" placeholder="例如：OpenAI 个人" :disabled="loading" />
+            <Label for="connection-name" class="text-sm text-muted-foreground">{{ $t("Name") }}</Label>
+            <Input id="connection-name" v-model="name" class="h-9 text-sm" :placeholder="$t('For example: Personal OpenAI')" :disabled="loading" />
           </div>
           <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label class="text-sm text-muted-foreground">连接类型</Label>
+            <Label class="text-sm text-muted-foreground">{{ $t("Connection type") }}</Label>
             <Select :model-value="connectionType" @update:model-value="updateConnectionType">
               <SelectTrigger class="h-9 w-full">
-                <SelectValue placeholder="选择连接类型" />
+                <SelectValue :placeholder="$t('Select connection type')" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="language">语言模型</SelectItem>
-                <SelectItem value="image">生图模型</SelectItem>
-                <SelectItem value="video">视频模型</SelectItem>
+                <SelectItem value="language">{{ $t("Language model") }}</SelectItem>
+                <SelectItem value="image">{{ $t("Image model") }}</SelectItem>
+                <SelectItem value="video">{{ $t("Video model") }}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div v-if="connectionType === 'video'" class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label class="text-sm text-muted-foreground">视频协议</Label>
+            <Label class="text-sm text-muted-foreground">{{ $t("Video protocol") }}</Label>
             <Select :model-value="videoProtocol" @update:model-value="updateVideoProtocol">
               <SelectTrigger class="h-9 w-full">
-                <SelectValue placeholder="选择视频协议" />
+                <SelectValue :placeholder="$t('Select video protocol')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="seedance">Seedance</SelectItem>
@@ -798,7 +800,7 @@ void loadConnections();
                 id="connection-key"
                 v-model="apiKey"
                 :type="showApiKey ? 'text' : 'password'"
-                placeholder="输入 API Key"
+                :placeholder="$t('Enter API Key')"
                 class="h-9 pr-10 text-sm"
                 :disabled="loading"
               />
@@ -807,8 +809,8 @@ void loadConnections();
                 variant="ghost"
                 size="icon-sm"
                 class="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
-                :title="showApiKey ? '隐藏 API Key' : '显示 API Key'"
-                :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                :title="showApiKey ? $t('Hide API Key') : $t('Show API Key')"
+                :aria-label="showApiKey ? $t('Hide API Key') : $t('Show API Key')"
                 @click="showApiKey = !showApiKey"
               >
                 <EyeOffIcon v-if="showApiKey" class="size-4" />
@@ -818,7 +820,7 @@ void loadConnections();
           </div>
           <div class="flex min-h-0 flex-1 flex-col space-y-2">
             <div class="flex items-center justify-between gap-3">
-              <p class="text-sm font-medium">模型</p>
+              <p class="text-sm font-medium">{{ $t("Models") }}</p>
               <Button
                 size="sm"
                 variant="outline"
@@ -826,7 +828,7 @@ void loadConnections();
                 @click="openModelImporter"
               >
                 <PlusIcon class="size-4" />
-                获取并添加模型
+                {{ $t("Fetch and add models") }}
               </Button>
             </div>
             <div v-if="selectedConnectionModels.length" class="flex min-h-0 flex-1 flex-col gap-2">
@@ -835,8 +837,8 @@ void loadConnections();
                 <Input
                   v-model="modelQuery"
                   class="h-9 pl-8 text-sm"
-                  placeholder="搜索已导入模型"
-                  aria-label="搜索已导入模型"
+                  :placeholder="$t('Search imported models')"
+                  :aria-label="$t('Search imported models')"
                 />
               </div>
               <div
@@ -862,7 +864,7 @@ void loadConnections();
                             <EyeIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持图片输入</TooltipContent>
+                        <TooltipContent>{{ $t("Supports image input") }}</TooltipContent>
                       </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).image_generation">
                         <TooltipTrigger as-child>
@@ -870,7 +872,7 @@ void loadConnections();
                             <ImagePlusIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持生成图片</TooltipContent>
+                        <TooltipContent>{{ $t("Supports image generation") }}</TooltipContent>
                       </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).video_generation">
                         <TooltipTrigger as-child>
@@ -878,7 +880,7 @@ void loadConnections();
                             <FilmIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持生成视频</TooltipContent>
+                        <TooltipContent>{{ $t("Supports video generation") }}</TooltipContent>
                       </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).audio_generation">
                         <TooltipTrigger as-child>
@@ -886,7 +888,7 @@ void loadConnections();
                             <AudioLinesIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持生成音频</TooltipContent>
+                        <TooltipContent>{{ $t("Supports audio generation") }}</TooltipContent>
                       </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).tool_calling">
                         <TooltipTrigger as-child>
@@ -894,7 +896,7 @@ void loadConnections();
                             <WrenchIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持工具调用</TooltipContent>
+                        <TooltipContent>{{ $t("Supports tool calls") }}</TooltipContent>
                       </Tooltip>
                       <Tooltip v-if="modelCapabilities(model).web_search">
                         <TooltipTrigger as-child>
@@ -902,14 +904,14 @@ void loadConnections();
                             <GlobeIcon class="size-3.5" />
                           </span>
                         </TooltipTrigger>
-                        <TooltipContent>支持联网</TooltipContent>
+                        <TooltipContent>{{ $t("Supports web access") }}</TooltipContent>
                       </Tooltip>
                     </div>
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      title="模型设置"
-                      :aria-label="`${model} 模型设置`"
+                      :title="$t('Model settings')"
+                      :aria-label="$t('{model} settings', { model })"
                       @click="openModelEditor(model)"
                     >
                       <Settings2Icon class="size-4" />
@@ -917,22 +919,22 @@ void loadConnections();
                   </div>
                 </div>
                 <p v-if="filteredConnectionModels.length === 0" class="px-2 py-6 text-center text-xs text-muted-foreground">
-                  没有匹配的模型
+                  {{ $t("No matching models") }}
                 </p>
               </div>
             </div>
             <div v-else class="grid min-h-32 flex-1 place-items-center text-xs text-muted-foreground">
-              {{ isNewConnection ? "先建立连接，再获取模型列表" : "尚未导入模型" }}
+              {{ isNewConnection ? $t("Create the connection before fetching models") : $t("No models imported") }}
             </div>
           </div>
         </div>
         <div v-else class="max-w-4xl space-y-7 py-6">
           <div>
-            <h4 class="text-base font-semibold">模型设置</h4>
+            <h4 class="text-base font-semibold">{{ $t("Model settings") }}</h4>
           </div>
 
           <section class="space-y-3">
-            <h5 class="text-sm font-medium">模型能力</h5>
+            <h5 class="text-sm font-medium">{{ $t("Model capabilities") }}</h5>
             <div class="flex flex-wrap gap-2">
               <label class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
@@ -940,7 +942,7 @@ void loadConnections();
                   :disabled="loading"
                   @update:model-value="setModelCapability(modelEditor, $event)"
                 />
-                <span class="text-sm">支持图片输入</span>
+                <span class="text-sm">{{ $t("Supports image input") }}</span>
               </label>
                   <label v-if="connectionType === 'image'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
@@ -949,7 +951,7 @@ void loadConnections();
                       @update:model-value="setModelCapabilityFlag(modelEditor, 'image_generation', $event)"
                     />
                     <ImagePlusIcon class="size-4 text-muted-foreground" />
-                    <span class="text-sm">生成图片</span>
+                    <span class="text-sm">{{ $t("Generate images") }}</span>
                   </label>
                   <label v-if="connectionType === 'video'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
@@ -958,7 +960,7 @@ void loadConnections();
                       @update:model-value="setModelCapabilityFlag(modelEditor, 'video_generation', $event)"
                     />
                     <FilmIcon class="size-4 text-muted-foreground" />
-                    <span class="text-sm">生成视频</span>
+                    <span class="text-sm">{{ $t("Generate videos") }}</span>
                   </label>
                   <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                     <Checkbox
@@ -967,7 +969,7 @@ void loadConnections();
                       @update:model-value="setModelCapabilityFlag(modelEditor, 'audio_generation', $event)"
                     />
                     <AudioLinesIcon class="size-4 text-muted-foreground" />
-                    <span class="text-sm">生成音频</span>
+                    <span class="text-sm">{{ $t("Generate audio") }}</span>
                   </label>
               <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
@@ -975,7 +977,7 @@ void loadConnections();
                   :disabled="loading"
                       @update:model-value="setModelCapabilityFlag(modelEditor, 'tool_calling', $event)"
                 />
-                <span class="text-sm">支持工具调用</span>
+                <span class="text-sm">{{ $t("Supports tool calls") }}</span>
               </label>
               <label v-if="connectionType === 'language'" class="flex cursor-pointer items-center gap-2 py-1.5 pr-4 transition-colors hover:text-foreground">
                 <Checkbox
@@ -983,13 +985,13 @@ void loadConnections();
                   :disabled="loading"
                       @update:model-value="setModelCapabilityFlag(modelEditor, 'web_search', $event)"
                 />
-                <span class="text-sm">支持联网</span>
+                <span class="text-sm">{{ $t("Supports web access") }}</span>
               </label>
             </div>
           </section>
 
           <section v-if="connectionType === 'language'" class="space-y-3">
-            <h5 class="text-sm font-medium">思考强度</h5>
+            <h5 class="text-sm font-medium">{{ $t("Reasoning effort") }}</h5>
             <div class="flex flex-wrap gap-2">
               <label
                 v-for="effort in reasoningEfforts"
@@ -1008,40 +1010,40 @@ void loadConnections();
 
           <section v-if="connectionType === 'language'" class="grid max-w-4xl gap-4 sm:grid-cols-3">
             <div class="space-y-1.5">
-              <Label for="model-context-window">上下文长度</Label>
+              <Label for="model-context-window">{{ $t("Context window") }}</Label>
               <Input
                 id="model-context-window"
                 v-model="modelContextWindowValue"
                 type="number"
                 min="0"
                 step="1"
-                placeholder="使用服务默认值"
+                :placeholder="$t('Use service default')"
                 :disabled="loading"
                 @change="updateModelTokenLimits"
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="model-max-input-tokens">最大输入 Token</Label>
+              <Label for="model-max-input-tokens">{{ $t("Maximum input tokens") }}</Label>
               <Input
                 id="model-max-input-tokens"
                 v-model="modelMaxInputTokensValue"
                 type="number"
                 min="0"
                 step="1"
-                placeholder="使用服务默认值"
+                :placeholder="$t('Use service default')"
                 :disabled="loading"
                 @change="updateModelTokenLimits"
               />
             </div>
             <div class="space-y-1.5">
-              <Label for="model-max-output-tokens">最大输出 Token</Label>
+              <Label for="model-max-output-tokens">{{ $t("Maximum output tokens") }}</Label>
               <Input
                 id="model-max-output-tokens"
                 v-model="modelMaxOutputTokensValue"
                 type="number"
                 min="0"
                 step="1"
-                placeholder="使用服务默认值"
+                :placeholder="$t('Use service default')"
                 :disabled="loading"
                 @change="updateModelTokenLimits"
               />
@@ -1066,9 +1068,9 @@ void loadConnections();
         class="flex min-h-0 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-background px-6 text-center lg:ml-8"
       >
         <PlugZapIcon class="size-10 text-muted-foreground/40" />
-        <p class="mt-3 text-sm font-medium">选择一个模型连接</p>
+        <p class="mt-3 text-sm font-medium">{{ $t("Select a model connection") }}</p>
         <p class="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-          在左侧选择连接，配置 API 地址、密钥和具体模型的视觉能力。
+          {{ $t("Select a connection on the left to configure its API address, key, and model capabilities.") }}
         </p>
       </section>
     </div>
@@ -1077,7 +1079,7 @@ void loadConnections();
   <Dialog v-model:open="modelImportOpen">
     <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col">
       <DialogHeader>
-        <DialogTitle>导入模型</DialogTitle>
+        <DialogTitle>{{ $t("Import models") }}</DialogTitle>
       </DialogHeader>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center gap-3">
@@ -1086,8 +1088,8 @@ void loadConnections();
             <Input
               v-model="modelImportQuery"
               class="h-9 pl-8 text-sm"
-              placeholder="搜索服务端模型"
-              aria-label="搜索服务端模型"
+              :placeholder="$t('Search provider models')"
+              :aria-label="$t('Search provider models')"
             />
           </div>
           <label class="flex shrink-0 items-center gap-2 text-sm">
@@ -1096,7 +1098,7 @@ void loadConnections();
               :disabled="modelImportLoading"
               @update:model-value="setAllModelsImported"
             />
-            全选
+            {{ $t("Select all") }}
           </label>
         </div>
         <div class="min-h-64 flex-1 overflow-y-auto border-y border-border">
@@ -1112,17 +1114,17 @@ void loadConnections();
             <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
           </label>
           <div v-if="modelImportLoading" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
-            正在获取模型列表...
+            {{ $t("Fetching model list") }}
           </div>
           <div v-else-if="filteredImportModels.length === 0" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
-            没有可导入的模型
+            {{ $t("No models available to import") }}
           </div>
         </div>
       </div>
       <DialogFooter>
-        <Button variant="outline" @click="modelImportOpen = false">取消</Button>
+        <Button variant="outline" @click="modelImportOpen = false">{{ $t("Cancel") }}</Button>
         <Button :disabled="modelImportLoading" @click="confirmModelImport">
-          导入 {{ pendingImportedModels.size }} 个模型
+          {{ $t("Import {count} models", { count: pendingImportedModels.size }) }}
         </Button>
       </DialogFooter>
     </DialogContent>

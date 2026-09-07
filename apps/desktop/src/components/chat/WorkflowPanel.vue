@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ChevronRightIcon,
   FileCheck2Icon,
@@ -19,6 +20,7 @@ const props = defineProps<{
   workflow: WorkflowRecord;
   canOpenFiles?: boolean;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "open-file", path: string): void;
@@ -27,14 +29,14 @@ const emit = defineEmits<{
 const files = computed(() => {
   if (props.workflow.kind === "spec" && props.workflow.artifacts) {
     return [
-      { label: "规格", path: props.workflow.artifacts.spec, icon: FileTextIcon },
-      { label: "任务", path: props.workflow.artifacts.tasks, icon: ListChecksIcon },
-      { label: "验收", path: props.workflow.artifacts.checklist, icon: FileCheck2Icon },
+      { label: t("Specification"), path: props.workflow.artifacts.spec, icon: FileTextIcon },
+      { label: t("Tasks"), path: props.workflow.artifacts.tasks, icon: ListChecksIcon },
+      { label: t("Acceptance"), path: props.workflow.artifacts.checklist, icon: FileCheck2Icon },
     ];
   }
   if (props.workflow.path) {
     return [{
-      label: props.workflow.kind === "plan" ? "计划" : "目标",
+      label: props.workflow.kind === "plan" ? t("Plan") : t("Goal"),
       path: props.workflow.path,
       icon: FileTextIcon,
     }];
@@ -55,7 +57,7 @@ const files = computed(() => {
         {{ workflow.title || workflow.goal }}
       </span>
       <span class="shrink-0 text-xs text-muted-foreground">
-        {{ workflow.status === "active" ? "生成中" : "待确认" }}
+        {{ workflow.status === "active" ? $t("Generating") : $t("Awaiting confirmation") }}
       </span>
     </div>
 
@@ -84,13 +86,13 @@ const files = computed(() => {
               size="icon-xs"
               variant="ghost"
               class="text-muted-foreground"
-              :aria-label="`打开${file.label}`"
+              :aria-label="$t('Open {name}', { name: file.label })"
               @click.stop="emit('open-file', file.path)"
             >
               <ChevronRightIcon class="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="left">在工作区打开</TooltipContent>
+          <TooltipContent side="left">{{ $t("Open in workspace") }}</TooltipContent>
         </Tooltip>
       </div>
     </div>

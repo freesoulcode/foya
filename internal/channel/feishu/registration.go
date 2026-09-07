@@ -31,6 +31,7 @@ const (
 
 type RegistrationInput struct {
 	Name         string        `json:"name"`
+	Locale       string        `json:"locale,omitempty"`
 	ConnectionID string        `json:"connection_id,omitempty"`
 	Model        string        `json:"model,omitempty"`
 	ProjectID    string        `json:"project_id,omitempty"`
@@ -139,7 +140,7 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 		CreateOnly: true,
 		AppPreset: &larkregistration.AppPreset{
 			Name: input.Name,
-			Desc: "通过 Foya 桌面端运行的飞书智能助手",
+			Desc: localizedMessage(input.Locale, "app_description"),
 		},
 		Addons: &larkregistration.AppAddons{
 			Preset: &minimalPreset,
@@ -183,12 +184,18 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 	}
 	if result == nil || strings.TrimSpace(result.ClientID) == "" ||
 		strings.TrimSpace(result.ClientSecret) == "" {
-		m.finishRegistrationError(id, errors.New("飞书未返回应用凭证"))
+		m.finishRegistrationError(
+			id,
+			errors.New(localizedMessage(input.Locale, "missing_credentials")),
+		)
 		return
 	}
 	if result.UserInfo != nil && result.UserInfo.TenantBrand != "" &&
 		result.UserInfo.TenantBrand != "feishu" {
-		m.finishRegistrationError(id, errors.New("当前仅支持飞书账号"))
+		m.finishRegistrationError(
+			id,
+			errors.New(localizedMessage(input.Locale, "unsupported_account")),
+		)
 		return
 	}
 
@@ -210,6 +217,7 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 	enabled := input.AllowAll || len(input.AllowedUsers) > 0 || len(input.AllowedChats) > 0
 	channel, createErr := m.Create(UpdateInput{
 		Name:         input.Name,
+		Locale:       input.Locale,
 		Enabled:      enabled,
 		AppID:        result.ClientID,
 		AppSecret:    result.ClientSecret,
@@ -292,11 +300,15 @@ func registrationFinished(status RegistrationStatus) bool {
 func normalizeRegistrationInput(input RegistrationInput) RegistrationInput {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
-		input.Name = "飞书 Bot"
+		input.Name = "Feishu Bot"
 	}
 	input.ConnectionID = strings.TrimSpace(input.ConnectionID)
 	input.Model = strings.TrimSpace(input.Model)
 	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	input.Locale = strings.TrimSpace(input.Locale)
+	if input.Locale != "en-US" && input.Locale != "zh-CN" {
+		input.Locale = "zh-CN"
+	}
 	input.AllowedUsers = cleanIDs(input.AllowedUsers)
 	input.AllowedChats = cleanIDs(input.AllowedChats)
 	if input.ApprovalMode == "" {

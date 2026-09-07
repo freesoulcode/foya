@@ -1,8 +1,7 @@
-// Package message 定义对话消息的基础类型。
+// Package message defines the core chat message types.
 //
-// 消息是会话历史的原子单位:用户与助手的往返都是 Message。历史由事件
-// 日志投影而来(每条完成的消息是一个 MessageEnd 事件),多轮对话即历史
-// 的累积。
+// A message is the atomic unit of chat history. History is projected from the
+// event log, where each completed message is represented by MessageEnd.
 package message
 
 import (
@@ -11,7 +10,7 @@ import (
 	"time"
 )
 
-// Role 是消息角色。
+// Role identifies a message participant.
 type Role string
 
 const (
@@ -21,7 +20,7 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// ToolCall 是助手发起的一次工具调用(assistant 消息携带)。
+// ToolCall is a tool invocation carried by an assistant message.
 type ToolCall struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
@@ -76,10 +75,8 @@ type FileChange struct {
 	ContentCaptured bool   `json:"-"`
 }
 
-// Message 是一条对话消息。
-// 纯文本消息:Role + Content。
-// 助手调工具:Role=assistant, Content 可为空, ToolCalls 非空。
-// 工具结果:Role=tool, ToolCallID 指向对应的调用, Content 为结果文本。
+// Message represents one chat message. Tool results reference their call
+// through ToolCallID, while assistant messages may contain ToolCalls.
 type Message struct {
 	Role                 Role             `json:"role"`
 	Content              string           `json:"content"`
@@ -88,13 +85,13 @@ type Message struct {
 	SkillRef             string           `json:"skill_ref,omitempty"`
 	Attachments          []AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements      []BrowserElement `json:"browser_elements,omitempty"`
-	EventSeq             uint64           `json:"event_seq,omitempty"` // 历史投影中的稳定标识,不回灌模型
-	Reasoning            string           `json:"reasoning,omitempty"` // 思考内容(仅 assistant),仅供展示,不回灌模型
+	EventSeq             uint64           `json:"event_seq,omitempty"` // Stable projection ID; not sent to the model.
+	Reasoning            string           `json:"reasoning,omitempty"` // Display-only assistant reasoning.
 	ToolCalls            []ToolCall       `json:"tool_calls,omitempty"`
 	ToolCallID           string           `json:"tool_call_id,omitempty"`
-	Diff                 string           `json:"diff,omitempty"` // 文件变更 diff(仅 tool 结果),仅供 UI 展示,不回灌模型
+	Diff                 string           `json:"diff,omitempty"` // Display-only file diff for tool results.
 	FileChange           *FileChange      `json:"file_change,omitempty"`
-	// 回合生命周期时间仅写入最终 assistant 消息，不回灌模型。
+	// Turn timestamps are stored only on the final assistant message.
 	TurnStartedAt   *time.Time `json:"turn_started_at,omitempty"`
 	TurnCompletedAt *time.Time `json:"turn_completed_at,omitempty"`
 	TurnStatus      string     `json:"turn_status,omitempty"`

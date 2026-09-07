@@ -7,29 +7,27 @@ import (
 	"time"
 )
 
-// Input 是组装一次系统提示词所需的全部输入。
+// Input contains everything needed to assemble one system prompt.
 //
-// 零值字段会被合理兜底(平台取 runtime.GOOS、shell 取环境变量、
-// 时间取 now、home 取 os.UserHomeDir),调用方只需关心 project path
-// 和 approvalMode 等会话级信息。
+// Environment-related zero values receive runtime defaults so callers only
+// need to provide relevant chat-level settings.
 type Input struct {
-	ProjectPath  string   // 当前项目目录
-	ApprovalMode string   // 审批档位:manual / auto / full_access
-	Rules        []string // Foya 托管的全局与项目规则
-	RuleIndex    []string // 可由模型按需加载的规则名称与描述
-	Memories     []string // Foya 托管的全局与项目记忆
+	ProjectPath  string   // Current project directory.
+	ApprovalMode string   // manual, auto, or full_access.
+	Rules        []string // Global and project rules managed by Foya.
+	RuleIndex    []string // Rules available for on-demand model loading.
+	Memories     []string // Global and project memories managed by Foya.
 	Skills       []SkillCatalogEntry
-	Platform     string    // 留空则自动推断
-	Shell        string    // 留空则自动推断
-	Now          time.Time // 留空则取 time.Now()
-	HomeDir      string    // 留空则取 os.UserHomeDir()
+	Platform     string    // Inferred when empty.
+	Shell        string    // Inferred when empty.
+	Now          time.Time // Uses time.Now when empty.
+	HomeDir      string    // Uses os.UserHomeDir when empty.
 }
 
-// Assemble 组装最终系统提示词:静态前缀 → 外部上下文文件 → Foya Rules →
-// 权限上下文 → Foya Memory → 环境尾部。
+// Assemble builds the system prompt from stable and dynamic fragments.
 //
-// 静态前缀字节稳定以命中前缀缓存;其余持久上下文均为用户可控内容并明确
-// 标注权威边界。组装结果不写入事件日志,仅用于本次模型请求。
+// The static prefix remains byte-stable for provider caching. User-controlled
+// context is bounded and marked with explicit authority boundaries.
 func Assemble(in Input) string {
 	home := in.HomeDir
 	if home == "" {
@@ -74,7 +72,7 @@ func effectiveEnvironment(in Input, goos string) (platform, shell string) {
 	return platform, shell
 }
 
-// joinFragments 跳过空片段,用空行连接。
+// joinFragments joins non-empty sections with a blank line.
 func joinFragments(parts []string) string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ArrowDownToLineIcon,
   BotIcon,
@@ -29,6 +30,7 @@ const props = defineProps<{
   sessionId: string;
   tools: ToolCallView[];
 }>();
+const { t } = useI18n();
 
 const attachmentURLs = ref<Record<string, string>>({});
 const attachmentKey = computed(() =>
@@ -88,23 +90,23 @@ interface ToolMeta {
 }
 
 const TOOL_META: Record<string, ToolMeta> = {
-  bash: { icon: TerminalIcon, queued: "等待执行命令", running: "正在执行命令", done: "已执行命令" },
-  read: { icon: FileTextIcon, queued: "等待读取文件", running: "正在读取文件", done: "已读取文件" },
-  write: { icon: FilePlusIcon, queued: "等待写入文件", running: "正在写入文件", done: "已写入文件" },
-  edit: { icon: FilePenLineIcon, queued: "等待编辑文件", running: "正在编辑文件", done: "已编辑文件" },
-  delete: { icon: Trash2Icon, queued: "等待移入废纸篓", running: "正在移入废纸篓", done: "已移入废纸篓" },
-  search: { icon: SearchIcon, queued: "等待搜索", running: "正在搜索", done: "已搜索" },
-  web_search: { icon: GlobeIcon, queued: "等待联网搜索", running: "正在联网搜索", done: "已联网搜索" },
-  web_fetch: { icon: GlobeIcon, queued: "等待读取网页", running: "正在读取网页", done: "已读取网页" },
-  ask_user: { icon: MessageSquareTextIcon, queued: "等待你的回答", running: "等待你的回答", done: "已收到回答" },
-  read_tasks: { icon: ListChecksIcon, queued: "等待读取任务", running: "正在读取任务", done: "已读取任务" },
-  update_tasks: { icon: ListChecksIcon, queued: "等待更新任务", running: "正在更新任务", done: "已更新任务" },
-  agent: { icon: BotIcon, queued: "子 Agent 等待执行", running: "子 Agent 正在执行", done: "子 Agent 已完成" },
-  spawn_agent: { icon: BotIcon, queued: "等待派发子 Agent", running: "正在派发子 Agent", done: "已派发子 Agent" },
-  wait_agents: { icon: BotIcon, queued: "等待子 Agent", running: "正在等待子 Agent", done: "子 Agent 已返回" },
-  read_agent_output: { icon: BotIcon, queued: "等待读取子 Agent", running: "正在读取子 Agent", done: "已读取子 Agent" },
-  cancel_agent: { icon: BotIcon, queued: "等待取消子 Agent", running: "正在取消子 Agent", done: "已取消子 Agent" },
-  list_agents: { icon: BotIcon, queued: "等待检查子任务", running: "正在检查子任务", done: "已检查子任务" },
+  bash: { icon: TerminalIcon, queued: "Waiting to run command", running: "Running command", done: "Ran command" },
+  read: { icon: FileTextIcon, queued: "Waiting to read file", running: "Reading file", done: "Read file" },
+  write: { icon: FilePlusIcon, queued: "Waiting to write file", running: "Writing file", done: "Wrote file" },
+  edit: { icon: FilePenLineIcon, queued: "Waiting to edit file", running: "Editing file", done: "Edited file" },
+  delete: { icon: Trash2Icon, queued: "Waiting to move item to Trash", running: "Moving item to Trash", done: "Moved item to Trash" },
+  search: { icon: SearchIcon, queued: "Waiting to search", running: "Searching", done: "Searched" },
+  web_search: { icon: GlobeIcon, queued: "Waiting to search the web", running: "Searching the web", done: "Searched the web" },
+  web_fetch: { icon: GlobeIcon, queued: "Waiting to read web page", running: "Reading web page", done: "Read web page" },
+  ask_user: { icon: MessageSquareTextIcon, queued: "Waiting for your answer", running: "Waiting for your answer", done: "Received answer" },
+  read_tasks: { icon: ListChecksIcon, queued: "Waiting to read tasks", running: "Reading tasks", done: "Read tasks" },
+  update_tasks: { icon: ListChecksIcon, queued: "Waiting to update tasks", running: "Updating tasks", done: "Updated tasks" },
+  agent: { icon: BotIcon, queued: "Sub-agent queued", running: "Sub-agent running", done: "Sub-agent completed" },
+  spawn_agent: { icon: BotIcon, queued: "Waiting to dispatch sub-agent", running: "Dispatching sub-agent", done: "Dispatched sub-agent" },
+  wait_agents: { icon: BotIcon, queued: "Waiting for sub-agent", running: "Waiting for sub-agent", done: "Sub-agent returned" },
+  read_agent_output: { icon: BotIcon, queued: "Waiting to read sub-agent", running: "Reading sub-agent", done: "Read sub-agent" },
+  cancel_agent: { icon: BotIcon, queued: "Waiting to cancel sub-agent", running: "Cancelling sub-agent", done: "Cancelled sub-agent" },
+  list_agents: { icon: BotIcon, queued: "Waiting to inspect subtasks", running: "Inspecting subtasks", done: "Inspected subtasks" },
 };
 
 const isBatch = computed(() => props.tools.length > 1);
@@ -146,26 +148,35 @@ function actionSummary(tools: ToolCallView[]): string {
   }
 
   const parts: string[] = [];
-  if (filesChanged > 0) parts.push(`更改 ${filesChanged} 个文件`);
-  if (filesRead > 0) parts.push(`读取 ${filesRead} 个文件`);
-  if (commands > 0) parts.push(`执行 ${commands} 条命令`);
-  if (webSearches > 0) parts.push(`搜索 ${webSearches} 次`);
-  if (webPages > 0) parts.push(`读取 ${webPages} 个网页`);
-  if (agents > 0) parts.push(`调度 ${agents} 个子 Agent`);
-  if (others > 0) parts.push(`调用 ${others} 个工具`);
-  return parts.join("、");
+  if (filesChanged > 0) parts.push(t("Changed {count} files", { count: filesChanged }));
+  if (filesRead > 0) parts.push(t("Read {count} files", { count: filesRead }));
+  if (commands > 0) parts.push(t("Ran {count} commands", { count: commands }));
+  if (webSearches > 0) parts.push(t("Searched the web {count} times", { count: webSearches }));
+  if (webPages > 0) parts.push(t("Read {count} web pages", { count: webPages }));
+  if (agents > 0) parts.push(t("Dispatched {count} sub-agents", { count: agents }));
+  if (others > 0) parts.push(t("Called {count} tools", { count: others }));
+  return parts.join(t(", "));
 }
 
 const batchTitle = computed(() => {
   const summary = actionSummary(props.tools);
   if (runningCount.value > 0 || queuedCount.value > 0) {
     const states: string[] = [];
-    if (runningCount.value > 0) states.push(`${runningCount.value} 项执行中`);
-    if (queuedCount.value > 0) states.push(`${queuedCount.value} 项等待`);
-    return `${states.join("，")} · ${summary}`;
+    if (runningCount.value > 0) {
+      states.push(t("Running item count", { count: runningCount.value }));
+    }
+    if (queuedCount.value > 0) {
+      states.push(t("Queued item count", { count: queuedCount.value }));
+    }
+    return `${states.join(t(", "))} · ${summary}`;
   }
-  if (errorCount.value > 0) return `已${summary}（${errorCount.value} 项失败）`;
-  return `已${summary}`;
+  if (errorCount.value > 0) {
+    return t("Completed: {summary} ({count} failed)", {
+      summary,
+      count: errorCount.value,
+    });
+  }
+  return t("Completed: {summary}", { summary });
 });
 
 const expandedTools = ref<Set<string>>(new Set());
@@ -174,9 +185,9 @@ const collapsedAgentTools = ref<Set<string>>(new Set());
 function toolMeta(name: string): ToolMeta {
   return TOOL_META[name] ?? {
     icon: WrenchIcon,
-    queued: `等待调用 ${name}`,
-    running: `正在调用 ${name}`,
-    done: `已调用 ${name}`,
+    queued: "Waiting to call {name}",
+    running: "Calling {name}",
+    done: "Called {name}",
   };
 }
 
@@ -227,17 +238,24 @@ function showRawDetails(tool: ToolCallView): boolean {
 function toolLabel(tool: ToolCallView): string {
   const meta = toolMeta(tool.name);
   const agentSuffix = isAgentTool(tool) && tool.agent_name ? ` · ${tool.agent_name}` : "";
-  if (tool.status === "queued") return meta.queued + agentSuffix;
-  if (tool.status === "running") return meta.running + agentSuffix;
-  if (tool.status === "error") return `${meta.done}${agentSuffix}（失败）`;
+  const values = { name: tool.name };
+  if (tool.status === "queued") return t(meta.queued, values) + agentSuffix;
+  if (tool.status === "running") return t(meta.running, values) + agentSuffix;
+  if (tool.status === "error") {
+    return t("{action} (failed)", { action: t(meta.done, values) + agentSuffix });
+  }
   if (tool.name === "bash" && tool.output?.includes('"running_in_background"')) {
-    return "命令已转到后台";
+    return t("Command moved to background");
   }
   if (tool.name === "delete") {
-    return toolTargetKind(tool) === "directory" ? "已删除 1 个文件夹" : "已删除 1 个文件";
+    return toolTargetKind(tool) === "directory"
+      ? t("Deleted {count} folders", { count: 1 })
+      : t("Deleted {count} files", { count: 1 });
   }
-  if (tool.diff && tool.name !== "delete") return "已编辑 1 个文件";
-  return meta.done + agentSuffix;
+  if (tool.diff && tool.name !== "delete") {
+    return t("Edited {count} files", { count: 1 });
+  }
+  return t(meta.done, values) + agentSuffix;
 }
 
 function toggleTool(tool: ToolCallView) {
@@ -306,43 +324,43 @@ function formatInput(input: string): string {
             <LoaderCircleIcon
               v-if="tool.status === 'running'"
               class="size-3.5 shrink-0 animate-spin text-primary"
-              aria-label="执行中"
+              :aria-label="$t('Running')"
             />
             <span
               v-else-if="tool.status === 'queued'"
               class="size-1.5 shrink-0 rounded-full bg-muted-foreground/30"
-              aria-label="等待执行"
+              :aria-label="$t('Waiting')"
             />
           </button>
           <button
             v-if="tool.name === 'bash' && tool.status === 'running'"
             type="button"
             class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="在终端中运行并查看"
+            :title="$t('Run and view in terminal')"
             @click="emit('terminal-tool', tool.id)"
           >
             <SquareTerminalIcon class="size-3.5" />
-            <span>终端</span>
+            <span>{{ $t("Terminal") }}</span>
           </button>
           <button
             v-if="tool.name === 'bash' && tool.status === 'running'"
             type="button"
             class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="转到后台运行"
+            :title="$t('Move to background')"
             @click="emit('background-tool', tool.id)"
           >
             <ArrowDownToLineIcon class="size-3.5" />
-            <span>后台</span>
+            <span>{{ $t("Background") }}</span>
           </button>
           <button
             v-if="tool.name === 'bash' && tool.status === 'running'"
             type="button"
             class="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            title="仅中断此命令"
+            :title="$t('Stop this command only')"
             @click="emit('cancel-tool', tool.id)"
           >
             <SquareIcon class="size-3 fill-current" />
-            <span>停止</span>
+            <span>{{ $t("Stop") }}</span>
           </button>
         </div>
 
@@ -356,11 +374,11 @@ function formatInput(input: string): string {
               :messages="tool.child_messages"
             />
             <div v-if="showRawDetails(tool) && tool.input" class="mb-2">
-              <div class="mb-1 text-[10px] uppercase text-muted-foreground">参数</div>
+              <div class="mb-1 text-[10px] uppercase text-muted-foreground">{{ $t("Arguments") }}</div>
               <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(tool.input) }}</pre>
             </div>
             <div v-if="showRawDetails(tool) && tool.output">
-              <div class="mb-1 text-[10px] uppercase text-muted-foreground">输出</div>
+              <div class="mb-1 text-[10px] uppercase text-muted-foreground">{{ $t("Output") }}</div>
               <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ tool.output }}</pre>
             </div>
             <div
@@ -392,13 +410,13 @@ function formatInput(input: string): string {
               <span class="min-w-0 flex-1 truncate font-mono">
                 {{ toolTargetName(tool) }}
               </span>
-              <span class="shrink-0">废纸篓</span>
+              <span class="shrink-0">{{ $t("Trash") }}</span>
             </div>
             <button
               v-if="isFileChangeTool(tool) && tool.diff"
               type="button"
               class="mt-1 flex h-8 w-full items-center gap-2 px-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-              :title="`查看 ${diffFileName(tool.diff)} 的完整变更`"
+              :title="$t('View complete changes for {name}', { name: diffFileName(tool.diff) })"
               @click.stop="emit('open-diff', tool.diff)"
             >
               <FileTextIcon class="size-3.5 shrink-0 text-primary" />

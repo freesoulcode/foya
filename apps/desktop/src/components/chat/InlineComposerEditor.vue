@@ -11,6 +11,7 @@ import {
 } from "vue";
 import { MousePointer2Icon } from "@lucide/vue";
 import type { BrowserElementSelection } from "@/lib/api";
+import { translate } from "@/i18n";
 
 const props = withDefaults(
   defineProps<{
@@ -127,7 +128,7 @@ function createToken(element: BrowserElementSelection): HTMLElement {
   remove.type = "button";
   remove.tabIndex = -1;
   remove.dataset.removeBrowserElement = "";
-  remove.title = "移除页面元素";
+  remove.title = translate("Remove page element");
   remove.className =
     "flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground";
   remove.textContent = "\u00d7";

@@ -15,7 +15,7 @@ import (
 
 const maxReadLen = 50000
 
-// ReadParams 是 read 工具的参数。
+// ReadParams contains arguments for the read tool.
 type ReadParams struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset,omitempty"`
@@ -26,7 +26,7 @@ type readTool struct {
 	gw approval.Gateway
 }
 
-// NewReadTool 创建 read 工具(只读,explore 模式自动放行)。
+// NewReadTool creates a read-only tool allowed automatically in explore mode.
 func NewReadTool(gw approval.Gateway) Tool {
 	return &readTool{gw: gw}
 }
@@ -57,17 +57,17 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("path is required"), nil
 	}
 
-	// read 动作在 explore 模式下自动放行。
+	// Read operations are allowed automatically in explore mode.
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "read",
 		Action:   "read",
 		Detail:   params.Path,
 	})
 	if err != nil {
-		return errResult("审批中断: " + err.Error()), nil
+		return errResult("Approval interrupted: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
-		return errResult("用户拒绝读取文件"), nil
+		return errResult("User denied file read"), nil
 	}
 
 	path := params.Path
@@ -79,12 +79,12 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return errResult(fmt.Sprintf("读取失败: %v", err)), nil
+		return errResult(fmt.Sprintf("Read failed: %v", err)), nil
 	}
 	mediaType := strings.Split(http.DetectContentType(data), ";")[0]
 	if strings.HasPrefix(mediaType, "image/") {
 		if int64(len(data)) > artifact.MaxImageBytes {
-			return errResult(fmt.Sprintf("图片超过 %d 字节限制", artifact.MaxImageBytes)), nil
+			return errResult(fmt.Sprintf("Image exceeds the %d-byte limit", artifact.MaxImageBytes)), nil
 		}
 		return Result{Content: []ContentPart{{
 			Type:      "image",

@@ -104,7 +104,7 @@ func (m *manager) consume(item *process) {
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && item.runningState() {
-				m.append(item, "\r\n[终端连接已结束]\r\n", false, 0)
+				m.append(item, "\r\n[Terminal connection ended]\r\n", false, 0)
 			}
 			break
 		}

@@ -172,8 +172,8 @@ watch(
             class="flex size-6 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/55 transition-colors hover:bg-muted hover:text-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-25"
             :draggable="editingId !== item.id"
             :disabled="editingId === item.id"
-            :aria-label="`调整第 ${index + 1} 条消息的顺序`"
-            title="拖拽调整顺序，方向键可微调"
+            :aria-label="$t('Reorder queued message {position}', { position: index + 1 })"
+            :title="$t('Drag to reorder; use arrow keys for fine adjustment')"
             @dragstart="beginDrag($event, item)"
             @dragend="endDrag"
             @keydown.up="reorderWithKeyboard($event, item, index, -1)"
@@ -195,7 +195,7 @@ watch(
                 <button
                   type="button"
                   class="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  title="取消编辑"
+                  :title="$t('Cancel editing')"
                   @click="cancelEdit"
                 >
                   <XIcon class="size-3.5" />
@@ -204,7 +204,7 @@ watch(
                   type="button"
                   class="flex size-6 items-center justify-center rounded bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
                   :disabled="!editText.trim()"
-                  title="保存"
+                  :title="$t('Save')"
                   @click="saveEdit"
                 >
                   <CheckIcon class="size-3.5" />
@@ -234,7 +234,7 @@ watch(
               >
                 <ImageIcon class="size-3 shrink-0" />
                 <span class="truncate">
-                  {{ item.attachments.map((attachment) => attachment.name).join("、") }}
+                  {{ item.attachments.map((attachment) => attachment.name).join($t(", ")) }}
                 </span>
               </div>
               <div
@@ -242,7 +242,7 @@ watch(
                 class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
               >
                 <MousePointer2Icon class="size-3 shrink-0" />
-                <span>{{ item.browser_elements.length }} 个页面元素</span>
+                <span>{{ $t("{count} page elements", { count: item.browser_elements.length }) }}</span>
               </div>
             </template>
           </div>
@@ -254,7 +254,7 @@ watch(
             <button
               type="button"
               class="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="编辑"
+              :title="$t('Edit')"
               @click="beginEdit(item)"
             >
               <PencilIcon class="size-3.5" />
@@ -262,7 +262,7 @@ watch(
             <button
               type="button"
               class="flex size-6 items-center justify-center rounded bg-primary/10 text-primary transition-colors hover:bg-primary/20"
-              :title="streaming ? '立即发送并中断当前回合' : '立即发送'"
+              :title="streaming ? $t('Send now and interrupt current turn') : $t('Send now')"
               @click="emit('dispatch', item.id)"
             >
               <SendIcon class="size-3.5" />
@@ -270,7 +270,7 @@ watch(
             <button
               type="button"
               class="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-              title="删除"
+              :title="$t('Delete')"
               @click="emit('delete', item.id)"
             >
               <Trash2Icon class="size-3.5" />

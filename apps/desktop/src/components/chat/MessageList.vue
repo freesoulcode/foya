@@ -40,7 +40,7 @@ function onScroll() {
   computeActiveTurn();
 }
 
-// 每个 user 消息开启一个回合;圆点按回合顺序对应这些位置。
+// Each user message starts a turn and maps to one timeline marker.
 const turnIndices = computed(() => {
   const idxs: number[] = [];
   props.messages.forEach((m, i) => {
@@ -53,7 +53,7 @@ function setItemRef(el: HTMLElement | null, i: number) {
   if (el) itemRefs.value[i] = el;
 }
 
-// 根据当前滚动位置计算可视回合:取顶部锚点之上最后一个 user 消息。
+// Resolve the visible turn from the last user message above the viewport anchor.
 function computeActiveTurn() {
   const el = scrollEl.value;
   if (!el || turnIndices.value.length === 0) return;
@@ -70,7 +70,7 @@ function computeActiveTurn() {
   emit("update:activeTurn", active);
 }
 
-// 跳转到指定回合:平滑滚动到该 user 消息;最后一回合贴底。
+// Scroll to a turn; keep the final turn pinned to the bottom.
 function scrollToTurn(turnIndex: number) {
   const el = scrollEl.value;
   const msgIdx = turnIndices.value[turnIndex];
@@ -80,8 +80,7 @@ function scrollToTurn(turnIndex: number) {
   node.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// 回到底部:用户点「跳转最下面」按钮。恢复贴底并平滑滚到底,
-// 之后流式增量会继续自动跟随。
+// Restore bottom pinning so later streaming updates continue to follow.
 function scrollToBottom() {
   stickToBottom.value = true;
   const el = scrollEl.value;
@@ -89,12 +88,12 @@ function scrollToBottom() {
   el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
 }
 
-// 是否显示「回到底部」按钮:用户上翻看历史(离底)时出现。
+// Show the jump button after the user scrolls away from the bottom.
 const showJumpButton = computed(() => !stickToBottom.value);
 
 defineExpose({ scrollToTurn });
 
-// 切换会话(消息数组引用变化):总是贴底看最新。
+// A session switch always starts at the latest message.
 watch(
   () => props.messages,
   async () => {
@@ -106,8 +105,7 @@ watch(
   }
 );
 
-// 消息条数增长:仅当新增的是用户刚发出的消息(或首次填充)才贴底;
-// 流式过程中 tool 结果等消息增长不应把正在看历史的用户强制拉回底部。
+// Pin after a user submission or first load, but not for background tool updates.
 watch(
   () => props.messages.length,
   async (n, o) => {
@@ -130,7 +128,7 @@ watch(
   () =>
     props.messages
       .map((m) => {
-        // 内容长度随正文/思考/工具输出增长而变化,任一变化都触发贴底滚动。
+        // Track all streamed segment growth while bottom pinning is active.
         const segLen = (m.segments ?? []).reduce(
           (n, s) => n + (s.kind === "tool" ? (s.tool.output?.length ?? 0) : s.text.length),
           0
@@ -175,8 +173,8 @@ onBeforeUnmount(() => {
           <BotIcon class="size-6 text-muted-foreground/70" />
         </div>
         <div class="text-center">
-          <p class="text-base font-medium">有什么可以帮你的？</p>
-          <p class="mt-1 text-sm text-muted-foreground">输入消息开始对话</p>
+          <p class="text-base font-medium">{{ $t("How can I help?") }}</p>
+          <p class="mt-1 text-sm text-muted-foreground">{{ $t("Enter a message to start a chat") }}</p>
         </div>
       </div>
 
@@ -211,12 +209,12 @@ onBeforeUnmount(() => {
           aria-live="polite"
         >
           <RefreshCwIcon class="size-3.5 animate-spin" />
-          <span>正在压缩上下文</span>
+          <span>{{ $t("Compressing context") }}</span>
         </div>
       </div>
     </div>
 
-    <!-- 回到底部:覆盖在消息视窗上，不随滚动内容移动。 -->
+    <!-- The jump button overlays the message viewport. -->
     <Transition
       enter-active-class="transition duration-200 ease-out"
       enter-from-class="translate-y-2 opacity-0"
@@ -234,7 +232,7 @@ onBeforeUnmount(() => {
             ? 'text-primary ring-2 ring-primary/30 hover:bg-primary/10'
             : 'text-muted-foreground'
         "
-        :title="streaming ? '有新内容，回到底部' : '回到底部'"
+        :title="streaming ? $t('New content, scroll to bottom') : $t('Scroll to bottom')"
         @click="scrollToBottom"
       >
         <ArrowDownIcon class="size-4" :class="streaming ? 'animate-bounce' : ''" />

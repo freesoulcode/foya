@@ -39,6 +39,9 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 		if options.AppPreset == nil || options.AppPreset.Name != "扫码 Bot" {
 			t.Errorf("app preset = %#v", options.AppPreset)
 		}
+		if options.AppPreset.Desc != "A Feishu assistant powered by the Foya desktop app" {
+			t.Errorf("app description = %q", options.AppPreset.Desc)
+		}
 		options.OnQRCode(&larkregistration.QRCodeInfo{
 			URL:      "https://accounts.feishu.cn/qr",
 			ExpireIn: 600,
@@ -61,6 +64,7 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 
 	started, err := manager.StartRegistration(RegistrationInput{
 		Name:         "扫码 Bot",
+		Locale:       "en-US",
 		ApprovalMode: approval.ModeAuto,
 	})
 	if err != nil {
@@ -82,6 +86,7 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 	if completed.Channel.AppID != "cli_registered" ||
 		!completed.Channel.HasAppSecret ||
 		!completed.Channel.Enabled ||
+		completed.Channel.Locale != "en-US" ||
 		len(completed.Channel.AllowedUsers) != 1 ||
 		completed.Channel.AllowedUsers[0] != "ou_scanner" {
 		t.Fatalf("created channel = %#v", completed.Channel)

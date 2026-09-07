@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { FolderOpenIcon, LoaderCircleIcon } from "@lucide/vue";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ const props = withDefaults(
     error: "",
   }
 );
+const { t } = useI18n();
 
 const emit = defineEmits<{
   "update:open": [open: boolean];
@@ -65,7 +67,7 @@ function submit() {
   const sourcePath = path.value.trim();
   if (!sourcePath || props.busy) return;
   emit("confirm", {
-    name: name.value.trim() || "新项目",
+    name: name.value.trim() || t("New project"),
     path: sourcePath,
   });
 }
@@ -75,32 +77,32 @@ function submit() {
   <Dialog :open="open" @update:open="setOpen">
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>添加项目</DialogTitle>
+        <DialogTitle>{{ $t("Add project") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          创建一个项目并选择其源文件夹
+          {{ $t("Create a project and select its source folder") }}
         </DialogDescription>
       </DialogHeader>
 
       <form class="space-y-4" @submit.prevent="submit">
         <div class="space-y-1.5">
-          <Label for="project-create-name">项目名称</Label>
+          <Label for="project-create-name">{{ $t("Project name") }}</Label>
           <Input
             id="project-create-name"
             v-model="name"
-            placeholder="新项目"
+            :placeholder="$t('New project')"
             autocomplete="off"
             :disabled="busy"
           />
         </div>
 
         <div class="space-y-1.5">
-          <Label for="project-create-path">源文件夹</Label>
+          <Label for="project-create-path">{{ $t("Source folder") }}</Label>
           <div class="flex gap-2">
             <Input
               id="project-create-path"
               :model-value="path"
               class="font-mono text-xs"
-              placeholder="选择文件夹"
+              :placeholder="$t('Select folder')"
               readonly
               :disabled="busy"
             />
@@ -112,7 +114,7 @@ function submit() {
               @click="chooseFolder"
             >
               <FolderOpenIcon class="size-4" />
-              选择
+              {{ $t("Select") }}
             </Button>
           </div>
         </div>
@@ -132,11 +134,11 @@ function submit() {
             :disabled="busy"
             @click="setOpen(false)"
           >
-            取消
+            {{ $t("Cancel") }}
           </Button>
           <Button type="submit" :disabled="busy || !path.trim()">
             <LoaderCircleIcon v-if="busy" class="size-4 animate-spin" />
-            {{ busy ? "创建中…" : "创建项目" }}
+            {{ busy ? $t("Creating") : $t("Create project") }}
           </Button>
         </DialogFooter>
       </form>

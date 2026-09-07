@@ -50,13 +50,13 @@ function isForced(key: string) {
         <div class="flex items-center gap-2">
           <AlertTriangleIcon class="size-5 text-amber-600 dark:text-amber-400" />
           <DialogTitle>
-            {{ canConfirm ? "回退这条消息？" : "无法回退消息" }}
+            {{ canConfirm ? $t("Rewind this message?") : $t("Unable to rewind message") }}
           </DialogTitle>
         </div>
         <DialogDescription v-if="canConfirm">
-          这条消息及之后的对话会从当前上下文移除，消息内容会回到输入框，现有草稿会被替换。
+          {{ $t("This message and everything after it will be removed from the current context. Its content will return to the composer and replace the current draft.") }}
           <template v-if="hasFiles">
-            未被修改的文件将自动恢复；不冲突的用户修改会被保留；冲突文件默认保留，可逐个选择强制恢复。已执行的命令不会撤销。
+            {{ $t("Unmodified files will be restored automatically. Non-conflicting user changes will be preserved. Conflicting files are kept by default, but you can force-restore them individually. Commands cannot be undone.") }}
           </template>
         </DialogDescription>
         <DialogDescription v-else>
@@ -81,13 +81,13 @@ function isForced(key: string) {
             v-if="file.status === 'ready'"
             class="shrink-0 text-xs text-muted-foreground"
           >
-            将恢复
+            {{ $t("Will restore") }}
           </span>
           <span
             v-else-if="file.status === 'mergeable'"
             class="shrink-0 text-xs text-emerald-600 dark:text-emerald-400"
           >
-            将合并恢复
+            {{ $t("Will merge and restore") }}
           </span>
           <label
             v-else
@@ -99,7 +99,7 @@ function isForced(key: string) {
               :disabled="pendingHistoryRewind?.submitting"
               @update:model-value="toggleHistoryRewindForceFile(file.key)"
             />
-            <span>{{ isForced(file.key) ? "强制恢复" : "保留当前" }}</span>
+            <span>{{ isForced(file.key) ? $t("Force restore") : $t("Keep current") }}</span>
           </label>
         </div>
       </div>
@@ -108,7 +108,7 @@ function isForced(key: string) {
         v-if="canConfirm && hasModifiedFiles && hasForcedFiles"
         class="text-xs text-destructive"
       >
-        强制恢复会覆盖所选文件在 Agent 修改后的全部变化。
+        {{ $t("Force restore overwrites all changes made after the agent modified the selected files.") }}
       </p>
 
       <DialogFooter class="gap-2">
@@ -117,7 +117,7 @@ function isForced(key: string) {
           :disabled="pendingHistoryRewind?.submitting"
           @click="cancelHistoryRewind"
         >
-          {{ canConfirm ? "取消" : "关闭" }}
+          {{ canConfirm ? $t("Cancel") : $t("Close") }}
         </Button>
         <Button
           v-if="canConfirm"
@@ -129,7 +129,7 @@ function isForced(key: string) {
             v-if="pendingHistoryRewind?.submitting"
             class="size-4 animate-spin"
           />
-          回退到输入框
+          {{ $t("Rewind to composer") }}
         </Button>
       </DialogFooter>
     </DialogContent>

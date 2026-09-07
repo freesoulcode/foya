@@ -1,4 +1,4 @@
-// 回合引擎实现:驱动 provider 完成多轮对话与工具调用闭环。
+// The turn engine drives model requests and tool calls to completion.
 package agent
 
 import (
@@ -32,9 +32,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// maxToolStepsUnlimited 表示不设步数上限(交互式桌面默认)。
-// 步数上限是可选的第三层兜底,只应由 CLI / eval 等非交互场景显式设置——
-// 交互式任务不该被武断的步数打断,失控由 loopGuard 的两层检测精准终止。
+// maxToolStepsUnlimited disables the optional step limit for interactive use.
 const maxToolStepsUnlimited = 0
 const maxProviderImageBytes int64 = 20 << 20
 
@@ -65,27 +63,25 @@ const (
 	turnReasonContextCancelled = "context_cancelled"
 )
 
-// SessionLookup 是引擎读取会话元数据所需的最小依赖。
+// SessionLookup is the minimal chat metadata dependency.
 type SessionLookup interface {
 	Get(id string) (*session.Session, bool)
 }
 
-// titleStore 是标题生成所需的会话存储。
+// titleStore is the storage interface needed for generated titles.
 type titleStore interface {
 	SessionLookup
 	SetPhase(id string, phase session.Phase) (*session.Session, error)
 	SetGeneratedTitle(id, t string) (bool, error)
 }
 
-// pendingToolCall 在流式过程中累积一个工具调用的分片。
+// pendingToolCall accumulates streamed tool-call fragments.
 type pendingToolCall struct {
 	ID        string
 	Name      string
 	argsBuf   string
 	argsReady bool
-	// uiNotified 标记是否已为该调用发出 tool_begin 事件。
-	// 首个携带 ID+名称的分片到达即通知 UI,让用户在模型还在流式生成参数时
-	// 就看到「正在调用某工具」,而非等参数全部流完才出现。
+	// uiNotified records whether tool_begin has been emitted for this call.
 	uiNotified bool
 }
 
@@ -102,7 +98,7 @@ type turnRunState struct {
 	cancelRequestOnce sync.Once
 }
 
-// Engine 是回合引擎。
+// Engine coordinates model turns and tool execution.
 type Engine struct {
 	log       state.Store
 	bus       *broker.Broker[event.Event]
@@ -137,25 +133,20 @@ type Engine struct {
 	modelWindows          map[string]int64
 	catalogLoaded         bool
 
-	// maxSteps 是可选的工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
-	// 仅 CLI / eval 等非交互场景应显式设置,避免武断打断正常任务。
+	// maxSteps is an optional non-interactive safety limit. Zero is unlimited.
 	maxSteps int
 
-	// cancels 持有每个会话当前回合的取消函数。回合进行中时存在,
-	// 结束后删除。Cancel 据此中断正在跑的回合(provider HTTP、
-	// 工具执行、审批等待都会随 ctx 取消而终止)。
+	// cancels contains active per-chat cancellation state.
 	cancels sync.Map // sessionID -> *turnRunState
 
-	// dones 持有每个会话当前回合的结束信号:RunTurn goroutine 退出时 close。
-	// 删除会话时用 CancelAndWait 等待回合彻底收尾,避免收尾事件写入已删会话。
+	// dones signals when each RunTurn goroutine has exited completely.
 	dones sync.Map // sessionID -> chan struct{}
 
 	// toolCancels allows clients to stop one running tool without cancelling the
 	// surrounding agent turn. Keys combine session ID and tool call ID.
 	toolCancels sync.Map // string -> context.CancelCauseFunc
 
-	// requestBudgets 保存每个会话最近一次成功请求的真实 input token 与请求体大小,
-	// 用于估算下一次请求。值绑定完整 Provider route。
+	// requestBudgets retains the latest successful request size per provider route.
 	requestBudgets sync.Map // sessionID -> requestBudgetState
 
 	// acceptedBoundaries records the canonical history boundary of the last
@@ -266,7 +257,7 @@ Preserve history_read_tool_result references when their full output may still be
 Do not add any other level-two section.
 Do not include hidden reasoning, an unfinished code fence, or commentary about the summarization process.`
 
-// NewEngine 组装回合引擎。
+// NewEngine assembles the turn engine.
 func NewEngine(
 	log state.Store,
 	bus *broker.Broker[event.Event],
@@ -314,7 +305,7 @@ func (e *Engine) SetHookRuntime(runtime *hooks.Runtime) {
 	e.hooks = runtime
 }
 
-// SwitchProvider 运行时热替换 provider 与模型。
+// SwitchProvider replaces the active provider and model at runtime.
 func (e *Engine) SwitchProvider(p provider.Provider, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -373,8 +364,7 @@ func (e *Engine) SetModelRouteResolver(resolve func(sessionID, model string) str
 	e.modelRouteResolver = resolve
 }
 
-// SetMaxSteps 设置工具步数上限(第三层兜底)。0 表示无限制(交互式默认)。
-// 供 CLI / eval 等非交互场景显式限制;交互式桌面不应调用。
+// SetMaxSteps configures an optional non-interactive tool-step limit.
 func (e *Engine) SetMaxSteps(n int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -484,12 +474,12 @@ func (e *Engine) modelTokenLimits(sessionID, model string) ModelTokenLimits {
 	return ModelTokenLimits{}
 }
 
-// ListModels 列出当前 provider 可用的模型。
+// ListModels returns models available from the active provider.
 func (e *Engine) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
 	prov := e.currentProvider("")
 	lister, ok := prov.(provider.ModelLister)
 	if !ok {
-		return nil, fmt.Errorf("当前 provider 不支持列出模型")
+		return nil, fmt.Errorf("The current provider cannot list models")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -734,7 +724,7 @@ func (e *Engine) CompactSession(
 	runState := &turnRunState{cancel: cancel}
 	if _, loaded := e.cancels.LoadOrStore(sessionID, runState); loaded {
 		cancel(context.Canceled)
-		return nil, fmt.Errorf("该会话当前正忙")
+		return nil, fmt.Errorf("The chat is busy")
 	}
 	done := make(chan struct{})
 	e.dones.Store(sessionID, done)
@@ -1172,7 +1162,7 @@ func (e *Engine) setSessionPhase(ctx context.Context, sessionID string, phase se
 	e.emit(ctx, sessionID, event.KindSessionUpdated, snapshot, true)
 }
 
-// toolCallPayload 是 tool_begin/tool_end 事件的负载。
+// toolCallPayload is emitted for tool lifecycle events.
 type toolCallPayload struct {
 	ID          string                  `json:"id"`
 	Name        string                  `json:"name"`
@@ -1181,7 +1171,7 @@ type toolCallPayload struct {
 	Attachments []message.AttachmentRef `json:"attachments,omitempty"`
 	Status      string                  `json:"status,omitempty"` // queued / running / done / error
 	IsError     bool                    `json:"is_error,omitempty"`
-	Diff        string                  `json:"diff,omitempty"` // 文件变更 diff(仅 write/edit),仅供 UI 展示
+	Diff        string                  `json:"diff,omitempty"` // Display-only file diff.
 }
 
 type turnStartedPayload struct {
@@ -1295,14 +1285,13 @@ func (e *Engine) InvalidateHistoryEstimate(sessionID string) {
 	e.compactionFailures.Delete(sessionID)
 }
 
-// runTurn 同步执行一轮对话(可能含多步工具调用)。
-// 同一时刻一个会话只能有一个回合;重复提交返回错误。可用 Cancel 中断。
+// runTurn executes one potentially multi-step turn.
 func (e *Engine) runTurn(
 	ctx context.Context,
 	sessionID string,
 	input message.UserInput,
 ) error {
-	// 注册 per-session cancel:同一会话只允许一个活跃回合。
+	// Register cancellation state and enforce one active turn per chat.
 	runID := newRunID()
 	turnStartedAt := time.Now()
 	turnCtx, cancel := context.WithCancelCause(ctx)
@@ -1312,10 +1301,9 @@ func (e *Engine) runTurn(
 	}
 	if _, loaded := e.cancels.LoadOrStore(sessionID, runState); loaded {
 		cancel(context.Canceled)
-		return fmt.Errorf("该会话已有回合正在运行")
+		return fmt.Errorf("The chat already has a running turn")
 	}
-	// done 在 RunTurn 完全退出(所有收尾事件已发出)后 close;
-	// CancelAndWait 据此确保删除会话前回合已彻底停透。
+	// Close done only after all final events have been emitted.
 	done := make(chan struct{})
 	e.dones.Store(sessionID, done)
 	defer e.cancels.Delete(sessionID)
@@ -1458,7 +1446,7 @@ func (e *Engine) runTurn(
 	e.setSessionPhase(ctx, sessionID, session.PhaseTurn)
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, session.PhaseIdle)
 
-	// 注入会话级配置到 context:工作目录供工具读,审批档位供网关读。
+	// Add chat-level working directory and approval settings to the context.
 	if e.sessions != nil {
 		ctx = tool.WithCWD(ctx, projectPath)
 		ctx = tool.WithProjectID(ctx, e.resolveProjectID(sessionID))
@@ -1534,14 +1522,14 @@ func (e *Engine) runTurn(
 		"",
 	))
 	if promptHook.Decision == hooks.DecisionDeny {
-		err := fmt.Errorf("用户请求被 hook 拦截: %s", hookFeedback(promptHook, "请求不被允许"))
+		err := fmt.Errorf("User request blocked by a hook: %s", hookFeedback(promptHook, "Request not allowed"))
 		e.emit(ctx, sessionID, event.KindError, err.Error(), true)
 		completeTurn(turnStatusFailed, turnReasonError)
 		return err
 	}
 	promptHookContext := append([]string(nil), promptHook.Context...)
 
-	// 标题生成(首条用户消息时后台触发)。
+	// Generate a title in the background for the first user message.
 	if e.sessions != nil {
 		if hist, err := e.log.History(ctx, sessionID); err == nil && !hasUserMessage(hist) {
 			if s, ok := e.sessions.Get(sessionID); ok && s.ParentID == "" && s.Title == "" && !s.TitleIsManual {
@@ -1551,7 +1539,7 @@ func (e *Engine) runTurn(
 					for _, attachment := range input.Attachments {
 						names = append(names, attachment.Name)
 					}
-					titleSource = "图片: " + strings.Join(names, ", ")
+					titleSource = "Images: " + strings.Join(names, ", ")
 				}
 				if strings.TrimSpace(titleSource) == "" && len(input.BrowserElements) > 0 {
 					element := input.BrowserElements[0]
@@ -1566,7 +1554,7 @@ func (e *Engine) runTurn(
 		}
 	}
 
-	// 用户消息入日志。
+	// Append the user message to the event log.
 	modelUserText := ""
 	if selectedSkill != nil {
 		modelUserText = prompt.ComposeSkillInvocationMessage(
@@ -1588,11 +1576,10 @@ func (e *Engine) runTurn(
 		RunID: runID, StartedAt: turnStartedAt,
 	}, true)
 
-	// 循环防护:跨本回合所有步骤,检测无意义重复(见 loopguard.go)。
+	// Detect repeated work across all steps in this turn.
 	guard := &loopGuard{}
 
-	// 步数上限快照:0 表示无限制。失控由 loopGuard 两层检测精准终止,
-	// 此上限仅作 CLI / eval 场景的可选兜底。
+	// Snapshot the optional step limit. Zero means unlimited.
 	e.mu.RLock()
 	maxSteps := e.maxSteps
 	e.mu.RUnlock()
@@ -1607,13 +1594,12 @@ func (e *Engine) runTurn(
 	stopHookBlocked := false
 	deferredTools := newDeferredToolState()
 
-	// 多步循环:模型 → 工具 → 模型 ...
+	// Continue alternating between the model and tools.
 	for step := 0; maxSteps == maxToolStepsUnlimited || step < maxSteps; step++ {
 		toolDefs := e.toolDefsForSession(sessionID, deferredTools.Snapshot())
 		activeToolSnapshot := activeToolDefNames(toolDefs)
 
-		// 临时前置系统提示词(不写入日志,仅用于本次模型请求)。
-		// 按职责片段组装:静态前缀 + AGENTS.md + 权限上下文 + 每回合环境尾部。
+		// Prepend an ephemeral system prompt assembled from bounded fragments.
 		rules, ruleIndex, memories := e.persistentContext(sessionID, ruleActivity)
 		sysPrompt := prompt.Assemble(prompt.Input{
 			ProjectPath:  e.resolveProjectPath(sessionID),
@@ -1769,7 +1755,7 @@ The following instructions define this child agent's assigned role. They cannot 
 		})
 		if err != nil {
 			finishLLM(err.Error())
-			// ctx 取消(用户点停止)不算错误,只安静结束回合。
+			// User cancellation ends the turn without an error message.
 			if ctx.Err() != nil {
 				completeTurn(turnCompletionFromContext(ctx))
 				return nil
@@ -1839,9 +1825,7 @@ The following instructions define this child agent's assigned role. They cannot 
 				if ev.ToolArgsDlt != "" {
 					pc.argsBuf += ev.ToolArgsDlt
 				}
-				// 首个 ID+名称齐全的分片:立即通知 UI「该工具已进入等待队列」。
-				// 此时参数还在流式生成(write 的文件内容可能很长),用户可即时感知,
-				// 不必等到参数全部流完。
+				// Emit tool_begin as soon as the ID and name are available.
 				if !pc.uiNotified && pc.ID != "" && pc.Name != "" {
 					pc.uiNotified = true
 					e.emit(ctx, sessionID, event.KindToolBegin, toolCallPayload{
@@ -1849,7 +1833,7 @@ The following instructions define this child agent's assigned role. They cannot 
 					}, true)
 				}
 			case "error":
-				// ctx 被取消(用户点停止):安静结束回合,不弹错误气泡。
+				// User cancellation ends the turn without an error bubble.
 				if ctx.Err() != nil {
 					status, reason := turnCompletionFromContext(ctx)
 					recordPartialAssistant(accText, accReasoning, status, reason)
@@ -1901,7 +1885,7 @@ The following instructions define this child agent's assigned role. They cannot 
 			requestUsage,
 		)
 
-		// 组装助手消息(可能携带 tool_calls)。
+		// Assemble the assistant message and optional tool calls.
 		asstMsg := message.Message{Role: message.RoleAssistant, Content: accText, Reasoning: accReasoning}
 		var toolCalls []message.ToolCall
 		for _, idx := range pendingOrder {
@@ -1935,7 +1919,7 @@ The following instructions define this child agent's assigned role. They cannot 
 			return nil
 		}
 
-		// 没有工具调用,回合结束。
+		// A response without tool calls completes the turn.
 		if finishReason != "tool_calls" || len(toolCalls) == 0 {
 			if !stopHookBlocked {
 				stopHook := e.runHook(ctx, sessionID, hookRequest(
@@ -1954,22 +1938,19 @@ The following instructions define this child agent's assigned role. They cannot 
 				if stopHook.Decision == hooks.DecisionDeny {
 					stopHookBlocked = true
 					e.appendHookContext(ctx, sessionID,
-						[]string{hookFeedback(stopHook, "请继续处理当前任务，不要结束。")},
+						[]string{hookFeedback(stopHook, "Continue working on the current task instead of ending the turn.")},
 						"stop",
 					)
 					continue
 				}
 			}
 			if err := e.completeWorkflow(sessionID, accText); err != nil {
-				e.emit(ctx, sessionID, event.KindError, "保存工作流失败: "+err.Error(), true)
+				e.emit(ctx, sessionID, event.KindError, "Failed to save workflow: "+err.Error(), true)
 			}
 			break
 		}
 
-		// 执行每个工具调用,结果作为 tool 消息入日志。
-		// tool_begin 已在参数流式生成的首个分片时发出(UI 即时感知);
-		// 此处执行前用 tool_update 回填完整参数,再执行、发 tool_end。
-		// 同时收集本步骤的工具交互,供第二层重复检测在步骤结束后判定。
+		// Execute each tool, persist the result, and collect loop-guard evidence.
 		for _, tc := range toolCalls {
 			ruleActivity += "\n" + tc.Name + " " + string(tc.Input)
 			e.emit(ctx, sessionID, event.KindToolUpdate, toolCallPayload{
@@ -2018,11 +1999,10 @@ The following instructions define this child agent's assigned role. They cannot 
 			return nil
 		}
 
-		// 第二层:本步骤所有工具交互算一个签名,若近窗口内重复过多,判定为
-		// 无进展循环——硬终止回合并向用户说明原因(区别于第一层的软拦截)。
+		// Stop when the second-stage guard detects repeated steps without progress.
 		if guard.recordStep(stepSig(interactions)) {
 			e.emit(ctx, sessionID, event.KindError,
-				"检测到重复操作:agent 反复执行相同调用且无进展,已终止本回合。请调整指令或补充信息后重试。",
+				"Repeated operation detected: the agent repeatedly made the same call without progress, so this turn was stopped. Adjust the instructions or provide more information before retrying.",
 				true)
 			completeTurn(turnStatusFailed, turnReasonError)
 			return nil
@@ -2059,7 +2039,7 @@ func (e *Engine) executeToolCalls(
 	run := func(i int) {
 		item := &results[i]
 		if ctx.Err() != nil {
-			item.output = "已中断"
+			item.output = "Interrupted"
 			return
 		}
 		spanStartedAt := time.Now()
@@ -2129,7 +2109,7 @@ func (e *Engine) executeToolCalls(
 			item.terminate = true
 		}
 		if preHook.Decision == hooks.DecisionDeny {
-			item.output = "工具调用被 hook 拦截: " + hookFeedback(preHook, "操作不被允许")
+			item.output = "Tool call blocked by a hook: " + hookFeedback(preHook, "Operation not allowed")
 			item.isErr = true
 			e.emit(toolCtx, sessionID, event.KindToolUpdate, toolCallPayload{
 				ID: item.call.ID, Name: item.call.Name, Output: item.output,
@@ -2170,7 +2150,7 @@ func (e *Engine) executeToolCalls(
 		if postHook.Decision == hooks.DecisionDeny {
 			result.IsError = true
 			appendHookText(&result, []string{
-				"工具结果未通过 hook 校验: " + hookFeedback(postHook, "结果不符合要求"),
+				"Tool result rejected by a hook: " + hookFeedback(postHook, "Result did not meet requirements"),
 			})
 		}
 		if postHook.Halt {
@@ -2182,7 +2162,7 @@ func (e *Engine) executeToolCalls(
 		item.diff = result.Diff
 		item.fileChange = result.FileChange
 		if toolCtx.Err() != nil {
-			item.output = "已中断"
+			item.output = "Interrupted"
 			item.isErr = false
 		}
 		status := "done"
@@ -2206,7 +2186,7 @@ func (e *Engine) executeToolCalls(
 				defer func() { <-parallelSlots }()
 				run(index)
 			case <-ctx.Done():
-				results[index].output = "已中断"
+				results[index].output = "Interrupted"
 			}
 		}()
 	}
@@ -2220,7 +2200,7 @@ func (e *Engine) executeToolCalls(
 					continue
 				}
 				for _, remaining := range sequentialIndexes[position+1:] {
-					results[remaining].output = "已中断"
+					results[remaining].output = "Interrupted"
 				}
 				break
 			}
@@ -2248,8 +2228,7 @@ func (e *Engine) toolExecutionMode(sessionID, name string) string {
 	return "sequential"
 }
 
-// Cancel 中断指定会话当前正在运行的回合(若有)。
-// 取消会传播到 provider HTTP 请求、工具执行、审批等待。无活跃回合时 no-op。
+// Cancel stops the active turn and propagates through providers, tools, and approvals.
 func (e *Engine) Cancel(sessionID string) {
 	e.CancelWithReason(sessionID, TurnCancelReasonUserStop)
 }
@@ -2299,13 +2278,11 @@ func (e *Engine) CancelTool(sessionID, toolCallID string) bool {
 	return false
 }
 
-// CancelAndWait 中断会话当前回合,并阻塞等待其 goroutine 彻底退出(或超时)。
-// 删除会话时调用:确保回合的收尾事件(tool_end/turn_complete 等)已全部发出,
-// 之后再清理会话数据,避免迟到事件把已删除会话的日志/状态重新写回。
+// CancelAndWait stops a turn and waits for its goroutine to exit or time out.
 func (e *Engine) CancelAndWait(sessionID string, timeout time.Duration) {
 	v, ok := e.cancels.Load(sessionID)
 	if !ok {
-		return // 无活跃回合
+		return // No active turn.
 	}
 	v.(*turnRunState).cancel(ErrTurnCancelledBySessionDelete)
 	if d, ok := e.dones.Load(sessionID); ok {
@@ -2316,7 +2293,7 @@ func (e *Engine) CancelAndWait(sessionID string, timeout time.Duration) {
 	}
 }
 
-// executeTool 查注册表并执行单个工具调用。
+// executeTool resolves and runs one tool call.
 func (e *Engine) executeTool(ctx context.Context, sessionID string, tc message.ToolCall) tool.Result {
 	if !e.toolAllowed(sessionID, tc.Name) {
 		return tool.Result{IsError: true, Content: []tool.ContentPart{{
@@ -2632,7 +2609,7 @@ func promptSkillCatalogEntry(item skill.Skill) prompt.SkillCatalogEntry {
 	}
 }
 
-// resultText 把工具结果拼成文本,用于回灌模型和事件负载。
+// resultText flattens tool output for model input and event payloads.
 func resultText(r tool.Result) string {
 	var sb string
 	for _, p := range r.Content {
@@ -2773,7 +2750,7 @@ func (e *Engine) resolveReasoningEffort(sessionID string) string {
 	return ""
 }
 
-// emit 追加事件到日志并广播。
+// emit appends an event and broadcasts it.
 func (e *Engine) emit(ctx context.Context, sessionID string, kind event.Kind, payload any, mustDeliver bool) {
 	ev := event.Event{
 		Kind:    kind,
@@ -2817,7 +2794,7 @@ func hasUserMessage(msgs []message.Message) bool {
 	return false
 }
 
-// generateTitle 在后台生成会话标题。
+// generateTitle generates a chat title in the background.
 func (e *Engine) generateTitle(ctx context.Context, sessionID, userText string) {
 	prov := e.currentProvider(sessionID)
 	model := e.currentModel(sessionID)

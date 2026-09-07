@@ -1,5 +1,6 @@
 import { computed, ref } from "vue";
 import { api, type CanvasDocument } from "@/lib/api";
+import { translate } from "@/i18n";
 
 const projects = ref<CanvasDocument[]>([]);
 const activeId = ref("");
@@ -30,7 +31,11 @@ async function createProject() {
   if (creating.value) return;
   creating.value = true;
   try {
-    const project = await api.createCanvas(`创作项目 ${projects.value.length + 1}`);
+    const project = await api.createCanvas(
+      translate("Creative project {number}", {
+        number: projects.value.length + 1,
+      })
+    );
     projects.value = [project, ...projects.value];
     activeId.value = project.id;
   } catch (reason) {

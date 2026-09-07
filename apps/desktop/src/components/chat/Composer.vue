@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onUnmounted } from "vue";
+import { useI18n } from "vue-i18n";
 import { onClickOutside } from "@vueuse/core";
 import {
   ArrowUpIcon,
@@ -97,6 +98,7 @@ const props = withDefaults(
     restoreText: null,
   }
 );
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (
@@ -140,17 +142,17 @@ function clearPendingImages() {
 function addImages(files: File[]) {
   attachmentError.value = "";
   if (!props.supportsImage) {
-    attachmentError.value = "当前模型未声明支持视觉输入";
+    attachmentError.value = t("The current model does not declare image input support");
     return;
   }
   for (const file of files) {
     if (!file.type.startsWith("image/")) continue;
     if (file.size > 20 * 1024 * 1024) {
-      attachmentError.value = `${file.name} 超过 20MB`;
+      attachmentError.value = t("File exceeds 20 MB", { file: file.name });
       continue;
     }
     if (pendingImages.value.length >= 8) {
-      attachmentError.value = "每条消息最多添加 8 张图片";
+      attachmentError.value = t("Up to 8 images can be added to each message");
       break;
     }
     pendingImages.value.push({ file, url: URL.createObjectURL(file) });
@@ -207,13 +209,13 @@ const commandMenuDismissed = ref(false);
 let completingCommand = false;
 const commandQuery = computed(() => input.value.trimStart());
 const commandToken = computed(() => commandQuery.value.split(/\s+/, 1)[0] ?? "");
-const draftCommands: CommandInfo[] = [
-  { ref: "builtin:plan", name: "plan", description: "启动 Plan 工作流", scope: "builtin", kind: "workflow", builtin: true },
-  { ref: "builtin:spec", name: "spec", description: "启动 Spec 工作流", scope: "builtin", kind: "workflow", builtin: true },
-  { ref: "builtin:goal", name: "goal", description: "启动 Goal 工作流", scope: "builtin", kind: "workflow", builtin: true },
-];
+const draftCommands = computed<CommandInfo[]>(() => [
+  { ref: "builtin:plan", name: "plan", description: t("Start a Plan workflow"), scope: "builtin", kind: "workflow", builtin: true },
+  { ref: "builtin:spec", name: "spec", description: t("Start a Spec workflow"), scope: "builtin", kind: "workflow", builtin: true },
+  { ref: "builtin:goal", name: "goal", description: t("Start a Goal workflow"), scope: "builtin", kind: "workflow", builtin: true },
+]);
 const availableCommands = computed(() =>
-  (props.hasSession ? sessionCommands.value : draftCommands).filter(
+  (props.hasSession ? sessionCommands.value : draftCommands.value).filter(
     (command) => command.name !== "spec" || Boolean(props.projectId)
   )
 );
@@ -240,19 +242,19 @@ const slashSkills = computed<SlashOption[]>(() =>
 );
 
 function commandDescription(command: CommandInfo): string {
-  if (command.name === "plan") return "只读探索并生成待批准的实施计划";
-  if (command.name === "spec") return "生成可审阅的技术规格";
-  if (command.name === "goal") return "定义持久化的完成目标";
-  return command.description || "自定义 Prompt 命令";
+  if (command.name === "plan") return t("Explore in read-only mode and create an implementation plan for approval");
+  if (command.name === "spec") return t("Create a reviewable technical specification");
+  if (command.name === "goal") return t("Define a durable completion goal");
+  return command.description || t("Custom prompt command");
 }
 
 function skillScopeLabel(scope?: SkillInfo["scope"]): string {
   return {
-    builtin: "系统",
-    plugin: "插件",
-    global: "全局",
-    user: "个人",
-    project: "项目",
+    builtin: t("System"),
+    plugin: t("Plugins"),
+    global: t("Global"),
+    user: t("Personal"),
+    project: t("Project"),
   }[scope ?? "global"];
 }
 const matchingOptions = computed(() => {
@@ -272,7 +274,7 @@ const matchingGroups = computed(() =>
   (["command", "skill"] as const)
     .map((kind) => ({
       kind,
-      label: kind === "command" ? "命令" : "技能",
+      label: kind === "command" ? t("Commands") : t("Skills"),
       items: matchingOptions.value
         .map((option, index) => ({ option, index }))
         .filter((item) => item.option.kind === kind),
@@ -337,7 +339,7 @@ async function loadCommands() {
     sessionCommands.value = await api.listSessionCommands(props.sessionId);
   } catch (cause) {
     sessionCommands.value = [];
-    commandError.value = `无法加载命令：${String(cause)}`;
+    commandError.value = t("Failed to load commands", { error: String(cause) });
   }
 }
 
@@ -353,7 +355,7 @@ async function loadSkills() {
     }
   } catch (cause) {
     availableSkills.value = [];
-    commandError.value = `无法加载技能：${String(cause)}`;
+    commandError.value = t("Failed to load skills", { error: String(cause) });
   }
 }
 
@@ -403,15 +405,14 @@ function commandIcon(option: SlashOption) {
   return TargetIcon;
 }
 
-// ---- 审批档位 ----
-const approvalOptions: { value: ApprovalMode; label: string; hint: string }[] = [
-  { value: "manual", label: "手动审批", hint: "沙箱开启，写入、执行和联网前询问" },
-  { value: "auto", label: "自动审批", hint: "沙箱开启，由当前模型判断" },
-  { value: "full_access", label: "完全访问", hint: "关闭沙箱并自动放行" },
-];
+const approvalOptions = computed<Array<{ value: ApprovalMode; label: string; hint: string }>>(() => [
+  { value: "manual", label: t("Manual approval"), hint: t("Sandbox enabled; ask before writing, running commands, or accessing the network") },
+  { value: "auto", label: t("Automatic approval"), hint: t("Sandbox enabled; let the current model decide") },
+  { value: "full_access", label: t("Full access"), hint: t("Disable the sandbox and approve automatically") },
+]);
 
 const approvalLabel = computed(
-  () => approvalOptions.find((o) => o.value === props.approval)?.label ?? "手动审批"
+  () => approvalOptions.value.find((o) => o.value === props.approval)?.label ?? t("Manual approval")
 );
 
 const approvalOpen = ref(false);
@@ -423,9 +424,7 @@ function selectApproval(m: ApprovalMode) {
   approvalOpen.value = false;
 }
 
-// ---- 模型与推理强度选择 ----
-// 两步选择共用一个浮层：先选择模型，再选择该会话的推理强度。
-// 最终触发器统一展示为“模型名 + 强度”，避免两个独立设置分散注意力。
+// Model and reasoning selection share one two-step popover.
 const modelPickerOpen = ref(false);
 const modelPickerStep = ref<"model" | "reasoning">("model");
 const pickerModel = ref<string | null>(null);
@@ -439,7 +438,7 @@ watch(modelPickerOpen, (v) => {
     pickerConnectionID.value = null;
     pickerReasoningEffort.value = null;
     modelPickerStep.value = "model";
-    // 列表为空时触发上层拉取;已有列表则直接展示。
+    // Ask the parent to load models only when the catalog is empty.
     if (props.connections.length === 0 && !props.modelsLoading) {
       emit("refresh-models");
     }
@@ -448,28 +447,27 @@ watch(modelPickerOpen, (v) => {
 
 function selectModel(connectionID: string, m: string) {
   pickerModel.value = m;
-  // 切换模型时默认清除旧强度覆盖，然后直接下钻至强度选择。
+  // Reset the previous reasoning override before selecting a new level.
   pickerReasoningEffort.value = "";
   pickerConnectionID.value = connectionID;
   modelPickerStep.value = "reasoning";
 }
 
-// ---- 推理强度 ----
-const reasoningOptions: {
+const reasoningOptions = computed<Array<{
   value: ReasoningEffort;
   label: string;
   hint: string;
-}[] = [
-  { value: "", label: "默认推理", hint: "跟随模型服务默认设置" },
-  { value: "low", label: "低推理", hint: "更快，适合简单任务" },
-  { value: "medium", label: "中推理", hint: "平衡速度与深度" },
-  { value: "high", label: "高推理", hint: "更深入，可能更慢" },
-];
+}>>(() => [
+  { value: "", label: t("Default reasoning"), hint: t("Use the model provider default") },
+  { value: "low", label: t("Low reasoning"), hint: t("Faster for simple tasks") },
+  { value: "medium", label: t("Medium reasoning"), hint: t("Balance speed and depth") },
+  { value: "high", label: t("High reasoning"), hint: t("More thorough and potentially slower") },
+]);
 const reasoningDisplayLabel = computed(
   () =>
-    reasoningOptions
+    reasoningOptions.value
       .find((option) => option.value === (pickerReasoningEffort.value ?? props.reasoningEffort))
-      ?.label ?? "默认推理"
+      ?.label ?? t("Default reasoning")
 );
 const pickerConnectionName = computed(() => {
   const id = pickerConnectionLabel.value;
@@ -478,7 +476,7 @@ const pickerConnectionName = computed(() => {
 const modelPickerLabel = computed(() =>
   [
     pickerConnectionName.value,
-    (pickerModel.value ?? props.model) || "选择模型",
+    (pickerModel.value ?? props.model) || t("Select model"),
     reasoningDisplayLabel.value,
   ]
     .filter(Boolean)
@@ -533,11 +531,10 @@ function createProjectFromPicker(event: Event) {
   emit("add-project");
 }
 
-// ---- 发送 ----
 async function submit() {
   const text = input.value.trim();
   if (pendingImages.value.length > 0 && !props.supportsImage) {
-    attachmentError.value = "当前模型未声明支持视觉输入，请移除图片或切换模型";
+    attachmentError.value = t("Remove the images or switch models because the current model does not support image input");
     return;
   }
   if (
@@ -619,7 +616,7 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <div class="shrink-0 px-4 pb-4 pt-2">
     <div class="mx-auto max-w-3xl">
-      <!-- 输入卡片 -->
+      <!-- Composer card. -->
       <div
         class="composer-card relative rounded-2xl border border-input bg-card shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
         @dragover.prevent
@@ -631,7 +628,7 @@ function onKeydown(e: KeyboardEvent) {
           ref="commandMenuRef"
           class="absolute bottom-full left-0 z-20 mb-2 max-h-[min(28rem,60vh)] w-full overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
           role="listbox"
-          aria-label="可用命令和技能"
+          :aria-label="$t('Available commands and skills')"
         >
           <template v-for="group in matchingGroups" :key="group.kind">
             <div
@@ -690,7 +687,7 @@ function onKeydown(e: KeyboardEvent) {
             <button
               type="button"
               class="absolute right-1 top-1 flex size-5 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm"
-              title="移除图片"
+              :title="$t('Remove image')"
               @click="removeImage(index)"
             >
               <XIcon class="size-3" />
@@ -716,7 +713,7 @@ function onKeydown(e: KeyboardEvent) {
             v-if="selectedSlashCommand || selectedSkill"
             type="button"
             class="mt-3 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            title="取消选择"
+            :title="$t('Clear selection')"
             @click="clearSelectedCommand"
           >
             <component :is="selectedCommandIcon()" class="size-3.5" />
@@ -743,12 +740,12 @@ function onKeydown(e: KeyboardEvent) {
             aria-autocomplete="list"
             :placeholder="
               streaming
-                ? '继续输入，发送后加入待发送队列…'
+                ? $t('Type a message to add it to the queue')
                 : selectedSlashCommand
-                  ? `输入 ${selectedSlashCommand.name} 的目标`
+                  ? $t('Enter the goal for {name}', { name: selectedSlashCommand.name })
                   : selectedSkill
-                    ? `输入 ${selectedSkill.name} 的任务`
-                  : '帮你编写代码、调试 Bug、优化性能等开发工作，交付生产级代码产物。'
+                    ? $t('Enter a task for {name}', { name: selectedSkill.name })
+                    : $t('Describe a coding task, bug, or performance improvement')
             "
             :class="(selectedSlashCommand || selectedSkill) && 'pl-2'"
             :disabled="disabled"
@@ -760,31 +757,31 @@ function onKeydown(e: KeyboardEvent) {
           />
         </div>
 
-        <!-- 底部工具栏 -->
+        <!-- Composer toolbar. -->
         <div class="flex min-w-0 items-center gap-2 px-2 pb-2">
           <div class="flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               :disabled="disabled || !supportsImage"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              :title="supportsImage ? '添加图片' : '当前模型不支持视觉输入'"
+              :title="supportsImage ? $t('Add image') : $t('The current model does not support image input')"
               @click="fileInputRef?.click()"
             >
               <PaperclipIcon class="size-4" />
             </button>
-            <!-- 绑定文件夹(+) -->
+            <!-- Project binding. -->
             <button
               v-if="!projectLocked"
               type="button"
               :disabled="disabled"
               class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              title="添加项目"
+              :title="$t('Add project')"
               @click="emit('add-project')"
             >
               <PlusIcon class="size-4" />
             </button>
 
-            <!-- 审批档位下拉 -->
+            <!-- Approval mode picker. -->
             <div ref="approvalRef" class="relative">
               <button
                 type="button"
@@ -834,7 +831,7 @@ function onKeydown(e: KeyboardEvent) {
               :context-window="contextWindow"
             />
 
-            <!-- 两步模型选择器：模型 → 推理强度。 -->
+            <!-- Two-step model and reasoning picker. -->
             <div ref="modelRef" class="relative min-w-0">
               <button
                 type="button"
@@ -858,22 +855,22 @@ function onKeydown(e: KeyboardEvent) {
                     @click="modelPickerStep = 'model'"
                   >
                     <ChevronLeftIcon class="size-3.5" />
-                    <span class="truncate">模型</span>
+                    <span class="truncate">{{ $t("Model") }}</span>
                   </button>
                   <span
                     v-if="modelPickerStep === 'reasoning'"
                     class="min-w-0 flex-1 truncate text-right text-xs font-medium text-muted-foreground"
                   >
-                    推理强度
+                    {{ $t("Reasoning effort") }}
                   </span>
                   <span v-else class="text-xs font-medium text-muted-foreground">
-                    选择模型
+                    {{ $t("Select model") }}
                   </span>
                   <button
                     v-if="modelPickerStep === 'model'"
                     type="button"
                     class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                    title="刷新模型列表"
+                    :title="$t('Refresh model list')"
                     :disabled="modelsLoading"
                     @click="$emit('refresh-models')"
                   >
@@ -893,14 +890,14 @@ function onKeydown(e: KeyboardEvent) {
                     class="flex items-center gap-2 px-2.5 py-2 text-[13px] text-muted-foreground"
                   >
                     <RefreshCwIcon class="size-3.5 animate-spin" />
-                    正在加载模型列表…
+                    {{ $t("Loading models") }}
                   </div>
 
                   <div
                     v-else-if="modelsError"
                     class="px-2.5 py-2 text-[12px] text-destructive"
                   >
-                    加载失败：{{ modelsError }}
+                    {{ $t("Failed to load models", { error: modelsError }) }}
                   </div>
 
                   <template v-else>
@@ -940,7 +937,7 @@ function onKeydown(e: KeyboardEvent) {
                     v-if="!modelsLoading && !modelsError && availableConnections.length === 0"
                     class="px-2.5 py-2 text-[12px] text-muted-foreground"
                   >
-                    没有可用模型，请在设置中检查模型连接。
+                    {{ $t("No models are available. Check model connections in Settings.") }}
                   </p>
                 </div>
 
@@ -949,7 +946,7 @@ function onKeydown(e: KeyboardEvent) {
                   class="p-1"
                 >
                   <p class="px-2.5 pb-1 text-xs text-muted-foreground">
-                    {{ pickerModelLabel || "当前模型" }}
+                    {{ pickerModelLabel || $t("Current model") }}
                   </p>
                   <button
                     v-for="option in reasoningOptions"
@@ -971,12 +968,12 @@ function onKeydown(e: KeyboardEvent) {
               </div>
             </div>
 
-            <!-- 运行时同时保留停止与入队发送。 -->
+            <!-- Keep stop and queue actions available while streaming. -->
             <button
               v-if="streaming"
               type="button"
               class="flex size-8 items-center justify-center rounded-lg bg-foreground text-background transition-opacity hover:opacity-80 disabled:opacity-30"
-              title="停止"
+              :title="$t('Stop')"
               @click="emit('stop')"
             >
               <SquareIcon class="size-3.5 fill-current" />
@@ -990,7 +987,7 @@ function onKeydown(e: KeyboardEvent) {
                   pendingImages.length === 0 &&
                   browserElements.length === 0)
               "
-              :title="streaming ? '加入待发送队列 (Enter)' : '发送 (Enter)'"
+              :title="streaming ? $t('Queue message') : $t('Send')"
               @click="submit"
             >
               <ArrowUpIcon class="size-4" />
@@ -999,7 +996,7 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
-      <!-- 下方：项目上下文 -->
+      <!-- Project context. -->
       <div
         class="mt-1 flex items-center gap-2 rounded-xl bg-muted/40 px-3 py-2"
       >
@@ -1013,13 +1010,13 @@ function onKeydown(e: KeyboardEvent) {
               type="button"
               :disabled="disabled"
               class="flex h-7 min-w-0 flex-1 items-center justify-between gap-2 text-left text-[13px] text-muted-foreground outline-none disabled:opacity-50"
-              aria-label="选择项目"
+              :aria-label="$t('Select project')"
             >
               <span class="truncate">
                 {{
                   selectedProject
                     ? `${selectedProject.name} · ${selectedProject.path}`
-                    : "无项目"
+                    : $t("No project")
                 }}
               </span>
               <ChevronDownIcon class="size-3.5 shrink-0 opacity-60" />
@@ -1035,9 +1032,9 @@ function onKeydown(e: KeyboardEvent) {
               :model-value="projectId"
               @update:model-value="selectProjectValue"
             >
-              <CommandInput placeholder="搜索项目" />
+              <CommandInput :placeholder="$t('Search projects')" />
               <CommandList class="max-h-52 p-1">
-                <CommandEmpty>未找到项目</CommandEmpty>
+                <CommandEmpty>{{ $t("No projects found") }}</CommandEmpty>
                 <CommandGroup>
                   <CommandItem
                     v-for="project in projects"
@@ -1059,7 +1056,7 @@ function onKeydown(e: KeyboardEvent) {
                   @click="createProjectFromPicker"
                 >
                   <PlusIcon class="size-4 text-muted-foreground" />
-                  新建项目
+                  {{ $t("New project") }}
                 </button>
                 <button
                   type="button"
@@ -1067,7 +1064,7 @@ function onKeydown(e: KeyboardEvent) {
                   @click="selectProject('')"
                 >
                   <XIcon class="size-4 text-muted-foreground" />
-                  不在项目中工作
+                  {{ $t("Work without a project") }}
                 </button>
               </div>
             </Command>
@@ -1078,12 +1075,12 @@ function onKeydown(e: KeyboardEvent) {
           class="min-w-0 flex-1 truncate text-[13px] text-muted-foreground"
           :title="selectedProject?.path"
         >
-          {{ selectedProject?.name ?? "无项目" }}
+          {{ selectedProject?.name ?? $t("No project") }}
         </span>
       </div>
 
       <p class="mt-2 text-center text-[11px] text-muted-foreground">
-        {{ streaming ? "Enter 加入待发送队列" : "Enter 发送" }} · Shift+Enter 换行
+        {{ streaming ? $t("Press Enter to queue") : $t("Press Enter to send") }} · {{ $t("Shift+Enter for a new line") }}
       </p>
     </div>
   </div>

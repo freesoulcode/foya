@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { PlusIcon } from "@lucide/vue";
 import { api, type FeishuBotSettings } from "@/lib/api";
 import SettingsPage from "@/layouts/settings/SettingsPage.vue";
@@ -7,6 +8,7 @@ import FeishuChannelSettings from "@/components/settings/channels/FeishuChannelS
 import { Button } from "@/components/ui/button";
 
 const channels = ref<FeishuBotSettings[]>([]);
+const { t } = useI18n();
 const selectedID = ref("");
 const creating = ref(false);
 const loading = ref(false);
@@ -17,9 +19,9 @@ const selectedChannel = computed(
 );
 
 function statusLabel(channel: FeishuBotSettings) {
-  if (channel.status === "running") return "运行中";
-  if (channel.status === "error") return "异常";
-  return channel.enabled ? "待连接" : "已停止";
+  if (channel.status === "running") return t("Running");
+  if (channel.status === "error") return t("Error");
+  return channel.enabled ? t("Waiting to connect") : t("Stopped");
 }
 
 function statusClass(channel: FeishuBotSettings) {
@@ -80,7 +82,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <SettingsPage title="消息渠道" content-class="min-h-0 flex-1">
+  <SettingsPage :title="$t('Messaging channels')" content-class="min-h-0 flex-1">
     <div class="grid min-h-0 h-full overflow-hidden sm:grid-cols-[10rem_minmax(0,1fr)]">
       <nav
         class="flex min-h-0 flex-col border-b border-border pb-2 pr-3 sm:border-b-0 sm:border-r"
@@ -112,8 +114,8 @@ onMounted(() => {
             class="flex h-11 w-full items-center rounded-md bg-muted px-2.5 text-left"
           >
             <span>
-              <span class="block text-sm font-medium">添加飞书 Bot</span>
-              <span class="block text-xs text-muted-foreground">选择接入方式</span>
+              <span class="block text-sm font-medium">{{ $t("Add Feishu Bot") }}</span>
+              <span class="block text-xs text-muted-foreground">{{ $t("Choose connection method") }}</span>
             </span>
           </button>
         </div>
@@ -124,7 +126,7 @@ onMounted(() => {
           @click="createFeishuBot"
         >
           <PlusIcon class="size-4" />
-          添加 Bot
+          {{ $t("Add Bot") }}
         </Button>
       </nav>
 
@@ -142,10 +144,10 @@ onMounted(() => {
           v-else-if="!loading"
           class="flex h-40 flex-col items-center justify-center gap-3 text-center"
         >
-          <p class="text-sm text-muted-foreground">尚未配置消息渠道</p>
+          <p class="text-sm text-muted-foreground">{{ $t("No messaging channels configured") }}</p>
           <Button size="sm" variant="outline" @click="createFeishuBot">
             <PlusIcon class="size-4" />
-            添加飞书 Bot
+            {{ $t("Add Feishu Bot") }}
           </Button>
         </div>
         <p v-if="error" class="text-sm text-destructive">{{ error }}</p>

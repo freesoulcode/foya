@@ -152,12 +152,12 @@ async function cancel() {
       >
         <MessageSquareTextIcon class="size-4 shrink-0 text-primary" />
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium">Agent 正在等待你的回答</p>
+          <p class="truncate text-sm font-medium">{{ $t("Agent is waiting for your response") }}</p>
           <p class="text-xs text-muted-foreground">
-            {{ batch.questions.length }} 个问题
+            {{ $t("Question count", { count: batch.questions.length }) }}
           </p>
         </div>
-        <Button size="sm" variant="outline" @click="expand">回答</Button>
+        <Button size="sm" variant="outline" @click="expand">{{ $t("Answer") }}</Button>
       </div>
 
       <div v-else class="flex max-h-[45svh] min-h-0 flex-col">
@@ -167,7 +167,7 @@ async function cancel() {
             <MessageSquareTextIcon class="mt-0.5 size-4 shrink-0 text-primary" />
             <div class="min-w-0 flex-1">
               <div class="flex items-center justify-between gap-3">
-                <p class="text-sm font-medium">需要你的输入</p>
+                <p class="text-sm font-medium">{{ $t("Your input is required") }}</p>
                 <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
                   {{ draft.index + 1 }} / {{ batch.questions.length }}
                 </span>
@@ -214,7 +214,7 @@ async function cancel() {
                   <span
                     v-if="option.recommended"
                     class="text-xs font-normal text-primary"
-                  >推荐</span>
+                  >{{ $t("Recommended") }}</span>
                 </span>
                 <span
                   v-if="option.description"
@@ -244,7 +244,7 @@ async function cancel() {
               >
                 <CheckIcon v-if="draft.custom[current.id]" class="size-3" />
               </span>
-              其他
+              {{ $t("Other") }}
             </button>
           </div>
 
@@ -255,7 +255,7 @@ async function cancel() {
             "
             v-model="draft.answers[current.id]"
             class="min-h-20 resize-none"
-            placeholder="输入你的回答"
+            :placeholder="$t('Enter your answer')"
             rows="2"
           />
 
@@ -270,14 +270,14 @@ async function cancel() {
           :disabled="draft.submitting"
           @click="defer"
         >
-          稍后回答
+          {{ $t("Answer later") }}
         </Button>
         <div class="flex items-center gap-1.5">
           <Button
             variant="ghost"
             size="icon"
             :disabled="draft.index === 0 || draft.submitting"
-            title="上一题"
+            :title="$t('Previous question')"
             @click="previous"
           >
             <ChevronLeftIcon class="size-4" />
@@ -288,7 +288,7 @@ async function cancel() {
             :disabled="draft.submitting"
             @click="cancel"
           >
-            终止提问
+            {{ $t("Cancel questions") }}
           </Button>
           <Button
             v-if="isFinal"
@@ -296,13 +296,13 @@ async function cancel() {
             :disabled="!allAnswered || draft.submitting"
             @click="submit"
           >
-            提交回答
+            {{ $t("Submit answers") }}
           </Button>
           <Button
             v-else
             size="icon"
             :disabled="!canAdvance || draft.submitting"
-            title="下一题"
+            :title="$t('Next question')"
             @click="next"
           >
             <ChevronRightIcon class="size-4" />

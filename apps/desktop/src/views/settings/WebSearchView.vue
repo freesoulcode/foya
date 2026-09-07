@@ -79,7 +79,7 @@ async function saveWebSearch() {
         id,
         kind,
         name:
-          kind === "google_cse" ? "Google" : kind === "bing" ? "Bing" : "百度",
+          kind === "google_cse" ? "Google" : kind === "bing" ? "Bing" : "Baidu",
         enabled: true,
         ...(searchAPIKey.value.trim()
           ? { api_key: searchAPIKey.value.trim() }
@@ -129,32 +129,32 @@ void loadWebSearch();
 
 <template>
   <SettingsPage
-    title="联网搜索"
-    description="配置 Agent 可使用的搜索提供方与测试查询。"
+    :title="$t('Web search')"
+    :description="$t('Configure search providers and test queries available to the agent.')"
   >
     <div class="max-w-4xl space-y-5">
       <label class="flex items-center justify-between border-b border-border py-3">
-        <span class="text-sm font-medium">启用联网搜索</span>
+        <span class="text-sm font-medium">{{ $t("Enable web search") }}</span>
         <Checkbox
           :checked="webSettings.enabled"
-          aria-label="启用联网搜索"
+          :aria-label="$t('Enable web search')"
           @update:checked="webSettings.enabled = $event === true"
         />
       </label>
       <div class="space-y-1.5">
-        <Label for="search-provider">搜索引擎</Label>
+        <Label for="search-provider">{{ $t("Search engine") }}</Label>
         <Select
           :model-value="searchProviderKind"
           @update:model-value="selectSearchProviderValue"
         >
           <SelectTrigger id="search-provider" class="w-full">
-            <SelectValue placeholder="选择搜索引擎" />
+            <SelectValue :placeholder="$t('Select search engine')" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="duckduckgo">DuckDuckGo</SelectItem>
             <SelectItem value="google_cse">Google</SelectItem>
             <SelectItem value="bing">Bing</SelectItem>
-            <SelectItem value="baidu">百度</SelectItem>
+            <SelectItem value="baidu">Baidu</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -170,7 +170,7 @@ void loadWebSearch();
             id="google-key"
             v-model="searchAPIKey"
             type="password"
-            placeholder="留空则保持原值"
+            :placeholder="$t('Leave blank to keep the current value')"
           />
         </div>
       </template>
@@ -182,7 +182,7 @@ void loadWebSearch();
             id="bing-key"
             v-model="searchAPIKey"
             type="password"
-            placeholder="留空则保持原值"
+            :placeholder="$t('Leave blank to keep the current value')"
           />
         </div>
         <div class="space-y-1.5">
@@ -198,11 +198,11 @@ void loadWebSearch();
 
       <div class="flex justify-end">
         <Button :disabled="saving" @click="saveWebSearch">
-          {{ saving ? "保存中..." : "保存" }}
+          {{ saving ? $t("Saving") : $t("Save") }}
         </Button>
       </div>
       <div class="space-y-2 border-t border-border pt-4">
-        <Label for="web-test-query">测试查询</Label>
+        <Label for="web-test-query">{{ $t("Test query") }}</Label>
         <div class="flex gap-2">
           <Input id="web-test-query" v-model="webTestQuery" />
           <Button
@@ -210,7 +210,7 @@ void loadWebSearch();
             :disabled="loading || !webTestQuery.trim()"
             @click="testWebSearch"
           >
-            测试
+            {{ $t("Test") }}
           </Button>
         </div>
         <a

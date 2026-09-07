@@ -5,13 +5,15 @@ export type WorkbarTabKind = "file" | "background-command" | WorkbarLaunchKind;
 
 export interface WorkbarItem {
   kind: WorkbarLaunchKind;
-  title: string;
+  titleKey: string;
 }
 
 export interface WorkbarTab {
   id: string;
   kind: WorkbarTabKind;
   title: string;
+  titleKey?: string;
+  titleNumber?: number;
   path?: string;
   projectPath?: string;
   view?: "file" | "diff";
@@ -34,8 +36,8 @@ const WIDTH_KEY = "foya-workbar-width-v1";
 const DRAFT_SESSION_KEY = "__draft__";
 
 const items: WorkbarItem[] = [
-  { kind: "terminal", title: "终端" },
-  { kind: "browser", title: "浏览器" },
+  { kind: "terminal", titleKey: "Terminal" },
+  { kind: "browser", titleKey: "Browser" },
 ];
 
 function storedWidth(): number {
@@ -114,15 +116,18 @@ function addTab(kind: WorkbarLaunchKind) {
   const sessionId = activeSessionId.value;
   const session = ensureSessionState(sessionId);
   const instance = ++nextInstance[kind];
+  const titleKey =
+    kind === "browser"
+      ? "New tab"
+      : instance === 1
+        ? item.titleKey
+        : "Terminal {number}";
   const tab: WorkbarTab = {
-    ...item,
     id: `${kind}-${instance}`,
-    title:
-      kind === "browser"
-        ? "新标签页"
-        : instance === 1
-          ? item.title
-          : `${item.title} ${instance}`,
+    kind,
+    title: "",
+    titleKey,
+    titleNumber: instance > 1 ? instance : undefined,
     sessionId: sessionId || undefined,
   };
   session.tabs.push(tab);
@@ -134,7 +139,7 @@ function openBrowser(url: string) {
   const sessionId = activeSessionId.value;
   const session = ensureSessionState(sessionId);
   const instance = ++nextInstance.browser;
-  let title = "浏览器";
+  let title = "Browser";
   try {
     title = new URL(url).hostname.replace(/^www\./, "") || title;
   } catch {
@@ -161,7 +166,8 @@ function openAgentBrowser(sessionId: string, browserId: string) {
     session.tabs.push({
       id: browserId,
       kind: "browser",
-      title: "Agent 浏览器",
+      title: "",
+      titleKey: "Agent browser",
       sessionId,
     });
   }
@@ -181,7 +187,8 @@ function openFiles(projectPath: string) {
   session.tabs.push({
     id,
     kind: "file",
-    title: "文件",
+    title: "",
+    titleKey: "Files",
     sessionId: sessionId || undefined,
     projectPath,
   });
@@ -238,7 +245,8 @@ function openBackgroundCommand(
   session.tabs.push({
     id,
     kind: "background-command",
-    title: normalized || "后台命令",
+    title: normalized,
+    titleKey: normalized ? undefined : "Background command",
     sessionId,
     commandId,
   });
@@ -257,7 +265,9 @@ function setTabTitle(tabId: string, title: string) {
   const tab = allTabs.value.find((candidate) => candidate.id === tabId);
   if (!tab) return;
   const normalized = title.replace(/\s+/g, " ").trim().slice(0, 80);
-  tab.title = normalized || "新标签页";
+  tab.title = normalized;
+  tab.titleKey = normalized ? undefined : "New tab";
+  tab.titleNumber = undefined;
 }
 
 function closeTab(tabId: string) {
@@ -307,6 +317,7 @@ function renameEntryTabs(
       ...tab,
       path,
       title: path.split("/").pop() || path,
+      titleKey: undefined,
     };
   });
 }
@@ -326,7 +337,8 @@ function resetDeletedEntryTab(
       )
   );
   if (!tab) return;
-  tab.title = "文件";
+  tab.title = "";
+  tab.titleKey = "Files";
   tab.path = undefined;
   tab.diff = undefined;
 }

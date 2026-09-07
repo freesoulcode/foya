@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -28,6 +29,7 @@ const props = defineProps<{
   initialUrl?: string;
   agentAction?: BrowserActionRequest;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "title-change", title: string): void;
@@ -124,9 +126,9 @@ function agentViewport(): BrowserViewport | null {
 
 function titleForUrl(value: string): string {
   try {
-    return new URL(value).hostname.replace(/^www\./, "") || "新标签页";
+    return new URL(value).hostname.replace(/^www\./, "") || t("New tab");
   } catch {
-    return "新标签页";
+    return t("New tab");
   }
 }
 
@@ -140,14 +142,14 @@ function armLoadTimer() {
   loadTimer = setTimeout(() => {
     if (!loading.value) return;
     loading.value = false;
-    error.value = "页面加载超时，请检查网络连接或网址";
+    error.value = t("Page load timed out. Check the network connection or URL.");
   }, 30_000);
 }
 
 async function navigate() {
   const url = normalizeAddress(address.value);
   if (!url) {
-    error.value = "请输入有效的 HTTP 或 HTTPS 地址";
+    error.value = t("Enter a valid HTTP or HTTPS address");
     return;
   }
   loading.value = true;
@@ -156,7 +158,7 @@ async function navigate() {
   try {
     await nextTick();
     const bounds = measureViewport();
-    if (!bounds) throw new Error("浏览器预览区域尚未就绪");
+    if (!bounds) throw new Error(t("Browser preview is not ready"));
     currentUrl.value = url;
     address.value = url;
     emit("title-change", titleForUrl(url));
@@ -193,7 +195,9 @@ async function toggleElementPicker() {
     selectingElement.value = enabled;
   } catch (cause) {
     selectingElement.value = false;
-    error.value = `无法选择页面元素：${String(cause)}`;
+    error.value = t("Unable to select page element: {error}", {
+      error: String(cause),
+    });
   }
 }
 
@@ -203,7 +207,9 @@ async function openInDefaultBrowser() {
   try {
     await openUrl(currentUrl.value);
   } catch (cause) {
-    error.value = `无法使用默认浏览器打开：${String(cause)}`;
+    error.value = t("Unable to open in default browser: {error}", {
+      error: String(cause),
+    });
   }
 }
 
@@ -214,10 +220,10 @@ async function executeAgentAction(request: BrowserActionRequest) {
   try {
     if (request.action === "open" || request.action === "navigate") {
       const url = normalizeAddress(request.url ?? "");
-      if (!url) throw new Error("浏览器地址无效");
+      if (!url) throw new Error(t("Invalid browser address"));
       await nextTick();
       const bounds = agentViewport();
-      if (!bounds) throw new Error("浏览器预览区域尚未就绪");
+      if (!bounds) throw new Error(t("Browser preview is not ready"));
       address.value = url;
       currentUrl.value = url;
       loading.value = true;
@@ -284,7 +290,9 @@ function syncViewport() {
     if (key !== lastRect) {
       lastRect = key;
       void api.setBrowserViewport(props.browserId, rect).catch((cause) => {
-        error.value = `无法调整浏览器区域：${String(cause)}`;
+        error.value = t("Unable to resize browser area: {error}", {
+          error: String(cause),
+        });
       });
     }
     frame = requestAnimationFrame(tick);
@@ -365,7 +373,9 @@ onMounted(async () => {
       await navigate();
     }
   } catch (cause) {
-    error.value = `无法监听页面状态：${String(cause)}`;
+    error.value = t("Unable to monitor page state: {error}", {
+      error: String(cause),
+    });
   }
 });
 
@@ -379,7 +389,7 @@ onBeforeUnmount(() => {
   unlistenPickerState?.();
   if (pendingAgentLoad) {
     clearTimeout(pendingAgentLoad.timer);
-    pendingAgentLoad.reject(new Error("浏览器面板已关闭"));
+    pendingAgentLoad.reject(new Error(t("Browser panel closed")));
     pendingAgentLoad = undefined;
   }
   void api.closeBrowser(props.browserId).catch(() => {});
@@ -393,7 +403,7 @@ onBeforeUnmount(() => {
         size="icon"
         variant="ghost"
         class="size-7"
-        title="后退"
+        :title="$t('Back')"
         :disabled="!currentUrl"
         @click="api.browserBack(browserId)"
       >
@@ -403,7 +413,7 @@ onBeforeUnmount(() => {
         size="icon"
         variant="ghost"
         class="size-7"
-        title="前进"
+        :title="$t('Forward')"
         :disabled="!currentUrl"
         @click="api.browserForward(browserId)"
       >
@@ -413,7 +423,7 @@ onBeforeUnmount(() => {
         size="icon"
         variant="ghost"
         class="size-7"
-        title="刷新"
+        :title="$t('Refresh')"
         :disabled="!currentUrl"
         @click="reload"
       >
@@ -424,15 +434,15 @@ onBeforeUnmount(() => {
         <Input
           v-model="address"
           class="h-7 pl-7 pr-2 text-xs"
-          aria-label="浏览器地址"
-          placeholder="输入网址"
+          :aria-label="$t('Browser address')"
+          :placeholder="$t('Enter URL')"
         />
       </form>
       <Button
         size="icon"
         variant="ghost"
         class="size-7"
-        title="在默认浏览器中打开"
+        :title="$t('Open in default browser')"
         :disabled="!currentUrl"
         @click="openInDefaultBrowser"
       >
@@ -443,7 +453,7 @@ onBeforeUnmount(() => {
         :variant="selectingElement ? 'secondary' : 'ghost'"
         class="size-7"
         :class="selectingElement && 'text-blue-600 dark:text-blue-400'"
-        :title="selectingElement ? '取消选择元素' : '选择页面元素'"
+        :title="selectingElement ? $t('Cancel element selection') : $t('Select page element')"
         :aria-pressed="selectingElement"
         :disabled="!currentUrl || loading"
         @click="toggleElementPicker"
@@ -467,9 +477,9 @@ onBeforeUnmount(() => {
         <div class="mb-3 flex size-10 items-center justify-center rounded-lg bg-muted">
           <GlobeIcon class="size-5 text-muted-foreground" />
         </div>
-        <p class="text-sm font-medium">打开网页</p>
+        <p class="text-sm font-medium">{{ $t("Open a web page") }}</p>
         <p class="mt-1 text-xs leading-relaxed text-muted-foreground">
-          输入地址后，页面会在此区域打开。
+          {{ $t("Enter an address to open the page here.") }}
         </p>
       </div>
     </div>

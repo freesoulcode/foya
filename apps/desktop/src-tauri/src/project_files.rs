@@ -193,9 +193,10 @@ struct ProjectEntry {
 }
 
 fn project_root(project_path: &str) -> Result<PathBuf, String> {
-    let root = fs::canonicalize(project_path).map_err(|e| format!("无法访问项目目录: {e}"))?;
+    let root =
+        fs::canonicalize(project_path).map_err(|e| format!("Unable to access project: {e}"))?;
     if !root.is_dir() {
-        return Err("项目路径不是目录".into());
+        return Err("Project path is not a directory".into());
     }
     Ok(root)
 }
@@ -207,7 +208,7 @@ fn project_relative_path(relative_path: &str) -> Result<&Path, String> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err("项目路径无效".into());
+        return Err("Invalid project path".into());
     }
     Ok(relative)
 }
@@ -216,14 +217,15 @@ fn safe_project_entry(project_path: &str, relative_path: &str) -> Result<PathBuf
     let relative = project_relative_path(relative_path)?;
     let root = project_root(project_path)?;
     let candidate = root.join(relative);
-    let metadata =
-        fs::symlink_metadata(&candidate).map_err(|e| format!("无法访问项目条目: {e}"))?;
+    let metadata = fs::symlink_metadata(&candidate)
+        .map_err(|e| format!("Unable to access project entry: {e}"))?;
     if metadata.file_type().is_symlink() {
-        return Err("不支持操作符号链接".into());
+        return Err("Symbolic links are not supported".into());
     }
-    let entry = fs::canonicalize(candidate).map_err(|e| format!("无法访问项目条目: {e}"))?;
+    let entry =
+        fs::canonicalize(candidate).map_err(|e| format!("Unable to access project entry: {e}"))?;
     if !entry.starts_with(&root) {
-        return Err("项目条目不在当前项目中".into());
+        return Err("Project entry is outside the current project".into());
     }
     Ok(entry)
 }
@@ -231,7 +233,7 @@ fn safe_project_entry(project_path: &str, relative_path: &str) -> Result<PathBuf
 fn safe_project_file(project_path: &str, relative_path: &str) -> Result<PathBuf, String> {
     let file = safe_project_entry(project_path, relative_path)?;
     if !file.is_file() {
-        return Err("项目条目不是文件".into());
+        return Err("Project entry is not a file".into());
     }
     Ok(file)
 }
@@ -240,17 +242,18 @@ fn safe_project_destination(project_path: &str, relative_path: &str) -> Result<P
     let relative = project_relative_path(relative_path)?;
     let root = project_root(project_path)?;
     let candidate = root.join(relative);
-    let file_name = candidate.file_name().ok_or("项目路径无效")?;
-    let parent = candidate.parent().ok_or("项目路径无效")?;
-    let parent = fs::canonicalize(parent).map_err(|e| format!("无法访问父目录: {e}"))?;
+    let file_name = candidate.file_name().ok_or("Invalid project path")?;
+    let parent = candidate.parent().ok_or("Invalid project path")?;
+    let parent =
+        fs::canonicalize(parent).map_err(|e| format!("Unable to access parent directory: {e}"))?;
     if !parent.starts_with(&root) || !parent.is_dir() {
-        return Err("父目录不在当前项目中".into());
+        return Err("Parent directory is outside the current project".into());
     }
     let destination = parent.join(file_name);
     match fs::symlink_metadata(&destination) {
-        Ok(_) => Err("同名文件或文件夹已存在".into()),
+        Ok(_) => Err("A file or folder with the same name already exists".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(destination),
-        Err(error) => Err(format!("无法检查目标路径: {error}")),
+        Err(error) => Err(format!("Unable to inspect destination path: {error}")),
     }
 }
 
@@ -261,7 +264,7 @@ fn safe_entry_name(name: &str) -> Result<&str, String> {
         || !matches!(components.next(), Some(Component::Normal(_)))
         || components.next().is_some()
     {
-        return Err("名称不能包含路径分隔符".into());
+        return Err("Name cannot contain path separators".into());
     }
     Ok(name)
 }
@@ -269,7 +272,7 @@ fn safe_entry_name(name: &str) -> Result<&str, String> {
 fn project_relative_string(root: &Path, path: &Path) -> Result<String, String> {
     path.strip_prefix(root)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        .map_err(|_| "项目条目不在当前项目中".into())
+        .map_err(|_| "Project entry is outside the current project".into())
 }
 
 fn external_editor_definition(id: &str) -> Option<ExternalEditorDefinition> {
@@ -481,9 +484,9 @@ fn collect_project_entries(
         return Ok(());
     }
     let mut children = fs::read_dir(directory)
-        .map_err(|e| format!("无法读取项目目录: {e}"))?
+        .map_err(|e| format!("Unable to read project directory: {e}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("无法读取项目目录项: {e}"))?;
+        .map_err(|e| format!("Unable to read project directory entry: {e}"))?;
     children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
 
     for child in children {
@@ -492,7 +495,7 @@ fn collect_project_entries(
         }
         let file_type = child
             .file_type()
-            .map_err(|e| format!("无法读取文件类型: {e}"))?;
+            .map_err(|e| format!("Unable to read file type: {e}"))?;
         if file_type.is_symlink() {
             continue;
         }
@@ -536,9 +539,9 @@ pub(crate) async fn open_project_in_external_editor(
         let root = project_root(&project_path)?;
         let editor = external_editor_definition(&editor_id)
             .filter(|editor| external_editor_available(*editor))
-            .ok_or_else(|| "外部编辑器未安装或不可用".to_string())?;
+            .ok_or_else(|| "External editor is not installed or available".to_string())?;
         tauri_plugin_opener::open_path(root, Some(editor.launcher))
-            .map_err(|error| format!("无法打开外部编辑器: {error}"))
+            .map_err(|error| format!("Unable to open external editor: {error}"))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -557,10 +560,10 @@ pub(crate) fn watch_project_files(
         },
         notify::Config::default(),
     )
-    .map_err(|error| format!("无法创建文件监听器: {error}"))?;
+    .map_err(|error| format!("Unable to create file watcher: {error}"))?;
     watcher
         .watch(&root, RecursiveMode::Recursive)
-        .map_err(|error| format!("无法监听项目目录: {error}"))?;
+        .map_err(|error| format!("Unable to watch project directory: {error}"))?;
 
     let watch_id = format!(
         "project-watch-{}",
@@ -569,7 +572,7 @@ pub(crate) fn watch_project_files(
     let stop = Arc::new(AtomicBool::new(false));
     PROJECT_FILE_WATCHERS
         .lock()
-        .map_err(|_| "文件监听器状态已损坏".to_string())?
+        .map_err(|_| "File watcher state is unavailable".to_string())?
         .insert(watch_id.clone(), Arc::clone(&stop));
 
     let thread_watch_id = watch_id.clone();
@@ -636,7 +639,7 @@ pub(crate) fn watch_project_files(
             if let Ok(mut watchers) = PROJECT_FILE_WATCHERS.lock() {
                 watchers.remove(&watch_id);
             }
-            format!("无法启动文件监听器: {error}")
+            format!("Unable to start file watcher: {error}")
         })?;
 
     Ok(watch_id)
@@ -646,7 +649,7 @@ pub(crate) fn watch_project_files(
 pub(crate) fn unwatch_project_files(watch_id: String) -> Result<(), String> {
     let stop = PROJECT_FILE_WATCHERS
         .lock()
-        .map_err(|_| "文件监听器状态已损坏".to_string())?
+        .map_err(|_| "File watcher state is unavailable".to_string())?
         .remove(&watch_id);
     if let Some(stop) = stop {
         stop.store(true, Ordering::Release);
@@ -654,7 +657,7 @@ pub(crate) fn unwatch_project_files(watch_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 内核 Unix socket 路径,须与 Go 端 config.DefaultSocketPath 保持一致。
+/// Kernel Unix socket path, kept in sync with Go config.DefaultSocketPath.
 
 #[tauri::command]
 pub(crate) async fn list_project_files(project_path: String) -> Result<String, String> {
@@ -675,12 +678,13 @@ pub(crate) async fn read_project_file(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let file = safe_project_file(&project_path, &path)?;
-        let metadata = fs::metadata(&file).map_err(|e| format!("无法读取文件信息: {e}"))?;
+        let metadata =
+            fs::metadata(&file).map_err(|e| format!("Unable to read file metadata: {e}"))?;
         if metadata.len() > MAX_PREVIEW_BYTES {
-            return Err("文件超过 2 MiB，无法预览".into());
+            return Err("Files larger than 2 MiB cannot be previewed".into());
         }
-        let bytes = fs::read(file).map_err(|e| format!("无法读取文件: {e}"))?;
-        String::from_utf8(bytes).map_err(|_| "二进制文件暂不支持预览".into())
+        let bytes = fs::read(file).map_err(|e| format!("Unable to read file: {e}"))?;
+        String::from_utf8(bytes).map_err(|_| "Binary file previews are not supported".into())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -698,7 +702,7 @@ pub(crate) async fn create_project_file(
             .write(true)
             .create_new(true)
             .open(&file)
-            .map_err(|e| format!("无法创建文件: {e}"))?;
+            .map_err(|e| format!("Unable to create file: {e}"))?;
         project_relative_string(&root, &file)
     })
     .await
@@ -713,7 +717,7 @@ pub(crate) async fn create_project_directory(
     tauri::async_runtime::spawn_blocking(move || {
         let root = project_root(&project_path)?;
         let directory = safe_project_destination(&project_path, &path)?;
-        fs::create_dir(&directory).map_err(|e| format!("无法创建文件夹: {e}"))?;
+        fs::create_dir(&directory).map_err(|e| format!("Unable to create folder: {e}"))?;
         project_relative_string(&root, &directory)
     })
     .await
@@ -735,10 +739,10 @@ pub(crate) async fn rename_project_entry(
         if destination != entry {
             if let Ok(existing) = fs::canonicalize(&destination) {
                 if existing != entry {
-                    return Err("同名文件或文件夹已存在".into());
+                    return Err("A file or folder with the same name already exists".into());
                 }
             }
-            fs::rename(&entry, &destination).map_err(|e| format!("无法重命名: {e}"))?;
+            fs::rename(&entry, &destination).map_err(|e| format!("Unable to rename: {e}"))?;
         }
 
         project_relative_string(&root, &destination)
@@ -752,9 +756,9 @@ pub(crate) async fn delete_project_entry(project_path: String, path: String) -> 
     tauri::async_runtime::spawn_blocking(move || {
         let entry = safe_project_entry(&project_path, &path)?;
         if entry.is_dir() {
-            fs::remove_dir_all(entry).map_err(|e| format!("无法删除文件夹: {e}"))
+            fs::remove_dir_all(entry).map_err(|e| format!("Unable to delete folder: {e}"))
         } else {
-            fs::remove_file(entry).map_err(|e| format!("无法删除文件: {e}"))
+            fs::remove_file(entry).map_err(|e| format!("Unable to delete file: {e}"))
         }
     })
     .await

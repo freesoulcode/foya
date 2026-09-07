@@ -580,9 +580,9 @@ func (m *Manager) loadMarketplace(
 			Tags: entry.Tags,
 		}
 		if !validPluginName(entry.Name) {
-			item.Reason = "插件名称无效"
+			item.Reason = "Invalid plugin name"
 		} else if seen[entry.Name] {
-			item.Reason = "市场中存在同名插件"
+			item.Reason = "Duplicate plugin name in marketplace"
 		} else {
 			source, resolveErr := resolveMarketplaceSource(entryDefinition, entry.Source)
 			if resolveErr != nil {
@@ -609,7 +609,7 @@ func resolveMarketplaceSource(
 	var relative string
 	if json.Unmarshal(raw, &relative) == nil {
 		if strings.TrimSpace(relative) == "" {
-			return resolvedMarketplaceSource{}, errors.New("插件来源不能为空")
+			return resolvedMarketplaceSource{}, errors.New("Plugin source is required")
 		}
 		clean, err := cleanMarketplacePath(relative)
 		if err != nil {
@@ -629,7 +629,7 @@ func resolveMarketplaceSource(
 	}
 	var object marketplaceSourceObject
 	if err := json.Unmarshal(raw, &object); err != nil {
-		return resolvedMarketplaceSource{}, errors.New("不支持的插件来源")
+		return resolvedMarketplaceSource{}, errors.New("Unsupported plugin source")
 	}
 	switch object.Source {
 	case "local":
@@ -650,7 +650,7 @@ func resolveMarketplaceSource(
 		}, nil
 	case "github":
 		if !githubRepoPattern.MatchString(object.Repo) {
-			return resolvedMarketplaceSource{}, errors.New("GitHub 仓库格式无效")
+			return resolvedMarketplaceSource{}, errors.New("Invalid GitHub repository format")
 		}
 		return gitMarketplaceSource(
 			"https://github.com/"+object.Repo+".git",
@@ -688,11 +688,11 @@ func resolveMarketplaceSource(
 		)
 	case "npm":
 		return resolvedMarketplaceSource{}, fmt.Errorf(
-			"暂不支持 npm Marketplace 来源 %q",
+			"npm Marketplace source %q is not supported",
 			object.Package,
 		)
 	default:
-		return resolvedMarketplaceSource{}, errors.New("不支持的插件来源类型")
+		return resolvedMarketplaceSource{}, errors.New("Unsupported plugin source type")
 	}
 }
 
@@ -706,11 +706,11 @@ func gitMarketplaceSource(
 	revision := strings.TrimSpace(ref)
 	if sha != "" {
 		if !gitCommitPattern.MatchString(sha) {
-			return resolvedMarketplaceSource{}, errors.New("Git commit SHA 无效")
+			return resolvedMarketplaceSource{}, errors.New("Invalid Git commit SHA")
 		}
 		revision = sha
 	} else if revision != "" && !validGitRevision(revision) {
-		return resolvedMarketplaceSource{}, errors.New("Git ref 无效")
+		return resolvedMarketplaceSource{}, errors.New("Invalid Git ref")
 	}
 	return resolvedMarketplaceSource{
 		cloneURL: cloneURL, repository: repository, path: clean, revision: revision,
@@ -755,7 +755,7 @@ func cleanMarketplacePath(value string) (string, error) {
 		return "", nil
 	}
 	if value == "" || pathpkg.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", errors.New("插件子目录越界")
+		return "", errors.New("Plugin subdirectory escapes its root")
 	}
 	return clean, nil
 }
@@ -796,14 +796,14 @@ func marketplacePackagePath(root, relative string) (string, error) {
 		candidate = filepath.Join(root, filepath.FromSlash(relative))
 	}
 	if !resolvedInside(root, candidate) {
-		return "", errors.New("插件子目录越界")
+		return "", errors.New("Plugin subdirectory escapes its root")
 	}
 	info, err := os.Stat(candidate)
 	if err != nil {
 		return "", err
 	}
 	if !info.IsDir() {
-		return "", errors.New("插件来源不是目录")
+		return "", errors.New("Plugin source is not a directory")
 	}
 	return candidate, nil
 }
@@ -914,7 +914,7 @@ func validGitRevision(value string) bool {
 func validateMarketplaceGitURL(value string) error {
 	kind, _, _, err := normalizeSource(value)
 	if err != nil || kind != "git" {
-		return errors.New("Marketplace Git URL 必须是不含凭证的 HTTPS 或 Git SSH URL")
+		return errors.New("Marketplace Git URL must be an HTTPS or Git SSH URL without credentials")
 	}
 	return nil
 }

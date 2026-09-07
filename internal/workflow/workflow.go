@@ -593,7 +593,7 @@ func writeArtifact(record Record) error {
 	}
 	content := record.Content
 	if content == "" {
-		content = "正在规划中。"
+		content = "Planning in progress."
 	}
 	data := fmt.Sprintf("---\nkind: %s\nstatus: %s\ngoal: %q\n---\n\n%s\n",
 		record.Kind, record.Status, record.Goal, content)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { PinIcon, PlusIcon } from "@lucide/vue";
 import { api, type ProjectInfo, type SkillInfo } from "@/lib/api";
 import { useCurrentProjectId } from "@/composables/useCurrentProjectId";
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 
 const currentProjectId = useCurrentProjectId();
+const { t } = useI18n();
 
 const skills = ref<SkillInfo[]>([]);
 const projects = ref<ProjectInfo[]>([]);
@@ -46,19 +48,25 @@ const activeProjects = computed(() => projects.value);
 const skillGroups = computed(() => {
   const global = {
     id: "global",
-    title: skillScope.value === "project" ? "继承的全局技能" : "全局技能",
-    description: "~/.agents/skills 和 ~/.foya/skills",
+    title: skillScope.value === "project" ? t("Inherited global skills") : t("Global skills"),
+    description: t("{first} and {second}", {
+      first: "~/.agents/skills",
+      second: "~/.foya/skills",
+    }),
     items: globalSkills.value,
   };
   if (skillScope.value === "global") return [global];
   return [{
     id: "project",
     title: selectedSkillProject.value
-      ? `项目技能 · ${selectedSkillProject.value.name}`
-      : "项目技能",
+      ? t("Project skills · {name}", { name: selectedSkillProject.value.name })
+      : t("Project skills"),
     description: selectedSkillProject.value
-      ? `${selectedSkillProject.value.path}/.agents/skills 和 ${selectedSkillProject.value.path}/.foya/skills`
-      : "选择项目后显示",
+      ? t("{first} and {second}", {
+          first: `${selectedSkillProject.value.path}/.agents/skills`,
+          second: `${selectedSkillProject.value.path}/.foya/skills`,
+        })
+      : t("Select a project to show this"),
     items: projectSkills.value,
   }, global];
 });
@@ -158,17 +166,17 @@ void loadSkills();
 
 <template>
   <SettingsPage
-    title="技能"
-    description="管理当前可用的工具技能与上下文固定项。"
+    :title="$t('Skills')"
+    :description="$t('Manage available tool skills and pinned context items.')"
   >
     <div class="mb-6 flex flex-wrap items-center gap-3">
-      <ButtonGroup aria-label="技能范围">
+      <ButtonGroup :aria-label="$t('Skill scope')">
         <Button
           size="sm"
           :variant="skillScope === 'global' ? 'default' : 'outline'"
           @click="selectSkillScope('global')"
         >
-          全局
+          {{ $t("Global") }}
         </Button>
         <Button
           size="sm"
@@ -176,7 +184,7 @@ void loadSkills();
           :disabled="activeProjects.length === 0"
           @click="selectSkillScope('project')"
         >
-          项目
+          {{ $t("Project") }}
         </Button>
       </ButtonGroup>
       <Select
@@ -186,7 +194,7 @@ void loadSkills();
         @update:model-value="selectSkillProject"
       >
         <SelectTrigger size="sm" class="min-w-48 max-w-full">
-          <SelectValue placeholder="选择项目" />
+          <SelectValue :placeholder="$t('Select project')" />
         </SelectTrigger>
         <SelectContent>
           <SelectItem
@@ -202,8 +210,8 @@ void loadSkills();
         v-if="skillScope === 'project'"
         size="icon-sm"
         variant="outline"
-        title="添加项目"
-        aria-label="添加项目"
+        :title="$t('Add project')"
+        :aria-label="$t('Add project')"
         :disabled="saving"
         @click="openProjectCreate"
       >
@@ -228,10 +236,10 @@ void loadSkills();
               <div class="flex items-center gap-2">
                 <p class="truncate text-sm font-medium">{{ item.name }}</p>
                 <span v-if="item.scope === 'builtin'" class="text-xs text-muted-foreground">
-                  内置
+                  {{ $t("Built-in") }}
                 </span>
                 <span v-else-if="item.scope === 'plugin'" class="text-xs text-muted-foreground">
-                  插件
+                  {{ $t("Plugin") }}
                 </span>
               </div>
               <p class="truncate text-xs text-muted-foreground" :title="item.path">
@@ -247,7 +255,7 @@ void loadSkills();
                     size="icon"
                     class="h-8 w-8"
                     :disabled="saving"
-                    :aria-label="`${item.pinned ? '取消固定' : '固定'} ${item.name}`"
+                    :aria-label="item.pinned ? $t('Unpin {name}', { name: item.name }) : $t('Pin {name}', { name: item.name })"
                     @click="toggleSkillPinned(item)"
                   >
                     <PinIcon
@@ -257,13 +265,13 @@ void loadSkills();
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {{ item.pinned ? "取消固定到上下文" : "固定到上下文" }}
+                  {{ item.pinned ? $t("Unpin from context") : $t("Pin to context") }}
                 </TooltipContent>
               </Tooltip>
               <Checkbox
                 :checked="item.enabled"
                 :disabled="saving"
-                :aria-label="`${item.enabled ? '停用' : '启用'} ${item.name}`"
+                :aria-label="item.enabled ? $t('Disable {name}', { name: item.name }) : $t('Enable {name}', { name: item.name })"
                 @update:checked="toggleSkill(item)"
               />
             </div>
@@ -272,7 +280,7 @@ void loadSkills();
             v-if="!loading && group.items.length === 0"
             class="py-4 text-sm text-muted-foreground"
           >
-            {{ group.id === "project" && !selectedSkillProject ? "当前未选择项目。" : "尚未发现技能。" }}
+            {{ group.id === "project" && !selectedSkillProject ? $t("No project is selected.") : $t("No skills found.") }}
           </p>
         </div>
       </section>

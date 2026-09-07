@@ -1,35 +1,35 @@
-// Package event 定义内核事件类型与单调序号。
+// Package event defines kernel event types and monotonic sequence numbers.
 //
-// 事件是「日志即真相」的原子单位:内核产生的一切事实都是 Event,
-// 会话状态、UI 视图、崩溃恢复都是事件流的投影。每个事件带单调递增
-// 的 Seq,服务于 SSE 断线补发(Last-Event-ID)与多设备续接。
+// Events are the source of truth. Chat state, UI views, and crash recovery are
+// projections of this stream. Monotonic sequence numbers support SSE replay
+// through Last-Event-ID and continuation across devices.
 package event
 
 import "time"
 
-// Seq 是会话内单调递增的事件序号。
+// Seq is a monotonically increasing event number within a chat.
 type Seq uint64
 
-// Kind 标识事件类型。
+// Kind identifies an event type.
 type Kind string
 
 const (
-	KindMessageDelta             Kind = "message_delta"     // 流式 token 增量
-	KindReasoningDelta           Kind = "reasoning_delta"   // 流式思考内容增量(思考模型)
-	KindMessageEnd               Kind = "message_end"       // 一条消息完成
-	KindToolBegin                Kind = "tool_begin"        // 模型已生成工具调用,进入等待队列
-	KindToolUpdate               Kind = "tool_update"       // 参数、执行状态或部分结果更新
-	KindToolEnd                  Kind = "tool_end"          // 工具调用结束
-	KindApprovalReq              Kind = "approval_request"  // 审批请求(必达)
-	KindApprovalResolved         Kind = "approval_resolved" // 审批已决策(必达)
+	KindMessageDelta             Kind = "message_delta"     // Streamed text delta.
+	KindReasoningDelta           Kind = "reasoning_delta"   // Streamed reasoning delta.
+	KindMessageEnd               Kind = "message_end"       // Completed message.
+	KindToolBegin                Kind = "tool_begin"        // Tool call entered the queue.
+	KindToolUpdate               Kind = "tool_update"       // Tool arguments, state, or partial result.
+	KindToolEnd                  Kind = "tool_end"          // Completed tool call.
+	KindApprovalReq              Kind = "approval_request"  // Must-deliver approval request.
+	KindApprovalResolved         Kind = "approval_resolved" // Must-deliver approval decision.
 	KindQuestionRequested        Kind = "question_requested"
 	KindQuestionResolved         Kind = "question_resolved"
 	KindBrowserActionRequested   Kind = "browser_action_requested"
 	KindBrowserActionResolved    Kind = "browser_action_resolved"
-	KindSessionUpdated           Kind = "session_updated" // 会话元数据变更(标题/模型等,必达)
-	KindSessionDeleted           Kind = "session_deleted" // 会话被删除(必达,前端据此移除)
-	KindQueueUpdated             Kind = "queue_updated"   // 待发送队列完整快照(必达)
-	KindUsageUpdated             Kind = "usage_updated"   // 最近一次模型请求 token 使用情况
+	KindSessionUpdated           Kind = "session_updated" // Must-deliver chat metadata update.
+	KindSessionDeleted           Kind = "session_deleted" // Must-deliver chat deletion.
+	KindQueueUpdated             Kind = "queue_updated"   // Must-deliver queue snapshot.
+	KindUsageUpdated             Kind = "usage_updated"   // Latest model request token usage.
 	KindCompactionStarted        Kind = "compaction_started"
 	KindCompactionCompleted      Kind = "compaction_completed"
 	KindCompactionFailed         Kind = "compaction_failed"
@@ -41,7 +41,7 @@ const (
 	KindSessionForked            Kind = "session_forked"
 	KindTurnStarted              Kind = "turn_started"
 	KindTurnCancelRequested      Kind = "turn_cancel_requested"
-	KindTurnComplete             Kind = "turn_complete" // 回合结束(必达)
+	KindTurnComplete             Kind = "turn_complete" // Must-deliver turn completion.
 	KindSubAgentQueued           Kind = "subagent_queued"
 	KindSubAgentRunning          Kind = "subagent_running"
 	KindSubAgentStarted          Kind = "subagent_started"
@@ -101,7 +101,7 @@ type SessionForked struct {
 	MessageCount    int       `json:"message_count"`
 }
 
-// Event 是内核事件的信封。Payload 由 Kind 决定其具体类型。
+// Event is a chat event envelope whose payload type depends on Kind.
 type Event struct {
 	Seq     Seq       `json:"seq"`
 	Kind    Kind      `json:"kind"`

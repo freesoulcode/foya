@@ -92,7 +92,7 @@ function updateQuestionPanelExpanded(value: boolean) {
 function forkAtMessage(messageSeq: number) {
   if (!activeId.value) return;
   void forkSession(activeId.value, messageSeq).catch((error) => {
-    console.error("从当前消息复制会话失败:", error);
+    console.error("Failed to fork chat from this message:", error);
   });
 }
 </script>

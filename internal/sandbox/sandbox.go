@@ -1,7 +1,7 @@
-// Package sandbox 约束工具执行的副作用爆炸半径。
+// Package sandbox limits side effects from tool execution.
 //
-// 它在 macOS 上使用 Seatbelt、在 Linux 上使用 Bubblewrap、在 Windows
-// 上通过 WSL2 使用 Bubblewrap。沙箱是能力的约束层,不是能力本身。
+// It uses Seatbelt on macOS, Bubblewrap on Linux, and Bubblewrap through WSL2
+// on Windows. A sandbox constrains capabilities but does not provide them.
 package sandbox
 
 import (
@@ -16,7 +16,7 @@ import (
 	"sync"
 )
 
-// Kind 标识沙箱后端。
+// Kind identifies a sandbox backend.
 type Kind string
 
 const (
@@ -28,7 +28,7 @@ const (
 
 var ErrUnavailable = errors.New("sandbox is unavailable")
 
-// FSAccess 是文件系统访问级别。
+// FSAccess is a filesystem access level.
 type FSAccess string
 
 const (
@@ -37,7 +37,7 @@ const (
 	FSFull         FSAccess = "full"
 )
 
-// Profile 描述一次执行的隔离约束。
+// Profile describes isolation constraints for one execution.
 type Profile struct {
 	FileSystem    FSAccess
 	WritableRoots []string
@@ -45,7 +45,7 @@ type Profile struct {
 	Network       bool
 }
 
-// ExecRequest 是待执行的命令。
+// ExecRequest describes a command to execute.
 type ExecRequest struct {
 	Argv  []string
 	Dir   string
@@ -78,7 +78,7 @@ type Process interface {
 	Stop() error
 }
 
-// Sandbox 把原始命令改写成沙箱包装后的命令。
+// Sandbox wraps a command with platform isolation.
 type Sandbox interface {
 	Wrap(req ExecRequest, profile Profile) (ExecRequest, error)
 	Kind() Kind

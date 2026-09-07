@@ -13,14 +13,14 @@ import (
 
 const maxOutputLen = 30000
 
-// BashParams 是 bash 工具的参数。
+// BashParams contains arguments for the bash tool.
 type BashParams struct {
 	Command        string `json:"command"`
 	Background     bool   `json:"background,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
-// bashTool 执行 shell 命令。
+// bashTool executes shell commands.
 type bashTool struct {
 	gw         approval.Gateway
 	background BackgroundCommandManager
@@ -29,7 +29,7 @@ type bashTool struct {
 	shellFlag  string
 }
 
-// NewBashTool 创建 bash 工具。
+// NewBashTool creates a shell command tool.
 func NewBashTool(gw approval.Gateway, runner sandbox.Runner) Tool {
 	var background BackgroundCommandManager
 	if _, ok := runner.(sandbox.ManagedRunner); ok {
@@ -104,10 +104,10 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 		Scope:    workDir,
 	})
 	if err != nil {
-		return errResult("审批中断: " + err.Error()), nil
+		return errResult("Approval interrupted: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
-		return errResult("用户拒绝执行命令"), nil
+		return errResult("User denied command execution"), nil
 	}
 
 	if t.runner == nil {

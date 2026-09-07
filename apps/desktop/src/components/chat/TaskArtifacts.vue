@@ -63,7 +63,7 @@ const totals = computed(() =>
   <section
     v-if="files.length"
     class="mb-3 mt-3 overflow-hidden rounded-lg border border-border bg-muted/20"
-    aria-label="任务产物"
+    :aria-label="$t('Task artifacts')"
   >
     <button
       type="button"
@@ -73,7 +73,7 @@ const totals = computed(() =>
     >
       <FilesIcon class="size-4 shrink-0 text-primary" />
       <span class="min-w-0 flex-1 truncate text-sm font-medium">
-        {{ files.length }} 个文件已更改
+        {{ $t("Changed {count} files", { count: files.length }) }}
       </span>
       <span class="shrink-0 font-mono text-xs text-emerald-600">
         +{{ totals.additions }}
@@ -93,7 +93,7 @@ const totals = computed(() =>
         :key="`${file.directory}${file.name}`"
         type="button"
         class="flex h-10 w-full min-w-0 items-center gap-2 px-3 text-left text-sm hover:bg-muted/50"
-        :title="`查看 ${file.name} 的变更`"
+        :title="$t('View changes for {path}', { path: file.name })"
         @click="emit('open-diff', file.diff)"
       >
         <FileDiffIcon class="size-4 shrink-0 text-primary" />

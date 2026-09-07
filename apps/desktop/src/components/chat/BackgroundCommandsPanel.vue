@@ -52,13 +52,13 @@ function output(command: BackgroundCommand): string {
                 type="button"
                 size="icon-xs"
                 variant="ghost"
-                aria-label="在终端中查看"
+                :aria-label="$t('View in terminal')"
                 @click="emit('open', command)"
               >
                 <SquareTerminalIcon class="size-3.5" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="left">在终端中查看</TooltipContent>
+            <TooltipContent side="left">{{ $t("View in terminal") }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -67,13 +67,13 @@ function output(command: BackgroundCommand): string {
                 size="icon-xs"
                 variant="ghost"
                 class="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                aria-label="终止后台命令"
+                :aria-label="$t('Stop background command')"
                 @click="emit('stop', command.command_id)"
               >
                 <SquareIcon class="size-3 fill-current" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="left">终止后台命令</TooltipContent>
+            <TooltipContent side="left">{{ $t("Stop background command") }}</TooltipContent>
           </Tooltip>
         </div>
       </div>

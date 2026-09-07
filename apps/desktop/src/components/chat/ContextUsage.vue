@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { GaugeIcon } from "@lucide/vue";
 import {
   HoverCard,
@@ -18,6 +19,7 @@ const props = withDefaults(
     contextWindow: 0,
   }
 );
+const { locale } = useI18n();
 
 const usedTokens = computed(() => props.usage?.total_tokens ?? 0);
 const usagePercent = computed(() =>
@@ -43,7 +45,7 @@ function compactTokens(value: number) {
 }
 
 function exactTokens(value: number) {
-  return new Intl.NumberFormat().format(value);
+  return new Intl.NumberFormat(locale.value).format(value);
 }
 
 function percent(value: number) {
@@ -58,7 +60,7 @@ function percent(value: number) {
       <button
         type="button"
         class="flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        aria-label="查看上下文占用"
+        :aria-label="$t('View context usage')"
       >
         <GaugeIcon class="size-3.5" />
         <span>
@@ -70,7 +72,7 @@ function percent(value: number) {
 
     <HoverCardContent side="top" align="end" :side-offset="8" class="w-64 p-3">
       <div class="flex items-center justify-between gap-3">
-        <span class="text-xs font-medium text-foreground">上下文占用</span>
+        <span class="text-xs font-medium text-foreground">{{ $t("Context usage") }}</span>
         <span v-if="contextWindow" class="text-xs tabular-nums text-muted-foreground">
           {{ percent(usagePercent) }}
         </span>
@@ -85,19 +87,19 @@ function percent(value: number) {
       </div>
 
       <dl class="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-xs">
-        <dt class="text-muted-foreground">已用</dt>
+        <dt class="text-muted-foreground">{{ $t("Used") }}</dt>
         <dd class="tabular-nums text-foreground">{{ exactTokens(usage.total_tokens) }}</dd>
-        <dt class="text-muted-foreground">输入</dt>
+        <dt class="text-muted-foreground">{{ $t("Input") }}</dt>
         <dd class="tabular-nums text-foreground">{{ exactTokens(usage.input_tokens) }}</dd>
-        <dt class="text-muted-foreground">输出</dt>
+        <dt class="text-muted-foreground">{{ $t("Output") }}</dt>
         <dd class="tabular-nums text-foreground">{{ exactTokens(usage.output_tokens) }}</dd>
-        <dt class="text-muted-foreground">缓存命中</dt>
+        <dt class="text-muted-foreground">{{ $t("Cache hits") }}</dt>
         <dd class="tabular-nums text-foreground">
           {{ exactTokens(usage.cached_tokens) }}
           <span class="text-muted-foreground">· {{ percent(cachePercent) }}</span>
         </dd>
         <template v-if="contextWindow">
-          <dt class="text-muted-foreground">模型窗口</dt>
+          <dt class="text-muted-foreground">{{ $t("Model context window") }}</dt>
           <dd class="tabular-nums text-foreground">{{ compactTokens(contextWindow) }}</dd>
         </template>
       </dl>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   BotIcon,
   CircleStopIcon,
@@ -29,6 +30,7 @@ const props = defineProps<{
   streaming?: boolean;
   editable?: boolean;
 }>();
+const { t } = useI18n();
 
 const attachmentURLs = ref<Record<string, string>>({});
 let attachmentLoad = 0;
@@ -87,7 +89,7 @@ const commandIcon = computed(() => {
   return TargetIcon;
 });
 
-// 有序段落:优先用 segments;缺失时(旧数据/兜底)由扁平字段合成一个近似序列。
+// Prefer ordered segments; synthesize a compatible sequence for legacy data.
 const segments = computed<MessageSegment[]>(() => {
   if (isUser.value) return [];
   if (props.message.segments && props.message.segments.length > 0) {
@@ -100,12 +102,12 @@ const segments = computed<MessageSegment[]>(() => {
   return segs;
 });
 
-// 某个 reasoning 段是否正处于流式生成中:仅当它是整条消息的最后一段且仍在流式。
+// A reasoning segment streams only when it is the last segment in a streaming message.
 function isReasoningStreaming(index: number): boolean {
   return !!props.streaming && index === segments.value.length - 1;
 }
 
-// reasoning 段的展开状态(按段索引记录)。
+// Track expanded reasoning segments by index.
 const expandedReasoning = ref<Set<number>>(new Set());
 function toggleReasoning(index: number) {
   if (expandedReasoning.value.has(index)) expandedReasoning.value.delete(index);
@@ -115,7 +117,7 @@ function isReasoningExpanded(index: number) {
   return expandedReasoning.value.has(index);
 }
 
-// pending:助手气泡已乐观插入但首 token 还没到(无任何段、非错误、流式中)。
+// A pending bubble exists before the first streamed token arrives.
 const isPending = computed(
   () => !isUser.value && !props.message.error && segments.value.length === 0 && !!props.streaming
 );
@@ -127,20 +129,17 @@ const isCancelledTurn = computed(
 const cancelledLabel = computed(() => {
   switch (props.message.turn_reason) {
     case "user_stop":
-      return "用户终止输出";
+      return t("Output stopped by user");
     case "queue_dispatch":
-      return "已切换到队列中的下一条消息";
+      return t("Switched to the next queued message");
     case "session_deleted":
-      return "会话删除时已取消本次回复";
+      return t("Response cancelled when the chat was deleted");
     default:
-      return "本次回复已取消";
+      return t("Response cancelled");
   }
 });
 
-// 回合中「工作中」空窗:纯派生自 streaming + segments,不依赖任何专用事件。
-// 各段各自的进行态已被覆盖(首 token 前=isPending 打字点、思考中=「正在思考…」、
-// 工具运行中=图标 pulse、正文流式=光标)。唯一没人管的空白是:某工具已结束、
-// 但回合仍在流式(streaming 为真)——此时模型正在为下一步生成内容,填一个指示。
+// Cover the gap after a tool finishes while the model prepares its next segment.
 const showWorking = computed(() => {
   if (isUser.value || props.message.error || !props.streaming) return false;
   const last = segments.value[segments.value.length - 1];
@@ -167,8 +166,8 @@ function toolBatchAt(index: number): ToolCallView[] {
 
 const processExpanded = ref(false);
 
-// 使用过工具的已完成回合中，最后一个工具之后的最后一段正文是最终回复；
-// 其余思考、工具和中间正文统一归入可折叠的任务过程。
+// In completed tool turns, the final text after the last tool is the response.
+// Earlier reasoning, tool calls, and intermediate text form the collapsible process.
 const finalTextSegmentIndex = computed(() => {
   let lastToolIndex = -1;
   for (let i = segments.value.length - 1; i >= 0; i--) {
@@ -255,10 +254,10 @@ async function onBodyClick(e: MouseEvent) {
   const code = block?.querySelector("pre code");
   const text = code?.textContent ?? "";
   if (await copyText(text)) {
-    btn.textContent = "已复制";
+    btn.textContent = t("Copied");
     btn.classList.add("is-copied");
     window.setTimeout(() => {
-      btn.textContent = "复制";
+      btn.textContent = t("Copy");
       btn.classList.remove("is-copied");
     }, 1500);
   }
@@ -308,7 +307,7 @@ function rewindMessage() {
           : 'w-full'
       )"
     >
-      <!-- 用户消息:纯文本 -->
+      <!-- User message. -->
       <template v-if="isUser">
         <div
           v-if="message.attachments?.length"
@@ -379,14 +378,14 @@ function rewindMessage() {
         </div>
       </template>
 
-      <!-- pending:首 token 到达前的 typing 指示器 -->
+      <!-- Typing indicator before the first token. -->
       <div v-else-if="isPending" class="flex items-center gap-1 py-1">
         <span class="typing-dot" />
         <span class="typing-dot" />
         <span class="typing-dot" />
       </div>
 
-      <!-- 错误气泡:直接渲染 content -->
+      <!-- Error message. -->
       <MarkdownContent
         v-else-if="isError"
         :source="message.content"
@@ -395,7 +394,7 @@ function rewindMessage() {
         @click="onBodyClick"
       />
 
-      <!-- 助手消息:按段有序渲染「思考→工具→思考→回复」 -->
+      <!-- Assistant message rendered in segment order. -->
       <template v-else>
         <div v-if="isCompletedTask" class="mb-3 border-b border-border pb-2">
           <button
@@ -404,7 +403,7 @@ function rewindMessage() {
             :aria-expanded="processExpanded"
             @click="processExpanded = !processExpanded"
           >
-            <span>任务耗时 {{ formatDuration(taskDurationMS ?? 0) }}</span>
+            <span>{{ $t("Task completed in {duration}", { duration: formatDuration(taskDurationMS ?? 0) }) }}</span>
             <ChevronRightIcon
               :class="cn('size-3.5 shrink-0 transition-transform', processExpanded && 'rotate-90')"
             />
@@ -413,7 +412,7 @@ function rewindMessage() {
 
         <template v-for="(seg, i) in segments" :key="i">
           <template v-if="shouldRenderSegment(i)">
-            <!-- 思考段(可折叠) -->
+            <!-- Collapsible reasoning segment. -->
             <div v-if="seg.kind === 'reasoning'" class="mb-2">
               <button
                 type="button"
@@ -424,7 +423,7 @@ function rewindMessage() {
                   :class="cn('size-3.5 shrink-0 transition-transform', isReasoningExpanded(i) && 'rotate-90')"
                 />
                 <BrainIcon :class="cn('size-3.5 shrink-0', isReasoningStreaming(i) && 'animate-pulse')" />
-                <span>{{ isReasoningStreaming(i) ? "正在思考…" : "已深度思考" }}</span>
+                <span>{{ isReasoningStreaming(i) ? $t("Thinking") : $t("Thought deeply") }}</span>
               </button>
               <div
                 v-if="isReasoningExpanded(i)"
@@ -432,7 +431,7 @@ function rewindMessage() {
               >{{ seg.text }}</div>
             </div>
 
-            <!-- 同一模型步骤的连续工具段聚合展示。 -->
+            <!-- Consecutive tool segments from one model step. -->
             <div
               v-else-if="seg.kind === 'tool' && isToolBatchStart(i)"
               class="mb-2"
@@ -447,7 +446,7 @@ function rewindMessage() {
               />
             </div>
 
-            <!-- 正文段(markdown) -->
+            <!-- Markdown text segment. -->
             <MarkdownContent
               v-else-if="seg.kind === 'text'"
               :source="seg.text"
@@ -458,14 +457,14 @@ function rewindMessage() {
           </template>
         </template>
 
-        <!-- 工作中指示:工具已结束、回合仍在流式,模型正在为下一步生成 -->
+        <!-- Working indicator between streamed segments. -->
         <div v-if="showWorking" class="flex items-center gap-1 py-1">
           <span class="typing-dot" />
           <span class="typing-dot" />
           <span class="typing-dot" />
         </div>
 
-        <!-- 流式光标:仍在流式且最后一段是正文时显示 -->
+        <!-- Cursor shown while the final text segment is streaming. -->
         <span
           v-if="streaming && segments.length > 0 && segments[segments.length - 1].kind === 'text'"
           class="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-current align-baseline"
@@ -496,8 +495,8 @@ function rewindMessage() {
           type="button"
           class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
           :disabled="!editable"
-          title="从此处复制会话"
-          aria-label="从此处复制会话"
+          :title="$t('Fork chat from here')"
+          :aria-label="$t('Fork chat from here')"
           @click="forkAtMessage"
         >
           <GitForkIcon class="size-3.5" />
@@ -506,8 +505,8 @@ function rewindMessage() {
           v-if="message.content"
           type="button"
           class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          :title="copiedAll ? '已复制' : '复制回复'"
-          :aria-label="copiedAll ? '已复制' : '复制回复'"
+          :title="copiedAll ? $t('Copied') : $t('Copy response')"
+          :aria-label="copiedAll ? $t('Copied') : $t('Copy response')"
           @click="copyAll"
         >
           <CheckIcon v-if="copiedAll" class="size-3.5" />
@@ -523,7 +522,7 @@ function rewindMessage() {
       <button
         type="button"
         class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        :title="copiedAll ? '已复制' : '复制消息'"
+        :title="copiedAll ? $t('Copied') : $t('Copy message')"
         @click="copyAll"
       >
         <CheckIcon v-if="copiedAll" class="size-3.5" />
@@ -536,15 +535,15 @@ function rewindMessage() {
         :disabled="!editable || rewindUnsupported"
         :title="
           rewindUnsupported
-            ? '含附件、浏览器上下文或命令的消息暂不支持回退'
+            ? $t('Messages with attachments, browser context, or commands cannot be rewound')
             : editable
-              ? '回退到输入框'
-              : '会话运行时不可回退'
+              ? $t('Rewind to composer')
+              : $t('Cannot rewind while the chat is running')
         "
         :aria-label="
           rewindUnsupported
-            ? '含附件、浏览器上下文或命令的消息暂不支持回退'
-            : '回退到输入框'
+            ? $t('Messages with attachments, browser context, or commands cannot be rewound')
+            : $t('Rewind to composer')
         "
         @click="rewindMessage"
       >

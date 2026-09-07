@@ -57,20 +57,20 @@ func (t *deleteTool) Run(ctx context.Context, call Call) (Result, error) {
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "delete",
 		Action:   "delete",
-		Detail:   "移入废纸篓: " + path,
+		Detail:   "Move to Trash: " + path,
 		Resource: path,
 		Scope:    approvalPathScope(ctx, path),
 	})
 	if err != nil {
-		return errResult("审批中断: " + err.Error()), nil
+		return errResult("Approval interrupted: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
-		return errResult("用户拒绝将文件移入废纸篓"), nil
+		return errResult("User denied moving the item to Trash"), nil
 	}
 
 	diff := deletionDiff(path, info)
 	if err := t.trash(path); err != nil {
-		return errResult("移入废纸篓失败: " + err.Error()), nil
+		return errResult("Move to Trash failed: " + err.Error()), nil
 	}
 	kind := "file"
 	if info.IsDir() {

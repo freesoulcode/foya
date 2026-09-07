@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   CalendarClockIcon,
   ChevronDownIcon,
@@ -39,6 +40,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 type Filter = "all" | "enabled" | "paused" | "completed";
 type ScheduleKind = "daily" | "weekdays" | "weekly" | "custom";
+const { t } = useI18n();
 
 interface AutomationDraft {
   id: string;
@@ -102,22 +104,22 @@ const filteredTasks = computed(() => {
   });
 });
 
-const filterOptions: Array<{ value: Filter; label: string }> = [
-  { value: "all", label: "全部" },
-  { value: "enabled", label: "已开启" },
-  { value: "paused", label: "已暂停" },
-  { value: "completed", label: "已完成" },
-];
+const filterOptions = computed<Array<{ value: Filter; label: string }>>(() => [
+  { value: "all", label: t("All") },
+  { value: "enabled", label: t("Enabled") },
+  { value: "paused", label: t("Paused") },
+  { value: "completed", label: t("Completed") },
+]);
 
-const weekdays = [
-  { value: "1", label: "星期一" },
-  { value: "2", label: "星期二" },
-  { value: "3", label: "星期三" },
-  { value: "4", label: "星期四" },
-  { value: "5", label: "星期五" },
-  { value: "6", label: "星期六" },
-  { value: "0", label: "星期日" },
-];
+const weekdays = computed(() => [
+  { value: "1", label: t("Monday") },
+  { value: "2", label: t("Tuesday") },
+  { value: "3", label: t("Wednesday") },
+  { value: "4", label: t("Thursday") },
+  { value: "5", label: t("Friday") },
+  { value: "6", label: t("Saturday") },
+  { value: "0", label: t("Sunday") },
+]);
 
 function cronFromDraft(value: AutomationDraft): string {
   if (value.scheduleKind === "custom") return value.cron.trim();
@@ -147,26 +149,28 @@ function parseCron(task: AutomationTask): Pick<AutomationDraft, "scheduleKind" |
 
 function scheduleLabel(task: AutomationTask): string {
   const parsed = parseCron(task);
-  if (parsed.scheduleKind === "daily") return `每天 ${parsed.time}`;
-  if (parsed.scheduleKind === "weekdays") return `工作日 ${parsed.time}`;
+  if (parsed.scheduleKind === "daily") return t("Daily at {time}", { time: parsed.time });
+  if (parsed.scheduleKind === "weekdays") {
+    return t("Weekdays at {time}", { time: parsed.time });
+  }
   if (parsed.scheduleKind === "weekly") {
-    const label = weekdays.find((item) => item.value === parsed.weekday)?.label ?? "每周";
-    return `${label} ${parsed.time}`;
+    const label = weekdays.value.find((item) => item.value === parsed.weekday)?.label ?? t("Weekly");
+    return t("{day} at {time}", { day: label, time: parsed.time });
   }
   return task.cron;
 }
 
 function nextRunLabel(task: AutomationTask): string {
-  if (!task.enabled) return "已暂停";
-  if (!task.next_run_at) return "等待调度";
+  if (!task.enabled) return t("Paused");
+  if (!task.next_run_at) return t("Waiting to be scheduled");
   const next = new Date(task.next_run_at);
   const delta = next.getTime() - Date.now();
-  if (delta <= 0) return "即将运行";
+  if (delta <= 0) return t("Running soon");
   const minutes = Math.max(1, Math.round(delta / 60000));
-  if (minutes < 60) return `下次运行 ${minutes}分钟后`;
+  if (minutes < 60) return t("Next run in {count} minutes", { count: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `下次运行 ${hours}小时后`;
-  return `下次运行 ${Math.round(hours / 24)}天后`;
+  if (hours < 24) return t("Next run in {count} hours", { count: hours });
+  return t("Next run in {count} days", { count: Math.round(hours / 24) });
 }
 
 function statusClass(task: AutomationTask): string {
@@ -234,7 +238,7 @@ async function save() {
   const input = buildInput();
   error.value = "";
   if (!input.name || !input.prompt || !input.cron) {
-    error.value = "请填写任务名称、指令和执行时间";
+    error.value = t("Enter a task name, instructions, and execution time");
     return;
   }
   saving.value = true;
@@ -303,19 +307,19 @@ onMounted(() => {
   <div class="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col px-6 pb-8 pt-12">
     <header class="flex items-start justify-between gap-4">
       <div>
-        <h1 class="text-3xl font-medium">自动化</h1>
-        <p class="mt-2 text-sm text-muted-foreground">让 Foya 按计划执行任务、生成报告或检查更新</p>
+        <h1 class="text-3xl font-medium">{{ $t("Automations") }}</h1>
+        <p class="mt-2 text-sm text-muted-foreground">{{ $t("Schedule Foya to run tasks, generate reports, or check for updates") }}</p>
       </div>
       <Button @click="openCreate">
         <PlusIcon class="size-4" />
-        创建
+        {{ $t("Create") }}
         <ChevronDownIcon class="size-3.5" />
       </Button>
     </header>
 
     <div class="relative mt-7">
       <SearchIcon class="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      <Input v-model="query" class="h-10 rounded-full pl-9" placeholder="搜索自动化任务" />
+      <Input v-model="query" class="h-10 rounded-full pl-9" :placeholder="$t('Search automations')" />
     </div>
 
     <div class="mt-5 flex items-center gap-1">
@@ -355,7 +359,7 @@ onMounted(() => {
           size="icon-sm"
           class="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
           :disabled="task.last_status === 'running'"
-          title="立即运行"
+          :title="$t('Run now')"
           @click.stop="runNow(task)"
         >
           <PlayIcon class="size-4" />
@@ -368,7 +372,7 @@ onMounted(() => {
       >
         <CalendarClockIcon class="size-6 text-muted-foreground/60" />
         <p class="text-sm text-muted-foreground">
-          {{ tasks.length === 0 ? "暂无已安排任务" : "没有匹配的任务" }}
+          {{ tasks.length === 0 ? $t("No scheduled tasks") : $t("No matching tasks") }}
         </p>
       </div>
     </div>
@@ -377,41 +381,41 @@ onMounted(() => {
     <Dialog v-model:open="editorOpen">
       <DialogScrollContent class="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{{ draft.id ? "编辑任务" : "创建任务" }}</DialogTitle>
+          <DialogTitle>{{ draft.id ? $t("Edit task") : $t("Create task") }}</DialogTitle>
         </DialogHeader>
 
         <div class="space-y-5 py-2">
           <div class="space-y-1.5">
-            <Label for="automation-name">名称</Label>
-            <Input id="automation-name" v-model="draft.name" placeholder="每日简报" />
+            <Label for="automation-name">{{ $t("Name") }}</Label>
+            <Input id="automation-name" v-model="draft.name" :placeholder="$t('Daily briefing')" />
           </div>
           <div class="space-y-1.5">
-            <Label for="automation-prompt">指令</Label>
+            <Label for="automation-prompt">{{ $t("Instructions") }}</Label>
             <Textarea
               id="automation-prompt"
               v-model="draft.prompt"
               class="min-h-28 resize-y"
-              placeholder="整理今天需要关注的项目进展并给出摘要"
+              :placeholder="$t('Summarize the project updates that need attention today')"
             />
           </div>
 
           <div class="grid gap-4 sm:grid-cols-3">
             <div class="space-y-1.5">
-              <Label for="automation-frequency">频率</Label>
+              <Label for="automation-frequency">{{ $t("Frequency") }}</Label>
               <Select :model-value="draft.scheduleKind" @update:model-value="selectScheduleKind">
                 <SelectTrigger id="automation-frequency" class="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="daily">每天</SelectItem>
-                  <SelectItem value="weekdays">工作日</SelectItem>
-                  <SelectItem value="weekly">每周</SelectItem>
+                  <SelectItem value="daily">{{ $t("Daily") }}</SelectItem>
+                  <SelectItem value="weekdays">{{ $t("Weekdays") }}</SelectItem>
+                  <SelectItem value="weekly">{{ $t("Weekly") }}</SelectItem>
                   <SelectItem value="custom">Cron</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div v-if="draft.scheduleKind === 'weekly'" class="space-y-1.5">
-              <Label for="automation-weekday">星期</Label>
+              <Label for="automation-weekday">{{ $t("Weekday") }}</Label>
               <Select v-model="draft.weekday">
                 <SelectTrigger id="automation-weekday" class="w-full">
                   <SelectValue />
@@ -428,27 +432,27 @@ onMounted(() => {
               </Select>
             </div>
             <div v-if="draft.scheduleKind !== 'custom'" class="space-y-1.5">
-              <Label for="automation-time">时间</Label>
+              <Label for="automation-time">{{ $t("Time") }}</Label>
               <Input id="automation-time" v-model="draft.time" type="time" />
             </div>
             <div v-else class="space-y-1.5 sm:col-span-2">
-              <Label for="automation-cron">Cron 表达式</Label>
+              <Label for="automation-cron">{{ $t("Cron expression") }}</Label>
               <Input id="automation-cron" v-model="draft.cron" class="font-mono" placeholder="0 9 * * 1-5" />
             </div>
           </div>
 
           <div class="grid gap-4 sm:grid-cols-2">
             <div class="space-y-1.5">
-              <Label for="automation-connection">语言模型连接</Label>
+              <Label for="automation-connection">{{ $t("Language model connection") }}</Label>
               <Select
                 :model-value="draft.connectionID || '__default__'"
                 @update:model-value="selectConnection"
               >
                 <SelectTrigger id="automation-connection" class="w-full">
-                  <SelectValue placeholder="默认语言模型" />
+                  <SelectValue :placeholder="$t('Default language model')" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__default__">默认语言模型</SelectItem>
+                  <SelectItem value="__default__">{{ $t("Default language model") }}</SelectItem>
                   <SelectItem
                     v-for="connection in languageConnections"
                     :key="connection.id"
@@ -460,20 +464,20 @@ onMounted(() => {
               </Select>
             </div>
             <div class="space-y-1.5">
-              <Label for="automation-model">模型</Label>
-              <Input id="automation-model" v-model="draft.model" class="font-mono" placeholder="默认模型" />
+              <Label for="automation-model">{{ $t("Model") }}</Label>
+              <Input id="automation-model" v-model="draft.model" class="font-mono" :placeholder="$t('Default model')" />
             </div>
             <div class="space-y-1.5">
-              <Label for="automation-project">工作项目</Label>
+              <Label for="automation-project">{{ $t("Working project") }}</Label>
               <Select
                 :model-value="draft.projectID || '__none__'"
                 @update:model-value="selectProject"
               >
                 <SelectTrigger id="automation-project" class="w-full">
-                  <SelectValue placeholder="不绑定项目" />
+                  <SelectValue :placeholder="$t('No project')" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__none__">不绑定项目</SelectItem>
+                  <SelectItem value="__none__">{{ $t("No project") }}</SelectItem>
                   <SelectItem v-for="project in projects" :key="project.id" :value="project.id">
                     {{ project.name }}
                   </SelectItem>
@@ -481,7 +485,7 @@ onMounted(() => {
               </Select>
             </div>
             <div class="space-y-1.5">
-              <Label>工具审批</Label>
+              <Label>{{ $t("Tool approval") }}</Label>
               <ButtonGroup class="w-full">
                 <Button
                   class="flex-1 shadow-none"
@@ -490,7 +494,7 @@ onMounted(() => {
                   :class="draft.approvalMode === 'auto' && 'bg-accent'"
                   @click="draft.approvalMode = 'auto'"
                 >
-                  自动判断
+                  {{ $t("Automatic") }}
                 </Button>
                 <Button
                   class="flex-1 shadow-none"
@@ -499,17 +503,17 @@ onMounted(() => {
                   :class="draft.approvalMode === 'full_access' && 'bg-accent'"
                   @click="draft.approvalMode = 'full_access'"
                 >
-                  完全访问
+                  {{ $t("Full access") }}
                 </Button>
               </ButtonGroup>
             </div>
           </div>
 
           <label class="flex items-center justify-between py-1">
-            <span class="text-sm font-medium">启用任务</span>
+            <span class="text-sm font-medium">{{ $t("Enable task") }}</span>
             <Checkbox
               :model-value="draft.enabled"
-              aria-label="启用任务"
+              :aria-label="$t('Enable task')"
               @update:model-value="draft.enabled = $event === true"
             />
           </label>
@@ -524,13 +528,13 @@ onMounted(() => {
             @click="deleteConfirmOpen = true"
           >
             <Trash2Icon class="size-4" />
-            删除
+            {{ $t("Delete") }}
           </Button>
           <span v-else />
           <div class="flex gap-2">
-            <Button variant="outline" @click="editorOpen = false">取消</Button>
+            <Button variant="outline" @click="editorOpen = false">{{ $t("Cancel") }}</Button>
             <Button :disabled="saving" @click="save">
-              {{ saving ? "保存中..." : "保存" }}
+              {{ saving ? $t("Saving") : $t("Save") }}
             </Button>
           </div>
         </DialogFooter>
@@ -540,15 +544,15 @@ onMounted(() => {
     <Dialog v-model:open="deleteConfirmOpen">
       <DialogScrollContent class="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>删除“{{ draft.name }}”？</DialogTitle>
+          <DialogTitle>{{ $t("Delete {name}?", { name: draft.name }) }}</DialogTitle>
         </DialogHeader>
-        <p class="text-sm text-muted-foreground">任务将停止调度，已有运行会话会保留。</p>
+        <p class="text-sm text-muted-foreground">{{ $t("The task will stop being scheduled. Existing run chats will remain.") }}</p>
         <DialogFooter>
           <Button variant="outline" :disabled="deleting" @click="deleteConfirmOpen = false">
-            取消
+            {{ $t("Cancel") }}
           </Button>
           <Button variant="destructive" :disabled="deleting" @click="remove">
-            {{ deleting ? "删除中..." : "删除" }}
+            {{ deleting ? $t("Deleting") : $t("Delete") }}
           </Button>
         </DialogFooter>
       </DialogScrollContent>

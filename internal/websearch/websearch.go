@@ -107,7 +107,7 @@ func (m *Manager) Update(next Settings) error {
 			item.Name = map[string]string{
 				"google_cse": "Google",
 				"bing":       "Bing",
-				"baidu":      "百度",
+				"baidu":      "Baidu",
 			}[item.Kind]
 		}
 		if item.APIKey == "" {

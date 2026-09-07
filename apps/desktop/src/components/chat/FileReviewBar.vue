@@ -54,7 +54,7 @@ function directory(path: string) {
         <button
           type="button"
           class="flex min-w-0 flex-1 items-center gap-2 text-left"
-          :title="`查看 ${file.path} 的变更`"
+          :title="$t('View changes for {path}', { path: file.path })"
           @click="emit('open-file', file.path, file.diff)"
         >
           <FilePenLineIcon class="size-4 shrink-0 text-muted-foreground" />
@@ -87,13 +87,13 @@ function directory(path: string) {
               <Checkbox
                 :model-value="isForced(file.key)"
                 :disabled="actionDisabled"
-                :aria-label="isForced(file.key) ? '取消强制撤销' : '强制撤销此文件'"
+                :aria-label="isForced(file.key) ? $t('Cancel forced undo') : $t('Force undo this file')"
                 @update:model-value="emit('toggle-force', file.key)"
               />
             </label>
           </TooltipTrigger>
           <TooltipContent side="left">
-            {{ isForced(file.key) ? "将强制撤销" : "文件已修改，默认保留" }}
+            {{ isForced(file.key) ? $t("Will force undo") : $t("File changed; keep by default") }}
           </TooltipContent>
         </Tooltip>
 
@@ -104,13 +104,13 @@ function directory(path: string) {
               size="icon-xs"
               variant="ghost"
               class="text-muted-foreground"
-              :aria-label="`在工作区查看 ${file.path} 的变更`"
+              :aria-label="$t('View changes for {path} in workspace', { path: file.path })"
               @click="emit('open-file', file.path, file.diff)"
             >
               <ChevronRightIcon class="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="left">在工作区查看变更</TooltipContent>
+          <TooltipContent side="left">{{ $t("View changes in workspace") }}</TooltipContent>
         </Tooltip>
       </div>
     </div>

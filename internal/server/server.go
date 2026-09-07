@@ -1,7 +1,6 @@
-// Package server 暴露内核的 REST + SSE 接口。
+// Package server exposes the kernel through REST and SSE.
 //
-// 指令走 REST,事件流走 SSE。传输管道由 config 决定(本地 Unix socket /
-// 远端 TCP+TLS),协议不变。
+// Commands use REST and events use SSE over the configured local or remote transport.
 package server
 
 import (
@@ -44,7 +43,7 @@ import (
 	"github.com/freesoulcode/foya/internal/workflow"
 )
 
-// Server 承载 REST + SSE 路由。
+// Server hosts REST and SSE routes.
 type Server struct {
 	cfg         config.Config
 	backend     *backend.Backend
@@ -73,7 +72,7 @@ type AutomationManager interface {
 	RunNow(string) (automation.Task, error)
 }
 
-// New 组装一个 Server。
+// New creates a Server.
 func New(cfg config.Config, be *backend.Backend) *Server {
 	s := &Server{cfg: cfg, backend: be, mux: http.NewServeMux()}
 	s.routes()
@@ -260,6 +259,7 @@ type commandCreateRequest struct {
 	Scope     command.Scope `json:"scope"`
 	ProjectID string        `json:"project_id,omitempty"`
 	Name      string        `json:"name"`
+	Body      string        `json:"body,omitempty"`
 }
 
 type commandUpdateRequest struct {
@@ -293,6 +293,7 @@ func (s *Server) handleCreateCommand(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.backend.CreateCommand(r.Context(), command.CreateInput{
 		Scope: input.Scope, ProjectID: input.ProjectID, Name: input.Name,
+		Body: input.Body,
 	})
 	if err != nil {
 		writeCommandErr(w, err)
@@ -714,8 +715,9 @@ func (s *Server) handleGetFeishuBot(w http.ResponseWriter, _ *http.Request) {
 	items := s.channels.List()
 	if len(items) == 0 {
 		writeJSON(w, http.StatusOK, feishu.State{
-			Kind: "feishu", Name: "飞书 Bot", ApprovalMode: approvalpkg.ModeAuto,
-			Status: feishu.StatusStopped,
+			Kind: "feishu", Name: "Feishu Bot", Locale: "zh-CN",
+			ApprovalMode: approvalpkg.ModeAuto,
+			Status:       feishu.StatusStopped,
 		})
 		return
 	}
@@ -735,7 +737,7 @@ func (s *Server) handleUpdateFeishuBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Name == "" {
-		input.Name = "飞书 Bot"
+		input.Name = "Feishu Bot"
 	}
 	items := s.channels.List()
 	var (
@@ -1599,7 +1601,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleCreateSession 新建会话。模型由调用方显式指定。
+// handleCreateSession creates a chat with a client-selected model.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req protocol.CreateSessionRequest
 	decoder := json.NewDecoder(r.Body)
@@ -1676,8 +1678,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
-// handleUpdateSession 局部更新会话可变字段(模型/项目/审批档位/标题),
-// 供会话进行中实时切换审批档位、手动改名等场景。更新对后续工具调用立即生效。
+// handleUpdateSession updates mutable chat settings for subsequent operations.
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req protocol.UpdateSessionRequest
@@ -1688,7 +1689,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 手动改名走 RenameSession(置 TitleIsManual 并广播)。
+	// Manual renames set TitleIsManual and are broadcast.
 	if req.Title != nil {
 		if _, err := s.backend.RenameSession(r.Context(), id, *req.Title); err != nil {
 			if errors.Is(err, session.ErrNotFound) {
@@ -1700,7 +1701,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 置顶/取消置顶走 PinSession(单独记录 PinnedAt 并广播)。
+	// Pin changes record PinnedAt and are broadcast.
 	if req.Pinned != nil {
 		if _, err := s.backend.PinSession(r.Context(), id, *req.Pinned); err != nil {
 			if errors.Is(err, session.ErrNotFound) {
@@ -1712,7 +1713,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 其余字段走局部更新;无字段时直接返回当前会话。
+	// Return the current chat directly when no other fields changed.
 	sess, err := s.backend.UpdateSession(
 		r.Context(),
 		id,
@@ -2167,8 +2168,7 @@ func writeCanvasErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// handleDeleteSession 删除会话:中断正在跑的回合、清除元数据与事件日志,
-// 并广播 session_deleted 让所有已连接客户端移除该会话。
+// handleDeleteSession cancels active work, removes data, and broadcasts deletion.
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.backend.DeleteSession(r.Context(), id); err != nil {
@@ -2182,7 +2182,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleListSessions 列出会话。
+// handleListSessions lists chats.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.backend.ListSessions())
 }
@@ -2200,7 +2200,7 @@ func (s *Server) handleChildSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// handleHistory 返回某会话的对话历史(从事件日志投影)。
+// handleHistory returns chat history projected from the event log.
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	msgs, err := s.backend.History(r.Context(), id)
@@ -2285,7 +2285,7 @@ func (s *Server) handleDeleteArtifact(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleUsage 返回会话最近一次模型请求的 token 使用情况。
+// handleUsage returns token usage for the latest model request.
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	usage, err := s.backend.Usage(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -2399,8 +2399,7 @@ func (s *Server) handleResolveFileReview(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
-// handleSubmitTurn 原子提交消息:空闲时立即启动,运行时进入 FIFO 队列。
-// Backend 自己持有后台 runner,请求返回不影响回合生命周期。
+// handleSubmitTurn atomically starts or queues a message.
 func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req protocol.SubmitTurnRequest
@@ -2525,7 +2524,7 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCancelTurn 取消该会话当前正在运行的回合(用户点停止)。
+// handleCancelTurn stops the active turn for a chat.
 func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.backend.CancelTurn(id)
@@ -2717,7 +2716,7 @@ func (s *Server) handleDispatchQueuedMessage(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, item)
 }
 
-// handleResolveApproval 接收客户端的审批决策(批准/拒绝)。
+// handleResolveApproval applies a client approval decision.
 func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 	requestID := r.PathValue("request_id")
 	var req protocol.ApprovalDecisionRequest
@@ -2875,7 +2874,7 @@ func (s *Server) handleTerminalEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleEvents 以 SSE 推送某会话的事件流。
+// handleEvents streams chat events over SSE.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	flusher, ok := w.(http.Flusher)
@@ -2889,7 +2888,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	ch := s.backend.Subscribe(ctx, id)
-	flusher.Flush() // 立即回响应头,让客户端确认订阅就绪
+	flusher.Flush() // Flush headers so the client knows the subscription is ready.
 
 	for {
 		select {
@@ -2900,7 +2899,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			data, _ := json.Marshal(ev)
-			// SSE 帧:id 用事件序号(支持 Last-Event-ID 补发)。
+			// Event sequence numbers support Last-Event-ID replay.
 			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.Seq, ev.Kind, data)
 			flusher.Flush()
 		}
@@ -2946,5 +2945,5 @@ func writeTerminalErr(w http.ResponseWriter, err error) {
 	}
 }
 
-// Handler 返回 http.Handler,便于挂到任意监听器(Unix socket / TCP)。
+// Handler returns the HTTP handler for any configured listener.
 func (s *Server) Handler() http.Handler { return s.mux }

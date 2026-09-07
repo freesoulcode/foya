@@ -67,6 +67,7 @@ type CreateInput struct {
 	Scope     Scope
 	ProjectID string
 	Name      string
+	Body      string
 }
 
 type UpdateInput struct {
@@ -104,15 +105,15 @@ func Builtins() []Command {
 	return []Command{
 		{
 			Ref: "builtin:plan", Name: "plan", Scope: ScopeBuiltin, Kind: KindWorkflow, Builtin: true,
-			Description: "启动 Plan 工作流",
+			Description: "Start a Plan workflow",
 		},
 		{
 			Ref: "builtin:spec", Name: "spec", Scope: ScopeBuiltin, Kind: KindWorkflow, Builtin: true,
-			Description: "启动 Spec 工作流",
+			Description: "Start a Spec workflow",
 		},
 		{
 			Ref: "builtin:goal", Name: "goal", Scope: ScopeBuiltin, Kind: KindWorkflow, Builtin: true,
-			Description: "启动 Goal 工作流",
+			Description: "Start a Goal workflow",
 		},
 	}
 }
@@ -197,7 +198,10 @@ func (m *Manager) Create(ctx context.Context, input CreateInput, projectPath str
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return Command{}, err
 	}
-	body := "在此定义触发命令时 AI 应执行的具体操作。"
+	body := strings.TrimSpace(input.Body)
+	if body == "" {
+		body = "Define what the AI should do when this command is triggered."
+	}
 	data := render(name, "", body)
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		return Command{}, err
@@ -289,7 +293,7 @@ func Expand(body, args string) string {
 		replaced = strings.ReplaceAll(replaced, marker, args)
 	}
 	if args != "" && replaced == body {
-		replaced += "\n\n用户补充参数：\n" + args
+		replaced += "\n\nAdditional user arguments:\n" + args
 	}
 	return strings.TrimSpace(replaced)
 }

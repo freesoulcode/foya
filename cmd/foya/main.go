@@ -1,8 +1,7 @@
-// Command foya 是内核入口:默认启动常驻内核 daemon,exec 子命令用于
-// 无头一次性执行(供 CLI / 外部 harness 调用)。
+// Command foya is the kernel entry point. It starts the daemon by default and
+// provides exec for one-shot headless runs.
 //
-// daemon 启动 HTTP server,本地默认监听 Unix domain socket
-// (私有目录 + 0600,靠 OS 权限做单用户信任);exec 执行一次性无头任务。
+// The daemon serves HTTP over a private Unix domain socket by default.
 package main
 
 import (
@@ -69,7 +68,7 @@ func main() {
 	runDaemon()
 }
 
-// runDaemon 启动常驻内核。
+// runDaemon starts the persistent kernel process.
 func runDaemon() {
 	cfg := config.Default()
 	app, err := kernel.New(cfg)
@@ -126,7 +125,7 @@ func runDaemon() {
 	}
 }
 
-// listen 按配置创建监听器。本地默认 Unix domain socket。
+// listen creates the configured transport listener.
 func listen(cfg config.Config) (net.Listener, string, error) {
 	switch cfg.Transport {
 	case config.TransportTCP:
@@ -137,15 +136,14 @@ func listen(cfg config.Config) (net.Listener, string, error) {
 	}
 }
 
-// listenUnix 在私有目录下创建 Unix domain socket。
-// 目录 0700、socket 0600,构成单用户信任边界。
+// listenUnix creates a Unix domain socket in a private directory.
 func listenUnix(path string) (net.Listener, string, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("create socket dir: %w", err)
 	}
-	// 只清理无进程监听的残留 socket。直接删除活跃 socket 会让多个内核
-	// 同时修改同一份持久化数据，且新客户端可能继续连到旧版本。
+	// Remove only stale sockets. Deleting an active socket could let multiple
+	// kernels mutate the same persistent state.
 	if _, err := os.Lstat(path); err == nil {
 		conn, dialErr := net.DialTimeout("unix", path, 200*time.Millisecond)
 		if dialErr == nil {
@@ -178,7 +176,7 @@ func newApp() *kernel.App {
 	return app
 }
 
-// runExec 无头执行一次性任务。
+// runExec performs one headless task.
 func runExec(args []string) {
 	flags := flag.NewFlagSet("foya exec", flag.ExitOnError)
 	projectID := flags.String("project", "", "project id")
@@ -289,7 +287,7 @@ func runBot(args []string) {
 	defer app.Close()
 
 	channelInput := feishu.UpdateInput{
-		Name:         "飞书 Bot",
+		Name:         "Feishu Bot",
 		Enabled:      true,
 		ConnectionID: *connectionID,
 		Model:        *model,

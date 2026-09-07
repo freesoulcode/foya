@@ -63,7 +63,7 @@ func TestForkSessionCopiesActiveHistoryAndArtifactsWithoutUsage(t *testing.T) {
 	if forked.ID == sourceID {
 		t.Fatal("fork reused source session id")
 	}
-	if forked.Title != "新对话 副本" {
+	if forked.Title != "New chat copy" {
 		t.Fatalf("fork title = %q", forked.Title)
 	}
 	if forked.ConnectionID == "" || forked.Model != "test-model" || forked.ApprovalMode != "manual" {

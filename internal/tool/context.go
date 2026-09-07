@@ -6,7 +6,7 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 )
 
-// ctxKey 是工具相关上下文值的键类型。
+// ctxKey identifies tool values stored in a context.
 type ctxKey int
 
 const (
@@ -20,12 +20,12 @@ const (
 	ctxKeyActiveTools
 )
 
-// WithCWD 把执行目录注入上下文(由 engine 设置)。
+// WithCWD stores the engine-selected working directory in a context.
 func WithCWD(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, ctxKeyCWD, dir)
 }
 
-// CWDFromContext 取出工具执行目录。
+// CWDFromContext returns the tool working directory.
 func CWDFromContext(ctx context.Context) string {
 	if d, ok := ctx.Value(ctxKeyCWD).(string); ok {
 		return d
@@ -95,7 +95,7 @@ func ActiveToolFromContext(ctx context.Context, name string) bool {
 	return active[name]
 }
 
-// ModelRuntime 是当前会话回合绑定的模型与 Provider。
+// ModelRuntime identifies the model and provider bound to the current turn.
 type ModelRuntime struct {
 	Provider provider.Provider
 	Model    string

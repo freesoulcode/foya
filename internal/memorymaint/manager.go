@@ -409,7 +409,9 @@ func buildSource(events []event.Event) (string, bool) {
 func containsDurableCue(value string) bool {
 	value = strings.ToLower(value)
 	for _, cue := range []string{
-		"remember", "prefer", "always", "never", "以后", "记住", "偏好", "统一", "约定", "不要",
+		"remember", "prefer", "always", "never",
+		"\u4ee5\u540e", "\u8bb0\u4f4f", "\u504f\u597d",
+		"\u7edf\u4e00", "\u7ea6\u5b9a", "\u4e0d\u8981",
 	} {
 		if strings.Contains(value, cue) {
 			return true

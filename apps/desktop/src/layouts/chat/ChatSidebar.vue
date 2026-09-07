@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -57,11 +58,12 @@ const props = defineProps<{
   isDraft?: boolean;
   automationsActive?: boolean;
   pluginsActive?: boolean;
-  // 正在运行 AI 回合的会话 id 集合,侧边栏据此显示加载动画。
+  // Session IDs with an active AI turn, used to render progress indicators.
   running?: Record<string, boolean>;
   unread?: Record<string, boolean>;
   needsAttention?: Record<string, boolean>;
 }>();
+const { t } = useI18n();
 
 function isRunning(id: string) {
   return !!props.running?.[id];
@@ -93,10 +95,10 @@ const emit = defineEmits<{
 }>();
 
 function title(s: Session) {
-  return s.title || "新对话";
+  return s.title || t("New chat");
 }
 
-// 删除确认:点击删除只是打开应用内 Dialog,确认后才真正发出 delete 事件。
+// Deletion is confirmed in-app before the delete event is emitted.
 const pendingDelete = ref<Session | null>(null);
 const pendingProjectDelete = ref<ProjectGroup | null>(null);
 const pendingProjectRename = ref<ProjectInfo | null>(null);
@@ -142,7 +144,7 @@ async function revealProject(project: ProjectInfo) {
   try {
     await revealItemInDir(project.path);
   } catch (error) {
-    console.error("在访达中打开项目失败:", error);
+    console.error("Failed to reveal project in Finder:", error);
   }
 }
 
@@ -253,43 +255,43 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               <SidebarMenuButton
                 class="no-drag"
                 :is-active="isDraft && !automationsActive && !pluginsActive"
-                tooltip="新建对话"
+                :tooltip="$t('New chat')"
                 @click="emit('new')"
               >
                 <PlusIcon />
-                <span>新建对话</span>
+                <span>{{ $t("New chat") }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 class="no-drag"
-                tooltip="创作工作台"
+                :tooltip="$t('Creative workspace')"
                 @click="emit('open-studio')"
               >
                 <PaletteIcon />
-                <span>创作工作台</span>
+                <span>{{ $t("Creative workspace") }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 class="no-drag"
                 :is-active="automationsActive"
-                tooltip="自动化"
+                :tooltip="$t('Automations')"
                 @click="emit('open-automations')"
               >
                 <Clock3Icon />
-                <span>自动化</span>
+                <span>{{ $t("Automations") }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
                 class="no-drag"
                 :is-active="pluginsActive"
-                tooltip="插件"
+                :tooltip="$t('Plugins')"
                 @click="emit('open-plugins')"
               >
                 <PackageIcon />
-                <span>插件</span>
+                <span>{{ $t("Plugins") }}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -298,7 +300,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
 
       <SidebarGroup v-if="ungroupedSessions.length" class="gap-1 p-2 pt-3">
         <SidebarGroupLabel class="h-6 px-2 text-[11px]">
-          对话
+          {{ $t("Chats") }}
         </SidebarGroupLabel>
         <SidebarGroupContent>
           <SidebarMenu>
@@ -322,7 +324,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
 
       <SidebarGroup v-if="projectGroups.length" class="gap-1 p-2 pt-3">
         <SidebarGroupLabel class="h-6 px-2 text-[11px]">
-          项目
+          {{ $t("Projects") }}
         </SidebarGroupLabel>
         <SidebarGroupContent class="space-y-2">
           <div
@@ -359,15 +361,15 @@ const projectGroups = computed<ProjectGroup[]>(() => {
               <PinIcon
                 v-if="project.project.pinned"
                 class="size-3 shrink-0 text-sidebar-foreground/50"
-                aria-label="已置顶"
+                :aria-label="$t('Pinned')"
               />
               <DropdownMenu>
                 <DropdownMenuTrigger as-child>
                   <button
                     type="button"
                     class="flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground group-hover/project:opacity-100 group-focus-within/project:opacity-100"
-                    :aria-label="`${project.project.name} 项目操作`"
-                    title="项目操作"
+                    :aria-label="$t('Project actions', { project: project.project.name })"
+                    :title="$t('Project actions', { project: project.project.name })"
                   >
                     <EllipsisIcon class="size-3.5" />
                   </button>
@@ -375,7 +377,7 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                 <DropdownMenuContent align="end" class="w-40">
                   <DropdownMenuItem @select="openProjectRename(project.project)">
                     <PencilIcon />
-                    重命名
+                    {{ $t("Rename") }}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     @select="
@@ -388,11 +390,11 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                   >
                     <PinOffIcon v-if="project.project.pinned" />
                     <PinIcon v-else />
-                    {{ project.project.pinned ? "取消置顶" : "置顶" }}
+                    {{ project.project.pinned ? $t("Unpin") : $t("Pin") }}
                   </DropdownMenuItem>
                   <DropdownMenuItem @select="revealProject(project.project)">
                     <FolderOpenIcon />
-                    在访达中打开
+                    {{ $t("Reveal in Finder") }}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -400,15 +402,15 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                     @select="pendingProjectDelete = project"
                   >
                     <Trash2Icon />
-                    删除项目
+                    {{ $t("Delete project") }}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               <button
                 type="button"
                 class="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
-                :title="`在 ${project.project.name} 中新建对话`"
-                :aria-label="`在 ${project.project.name} 中新建对话`"
+                :title="$t('Create chat in project', { project: project.project.name })"
+                :aria-label="$t('Create chat in project', { project: project.project.name })"
                 @click="newProjectSession(project.project.id)"
               >
                 <PlusIcon class="size-3.5" />
@@ -443,16 +445,16 @@ const projectGroups = computed<ProjectGroup[]>(() => {
         v-if="sessions.length === 0"
         class="px-4 py-6 text-center text-xs text-muted-foreground"
       >
-        暂无对话
+        {{ $t("No chats") }}
       </p>
     </SidebarContent>
 
     <SidebarFooter class="p-2">
       <SidebarMenu>
         <SidebarMenuItem>
-          <SidebarMenuButton class="no-drag" tooltip="设置" @click="emit('open-settings')">
+          <SidebarMenuButton class="no-drag" :tooltip="$t('Settings')" @click="emit('open-settings')">
             <SettingsIcon />
-            <span>设置</span>
+            <span>{{ $t("Settings") }}</span>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
@@ -467,15 +469,15 @@ const projectGroups = computed<ProjectGroup[]>(() => {
       <DialogHeader>
         <div class="flex items-center gap-2">
           <Trash2Icon class="size-5 text-destructive" />
-          <DialogTitle>删除对话</DialogTitle>
+          <DialogTitle>{{ $t("Delete chat") }}</DialogTitle>
         </div>
         <DialogDescription>
-          确定删除对话「{{ pendingDelete ? title(pendingDelete) : "" }}」吗？此操作不可撤销。
+          {{ $t("Delete chat confirmation", { title: pendingDelete ? title(pendingDelete) : "" }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter class="gap-2">
-        <Button variant="outline" @click="closeDeleteDialog">取消</Button>
-        <Button variant="destructive" @click="confirmDelete">删除</Button>
+        <Button variant="outline" @click="closeDeleteDialog">{{ $t("Cancel") }}</Button>
+        <Button variant="destructive" @click="confirmDelete">{{ $t("Delete") }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
@@ -488,15 +490,15 @@ const projectGroups = computed<ProjectGroup[]>(() => {
       <DialogHeader>
         <div class="flex items-center gap-2">
           <Trash2Icon class="size-5 text-destructive" />
-          <DialogTitle>删除项目</DialogTitle>
+          <DialogTitle>{{ $t("Delete project") }}</DialogTitle>
         </div>
         <DialogDescription>
-          「{{ pendingProjectDelete?.project.name }}」及其关联对话、历史和附件将从 Foya 永久删除，磁盘文件不会被删除。
+          {{ $t("Delete project confirmation", { project: pendingProjectDelete?.project.name ?? "" }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter class="gap-2">
-        <Button variant="outline" @click="pendingProjectDelete = null">取消</Button>
-        <Button variant="destructive" @click="confirmProjectDelete">删除</Button>
+        <Button variant="outline" @click="pendingProjectDelete = null">{{ $t("Cancel") }}</Button>
+        <Button variant="destructive" @click="confirmProjectDelete">{{ $t("Delete") }}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
@@ -507,17 +509,17 @@ const projectGroups = computed<ProjectGroup[]>(() => {
   >
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>重命名项目</DialogTitle>
+        <DialogTitle>{{ $t("Rename project") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          修改项目显示名称
+          {{ $t("Change the project display name") }}
         </DialogDescription>
       </DialogHeader>
       <form class="space-y-4" @submit.prevent="confirmProjectRename">
         <Input
           v-model="projectRename"
           autofocus
-          aria-label="项目名称"
-          placeholder="项目名称"
+          :aria-label="$t('Project name')"
+          :placeholder="$t('Project name')"
         />
         <DialogFooter class="gap-2">
           <Button
@@ -525,10 +527,10 @@ const projectGroups = computed<ProjectGroup[]>(() => {
             variant="outline"
             @click="pendingProjectRename = null"
           >
-            取消
+            {{ $t("Cancel") }}
           </Button>
           <Button type="submit" :disabled="!projectRename.trim()">
-            保存
+            {{ $t("Save") }}
           </Button>
         </DialogFooter>
       </form>

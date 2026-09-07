@@ -6,6 +6,7 @@ import {
   ref,
   watch,
 } from "vue";
+import { useI18n } from "vue-i18n";
 import { useEventListener } from "@vueuse/core";
 import {
   AlertCircleIcon,
@@ -66,6 +67,7 @@ const props = defineProps<{
   diff?: string;
   messages: ChatMessage[];
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "select", path: string): void;
@@ -151,13 +153,13 @@ const selectedEntry = computed(() =>
 );
 
 const editTitle = computed(() => {
-  if (editKind.value === "create-file") return "新建文件";
-  if (editKind.value === "create-directory") return "新建文件夹";
-  return "重命名";
+  if (editKind.value === "create-file") return t("New file");
+  if (editKind.value === "create-directory") return t("New folder");
+  return t("Rename");
 });
 
 const editLabel = computed(() =>
-  editKind.value === "rename" ? "新名称" : "名称"
+  editKind.value === "rename" ? t("New name") : t("Name")
 );
 
 const editLocation = computed(() => {
@@ -361,8 +363,8 @@ function replacePathPrefix(
 }
 
 function validateName(name: string): string | undefined {
-  if (!name || name === "." || name === "..") return "请输入有效名称";
-  if (/[\\/]/.test(name)) return "名称不能包含路径分隔符";
+  if (!name || name === "." || name === "..") return t("Enter a valid name");
+  if (/[\\/]/.test(name)) return t("Name cannot contain path separators");
   return undefined;
 }
 
@@ -462,7 +464,7 @@ function copyText(text: string): Promise<void> {
   textarea.select();
   const copied = document.execCommand("copy");
   textarea.remove();
-  return copied ? Promise.resolve() : Promise.reject(new Error("复制失败"));
+  return copied ? Promise.resolve() : Promise.reject(new Error("Copy failed"));
 }
 
 async function copyEntryPath(entry = selectedEntry.value) {
@@ -474,7 +476,7 @@ async function copyEntryPath(entry = selectedEntry.value) {
       entry?.path ?? ""
     );
     await copyText(path);
-    showNotice("已复制路径");
+    showNotice(t("Path copied"));
   } catch (cause) {
     treeError.value = String(cause);
   }
@@ -505,10 +507,10 @@ async function onMarkdownClick(event: MouseEvent) {
   if (code == null) return;
   try {
     await copyText(code);
-    button.textContent = "已复制";
+    button.textContent = t("Copied");
     button.classList.add("is-copied");
     setTimeout(() => {
-      button.textContent = "复制";
+      button.textContent = t("Copy");
       button.classList.remove("is-copied");
     }, 1500);
   } catch (cause) {
@@ -626,7 +628,11 @@ async function replaceProjectWatcher(projectPath: string) {
       ) {
         return;
       }
-      if (event.error) treeError.value = `文件监听失败：${event.error}`;
+      if (event.error) {
+        treeError.value = t("File watcher failed: {error}", {
+          error: event.error,
+        });
+      }
       scheduleFilesystemRefresh(
         event.paths,
         event.tree_changed,
@@ -643,7 +649,9 @@ async function replaceProjectWatcher(projectPath: string) {
     projectWatchID = watchID;
   } catch (cause) {
     if (generation === projectWatchGeneration) {
-      treeError.value = `无法监听项目文件：${String(cause)}`;
+      treeError.value = t("Unable to watch project files: {error}", {
+        error: String(cause),
+      });
     }
   }
 }
@@ -708,8 +716,8 @@ onBeforeUnmount(() => {
         size="icon"
         variant="ghost"
         class="absolute right-1.5 top-1.5 z-20 size-7"
-        title="展开文件列表"
-        aria-label="展开文件列表"
+        :title="$t('Expand file list')"
+        :aria-label="$t('Expand file list')"
         @click="treeOpen = true"
       >
         <FolderTreeIcon class="size-3.5" />
@@ -745,7 +753,7 @@ onBeforeUnmount(() => {
               emit('update:selected-mode', mode);
             "
           >
-            {{ mode === "file" ? "文件" : "变更" }}
+            {{ mode === "file" ? $t("File") : $t("Changes") }}
           </button>
         </div>
       </div>
@@ -754,7 +762,7 @@ onBeforeUnmount(() => {
         v-if="!selectedPath"
         class="flex min-h-0 flex-1 items-center justify-center px-8 text-center text-sm text-muted-foreground"
       >
-        从文件列表选择文件进行预览
+        {{ $t("Select a file from the list to preview it") }}
       </div>
 
       <div
@@ -816,13 +824,13 @@ onBeforeUnmount(() => {
         !treeResizing && 'transition-[width] duration-150',
       ]"
       :style="{ width: `${treeWidth}px` }"
-      aria-label="项目文件"
+      :aria-label="$t('Project files')"
     >
       <button
         type="button"
         class="absolute -left-1 top-0 z-30 h-full w-2 cursor-col-resize touch-none"
-        aria-label="调整文件列表宽度"
-        title="拖动调整文件列表宽度，双击恢复默认"
+        :aria-label="$t('Resize file list')"
+        :title="$t('Drag to resize the file list; double-click to reset')"
         @pointerdown="startTreeResize"
         @dblclick="resetTreeWidth"
       >
@@ -836,8 +844,8 @@ onBeforeUnmount(() => {
           size="icon"
           variant="ghost"
           class="size-7"
-          title="新建文件"
-          aria-label="新建文件"
+          :title="$t('New file')"
+          :aria-label="$t('New file')"
           @click="openCreateDialog('create-file')"
         >
           <FilePlus2Icon class="size-3.5" />
@@ -846,8 +854,8 @@ onBeforeUnmount(() => {
           size="icon"
           variant="ghost"
           class="size-7"
-          title="新建文件夹"
-          aria-label="新建文件夹"
+          :title="$t('New folder')"
+          :aria-label="$t('New folder')"
           @click="openCreateDialog('create-directory')"
         >
           <FolderPlusIcon class="size-3.5" />
@@ -856,8 +864,8 @@ onBeforeUnmount(() => {
           size="icon"
           variant="ghost"
           class="size-7"
-          title="收起文件列表"
-          aria-label="收起文件列表"
+          :title="$t('Collapse file list')"
+          :aria-label="$t('Collapse file list')"
           @click="treeOpen = false"
         >
           <FolderTreeIcon class="size-3.5" />
@@ -869,7 +877,7 @@ onBeforeUnmount(() => {
         <Input
           v-model="query"
           class="h-7 pl-7 text-xs"
-          placeholder="筛选文件"
+          :placeholder="$t('Filter files')"
         />
       </div>
 
@@ -921,14 +929,14 @@ onBeforeUnmount(() => {
                   @select="openCreateDialog('create-file', entry)"
                 >
                   <FilePlus2Icon class="size-3.5 text-muted-foreground" />
-                  新建文件
+                  {{ $t("New file") }}
                 </ContextMenuItem>
                 <ContextMenuItem
                   :class="menuItemClass"
                   @select="openCreateDialog('create-directory', entry)"
                 >
                   <FolderPlusIcon class="size-3.5 text-muted-foreground" />
-                  新建文件夹
+                  {{ $t("New folder") }}
                 </ContextMenuItem>
                 <ContextMenuSeparator class="my-1 h-px bg-border" />
                 <ContextMenuItem
@@ -936,21 +944,21 @@ onBeforeUnmount(() => {
                   @select="openRenameDialog(entry)"
                 >
                   <PencilIcon class="size-3.5 text-muted-foreground" />
-                  重命名
+                  {{ $t("Rename") }}
                 </ContextMenuItem>
                 <ContextMenuItem
                   :class="menuItemClass"
                   @select="revealEntry(entry)"
                 >
                   <FolderOpenIcon class="size-3.5 text-muted-foreground" />
-                  在 Finder 中打开
+                  {{ $t("Reveal in Finder") }}
                 </ContextMenuItem>
                 <ContextMenuItem
                   :class="menuItemClass"
                   @select="copyEntryPath(entry)"
                 >
                   <CopyIcon class="size-3.5 text-muted-foreground" />
-                  复制路径
+                  {{ $t("Copy path") }}
                 </ContextMenuItem>
                 <ContextMenuSeparator class="my-1 h-px bg-border" />
                 <ContextMenuItem
@@ -958,7 +966,7 @@ onBeforeUnmount(() => {
                   @select="requestDelete(entry)"
                 >
                   <Trash2Icon class="size-3.5" />
-                  删除
+                  {{ $t("Delete") }}
                 </ContextMenuItem>
               </ContextMenuContent>
             </ContextMenuPortal>
@@ -1002,11 +1010,11 @@ onBeforeUnmount(() => {
               :disabled="operating"
               @click="editOpen = false"
             >
-              取消
+              {{ $t("Cancel") }}
             </Button>
             <Button type="submit" :disabled="operating">
               <RefreshCwIcon v-if="operating" class="size-4 animate-spin" />
-              确定
+              {{ $t("Confirm") }}
             </Button>
           </DialogFooter>
         </form>
@@ -1017,10 +1025,10 @@ onBeforeUnmount(() => {
       <DialogContent class="gap-4 sm:max-w-sm" :show-close-button="!operating">
         <DialogHeader>
           <DialogTitle>
-            删除{{ deleteTarget?.is_dir ? "文件夹" : "文件" }}
+            {{ deleteTarget?.is_dir ? $t("Delete folder") : $t("Delete file") }}
           </DialogTitle>
           <DialogDescription>
-            “{{ deleteTarget?.path }}”将被永久删除，此操作无法撤销。
+            {{ $t("Permanent delete confirmation", { path: deleteTarget?.path ?? "" }) }}
           </DialogDescription>
         </DialogHeader>
         <p v-if="deleteError" class="text-xs text-destructive">
@@ -1033,7 +1041,7 @@ onBeforeUnmount(() => {
             :disabled="operating"
             @click="deleteOpen = false"
           >
-            取消
+            {{ $t("Cancel") }}
           </Button>
           <Button
             type="button"
@@ -1042,7 +1050,7 @@ onBeforeUnmount(() => {
             @click="confirmDelete"
           >
             <RefreshCwIcon v-if="operating" class="size-4 animate-spin" />
-            删除
+            {{ $t("Delete") }}
           </Button>
         </DialogFooter>
       </DialogContent>

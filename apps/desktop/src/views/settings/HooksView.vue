@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { RefreshCwIcon } from "@lucide/vue";
 import { api, type HookConfig, type ProjectInfo } from "@/lib/api";
 import { useCurrentProjectId } from "@/composables/useCurrentProjectId";
@@ -17,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 
 const currentProjectId = useCurrentProjectId();
+const { t } = useI18n();
 
 type Scope = "global" | "project";
 
@@ -34,7 +36,7 @@ const selectedProject = computed(
 const projectPath = computed(() =>
   selectedProject.value
     ? `${selectedProject.value.path}/.foya/hooks.json`
-    : "选择项目后显示"
+    : t("Select a project to show this")
 );
 
 function formatHooks(items: HookConfig[]): string {
@@ -101,7 +103,7 @@ async function save() {
   try {
     const parsed = JSON.parse(source.value) as unknown;
     if (!Array.isArray(parsed)) {
-      throw new Error("Hooks 配置顶层必须是数组");
+      throw new Error(t("The top level of the Hooks configuration must be an array"));
     }
     hooks = parsed as HookConfig[];
   } catch (cause) {
@@ -110,7 +112,7 @@ async function save() {
   }
 
   if (scope.value === "project" && !projectId.value) {
-    error.value = "请选择项目";
+    error.value = t("Select a project");
     return;
   }
 
@@ -143,7 +145,7 @@ void initialize();
 <template>
   <SettingsPage
     title="Hooks"
-    description="在 Session、请求、工具和回合生命周期中执行本地命令。"
+    :description="$t('Run local commands during session, request, tool, and turn lifecycle events.')"
   >
     <template #actions>
       <Button
@@ -151,8 +153,8 @@ void initialize();
         variant="ghost"
         class="no-drag"
         :disabled="loading || saving"
-        title="刷新 Hooks"
-        aria-label="刷新 Hooks"
+        :title="$t('Refresh Hooks')"
+        :aria-label="$t('Refresh Hooks')"
         @click="loadHooks"
       >
         <RefreshCwIcon class="size-4" :class="loading && 'animate-spin'" />
@@ -160,14 +162,14 @@ void initialize();
     </template>
 
     <div class="mb-5 flex flex-wrap items-center gap-3">
-      <ButtonGroup aria-label="Hooks 范围">
+      <ButtonGroup :aria-label="$t('Hooks scope')">
         <Button
           size="sm"
           :variant="scope === 'global' ? 'default' : 'outline'"
           :disabled="loading || saving"
           @click="selectScope('global')"
         >
-          全局
+          {{ $t("Global") }}
         </Button>
         <Button
           size="sm"
@@ -175,7 +177,7 @@ void initialize();
           :disabled="loading || saving || projects.length === 0"
           @click="selectScope('project')"
         >
-          项目
+          {{ $t("Project") }}
         </Button>
       </ButtonGroup>
 
@@ -186,7 +188,7 @@ void initialize();
         @update:model-value="selectProject"
       >
         <SelectTrigger size="sm" class="min-w-52 max-w-full">
-          <SelectValue placeholder="选择项目" />
+          <SelectValue :placeholder="$t('Select project')" />
         </SelectTrigger>
         <SelectContent>
           <SelectItem
@@ -212,7 +214,7 @@ void initialize();
         spellcheck="false"
       />
       <p class="text-xs text-muted-foreground">
-        支持 Session、请求、工具、审批、子 Agent、压缩和回合完成事件。
+        {{ $t("Supports session, request, tool, approval, sub-agent, compaction, and turn completion events.") }}
       </p>
     </div>
 
@@ -225,7 +227,7 @@ void initialize();
         :disabled="loading || saving || (scope === 'project' && !projectId)"
         @click="save"
       >
-        {{ saving ? "保存中…" : "保存" }}
+        {{ saving ? $t("Saving") : $t("Save") }}
       </Button>
     </div>
   </SettingsPage>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { SaveIcon } from "@lucide/vue";
 import SettingsPage from "@/layouts/settings/SettingsPage.vue";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
 } from "@/lib/api";
 
 const emptyRef = (): ModelRef => ({ connection_id: "", model: "" });
+const { t } = useI18n();
 const defaults = ref<DefaultModels>({
   language: emptyRef(),
   fast: emptyRef(),
@@ -29,6 +31,12 @@ const groups = computed(() => ({
   image: connections.value.filter((item) => item.type === "image" && item.models?.length),
   video: connections.value.filter((item) => item.type === "video" && item.models?.length),
 }));
+const fields = computed(() => [
+  { key: "language", label: t("Default language model"), type: "language" },
+  { key: "fast", label: t("Default fast model"), type: "language" },
+  { key: "image", label: t("Default image model"), type: "image" },
+  { key: "video", label: t("Default video model"), type: "video" },
+] as const);
 
 function encode(refValue: ModelRef) {
   return refValue.connection_id && refValue.model
@@ -73,22 +81,20 @@ onMounted(load);
 </script>
 
 <template>
-  <SettingsPage title="默认模型" description="配置各类工作流使用的全局默认模型。">
+  <SettingsPage
+    :title="$t('Default models')"
+    :description="$t('Configure global default models for each workflow type.')"
+  >
     <template #actions>
       <Button :disabled="loading || saving" @click="save">
         <SaveIcon class="size-4" />
-        {{ saving ? "保存中..." : "保存" }}
+        {{ saving ? $t("Saving") : $t("Save") }}
       </Button>
     </template>
 
     <div class="max-w-3xl divide-y divide-border">
       <section
-        v-for="field in ([
-          { key: 'language', label: '默认语言模型', type: 'language' },
-          { key: 'fast', label: '默认快速模型', type: 'language' },
-          { key: 'image', label: '默认生图模型', type: 'image' },
-          { key: 'video', label: '默认视频模型', type: 'video' },
-        ] as const)"
+        v-for="field in fields"
         :key="field.key"
         class="grid gap-3 py-5 sm:grid-cols-[180px_minmax(0,1fr)] sm:items-center"
       >
@@ -99,10 +105,10 @@ onMounted(load);
           @update:model-value="defaults[field.key] = decode($event)"
         >
           <SelectTrigger class="w-full">
-            <SelectValue placeholder="选择已导入模型" />
+            <SelectValue :placeholder="$t('Select an imported model')" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__none__">未设置</SelectItem>
+            <SelectItem value="__none__">{{ $t("Not set") }}</SelectItem>
             <SelectGroup v-for="connection in groups[field.type]" :key="connection.id">
               <SelectLabel>{{ connection.name }}</SelectLabel>
               <SelectItem

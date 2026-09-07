@@ -1,8 +1,18 @@
-// 内核 API 封装:所有对 Rust 命令的调用集中在此,组件与 composable 只依赖这层。
-import { invoke, Channel } from "@tauri-apps/api/core";
+// Kernel API wrapper. Components and composables depend only on this module.
+import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { localizeError, translate } from "@/i18n";
 
-// 会话元信息(与 Go session.Session 对齐的子集)。
+function invoke<T>(
+  command: string,
+  args?: Parameters<typeof tauriInvoke>[1]
+): Promise<T> {
+  return tauriInvoke<T>(command, args).catch((error) =>
+    Promise.reject(localizeError(error))
+  );
+}
+
+// Session metadata aligned with the public subset of Go session.Session.
 export type TaskStatus = "pending" | "in_progress" | "completed";
 
 export interface SessionTask {
@@ -37,10 +47,10 @@ export interface Session {
   updated_at: string;
 }
 
-// 推理强度与内核 session.ReasoningEffort 对齐。未设置时跟随模型默认值。
+// Reasoning effort aligned with session.ReasoningEffort. Empty uses the provider default.
 export type ReasoningEffort = "" | "low" | "medium" | "high";
 
-// 新建对话时可由用户指定的选项。
+// Options a user can choose before creating a chat.
 export interface CreateSessionOptions {
   connection_id?: string;
   model?: string;
@@ -54,7 +64,7 @@ export interface ForkSessionOptions {
   through_seq?: number;
 }
 
-// 局部更新会话配置(undefined 表示不变)。project_id 绑定后不可更换。
+// Partial session update. Undefined leaves a field unchanged.
 export interface UpdateSessionPatch {
   connection_id?: string;
   model?: string;
@@ -65,7 +75,7 @@ export interface UpdateSessionPatch {
   pinned?: boolean;
 }
 
-// 内核持有的待发送消息。position 为会话队列中的零基位置。
+// Kernel-owned queued message. Position is zero-based.
 export interface QueuedMessage {
   id: string;
   session_id: string;
@@ -386,7 +396,7 @@ export interface ExternalEditor {
   icon_data_url?: string;
 }
 
-// 审批档位(与 Go approval.Mode 对齐)。
+// Approval modes aligned with Go approval.Mode.
 export type ApprovalMode = "manual" | "auto" | "full_access";
 export type ApprovalDecision =
   | "approved"
@@ -421,8 +431,8 @@ export interface QuestionAnswer {
   value: string;
 }
 
-// 对话消息(与 Go message.Message 对齐)。
-// error 为前端乐观态:发送失败时标记气泡,不进后端。
+// Chat message aligned with Go message.Message.
+// Error is frontend-only optimistic state and is never persisted by the backend.
 export interface ToolCallView {
   id: string;
   name: string;
@@ -434,13 +444,12 @@ export interface ToolCallView {
   agent_name?: string;
   agent_run?: AgentRunSnapshot;
   child_messages?: ChatMessage[];
-  // 文件变更 diff(仅 write/edit 工具),统一 diff 文本,前端行内着色展示。
+  // Unified file diff for write and edit tools, used only for UI rendering.
   diff?: string;
   attachments?: AttachmentRef[];
 }
 
-// assistant 气泡内的有序段落:一个回合可能是「思考→工具→思考→回复」的交错序列,
-// 用有序 segments 表达真实顺序,渲染时逐段展示。
+// Ordered assistant segments preserve interleaved reasoning, tools, and text.
 export type MessageSegment =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; text: string }
@@ -456,12 +465,12 @@ export interface ChatMessage {
   event_seq?: number;
   reasoning?: string;
   tool_calls?: ToolCallView[];
-  // 有序段落(仅 assistant)。存在时优先按其渲染;缺失时回退到 reasoning/tool_calls/content 扁平字段。
+  // Ordered assistant segments take precedence over legacy flat fields.
   segments?: MessageSegment[];
   tool_call_id?: string;
-  // 文件变更 diff(仅 tool 角色历史消息),用于历史回放时回填工具段。
+  // File diff on historical tool messages, used to rebuild tool segments.
   diff?: string;
-  // 最终 assistant 消息携带的通用回合生命周期时间。
+  // Turn lifecycle timestamps carried by the final assistant message.
   turn_started_at?: string;
   turn_completed_at?: string;
   turn_status?: "completed" | "failed" | "cancelled";
@@ -469,7 +478,7 @@ export interface ChatMessage {
   error?: boolean;
 }
 
-// Connection 是一个独立模型账号或端点。API Key 仅在写入时携带。
+// A connection is one model account or endpoint. API keys are write-only.
 export type ConnectionType = "language" | "image" | "video";
 export type VideoProtocol = "seedance" | "minimax_h3";
 
@@ -596,6 +605,7 @@ export interface FeishuBotSettings {
   id: string;
   kind: "feishu";
   name: string;
+  locale: "zh-CN" | "en-US";
   enabled: boolean;
   app_id: string;
   has_app_secret: boolean;
@@ -612,6 +622,7 @@ export interface FeishuBotSettings {
 
 export interface FeishuBotUpdate {
   name: string;
+  locale: "zh-CN" | "en-US";
   enabled: boolean;
   app_id: string;
   app_secret?: string;
@@ -638,6 +649,7 @@ export type FeishuRegistrationStatus =
 
 export interface FeishuRegistrationInput {
   name: string;
+  locale: "zh-CN" | "en-US";
   connection_id?: string;
   model?: string;
   project_id?: string;
@@ -995,12 +1007,12 @@ export const api = {
       (r) => JSON.parse(r) as Session
     ),
 
-  // 删除会话(中断回合、清除历史、广播移除)。
+  // Delete a chat, including cancellation, history removal, and broadcast.
   deleteSession: (sessionId: string) =>
     invoke("delete_session", { sessionId }),
 
   pickFolder: () =>
-    open({ directory: true, multiple: false, title: "选择工作文件夹" }),
+    open({ directory: true, multiple: false, title: translate("Select working folder") }),
 
   listProjectFiles: (projectPath: string) =>
     invoke<string>("list_project_files", { projectPath }).then(
@@ -1286,7 +1298,7 @@ export const api = {
       (r) => JSON.parse(r) as QueuedMessage
     ),
 
-  // 中断当前回合(用户点停止)。
+  // Stop the current turn.
   cancelTurn: (sessionId: string) =>
     invoke("cancel_turn", { sessionId }),
 
@@ -1566,6 +1578,7 @@ export const api = {
     scope: "global" | "project";
     project_id?: string;
     name: string;
+    body?: string;
   }) =>
     invoke<string>("create_command", { request: input }).then(
       (r) => JSON.parse(r) as CommandInfo
@@ -1796,7 +1809,12 @@ export const api = {
     invoke("browser_reload", { browserId }),
 
   setBrowserElementPicker: (browserId: string, enabled: boolean) =>
-    invoke("set_browser_element_picker", { browserId, enabled }),
+    invoke("set_browser_element_picker", {
+      browserId,
+      enabled,
+      addLabel: translate("Add to chat"),
+      cancelLabel: translate("Cancel selection"),
+    }),
 
   executeBrowserAction: (request: BrowserActionRequest) =>
     invoke<BrowserActionResult>("execute_browser_action", { request }),
@@ -1813,7 +1831,7 @@ export const api = {
   closeBrowser: (browserId: string) =>
     invoke("close_browser", { browserId }),
 
-  // 回执审批决策。
+  // Resolve an approval request.
   resolveApproval: (
     sessionId: string,
     requestId: string,

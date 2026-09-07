@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, type Component } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -41,6 +42,7 @@ type PluginDescriptor = { name: string; description?: string };
 
 const route = useRoute();
 const router = useRouter();
+const { t } = useI18n();
 const marketplaceID = computed(() => String(route.params.marketplace ?? ""));
 const pluginName = computed(() => String(route.params.plugin ?? ""));
 const catalog = ref<PluginMarketplaceCatalog | null>(null);
@@ -63,7 +65,7 @@ const description = computed(
   () =>
     marketPlugin.value?.description ??
     installedPlugin.value?.description ??
-    "暂无插件描述"
+    t("No plugin description")
 );
 const version = computed(
   () => marketPlugin.value?.version ?? installedPlugin.value?.version
@@ -118,25 +120,26 @@ const repositoryURL = computed(() => {
 });
 const compatibilityLabel = computed(() => {
   if (installedPlugin.value?.valid) return "Agent Plugins 1.0";
-  if (installedPlugin.value && !installedPlugin.value.valid) return "不兼容";
-  if (previewLoading.value) return "正在检测";
-  if (preview.value?.compatibility === "compatible") return "完全兼容";
-  if (preview.value?.compatibility === "partial") return "部分兼容";
-  if (preview.value?.compatibility === "unsupported") return "不兼容";
-  if (previewError.value) return "预检失败";
-  return "来源不受支持";
+  if (installedPlugin.value && !installedPlugin.value.valid) return t("Incompatible");
+  if (previewLoading.value) return t("Checking");
+  if (preview.value?.compatibility === "compatible") return t("Fully compatible");
+  if (preview.value?.compatibility === "partial") return t("Partially compatible");
+  if (preview.value?.compatibility === "unsupported") return t("Incompatible");
+  if (previewError.value) return t("Preflight failed");
+  return t("Unsupported source");
 });
 
 function unsupportedComponentLabel(component: string): string {
-  return {
+  const key = ({
     agents: "Agents",
     commands: "Commands",
     hooks: "Hooks",
     lsp: "LSP Servers",
-    legacy_mcp: "旧版 MCP 配置",
-    legacy_skills: "旧版 Skill 路径",
-    extensions: "客户端扩展",
-  }[component] ?? component;
+    legacy_mcp: "Legacy MCP configuration",
+    legacy_skills: "Legacy Skill path",
+    extensions: "Client extensions",
+  } as Record<string, string>)[component];
+  return key ? t(key) : component;
 }
 
 function pluginIcon(item: PluginDescriptor): Component {
@@ -164,13 +167,13 @@ function pluginTone(name: string): string {
 }
 
 function stateLabel(state: McpStatus["state"]): string {
-  return {
-    connected: "已连接",
-    connecting: "连接中",
-    disconnected: "未连接",
-    disabled: "已停用",
-    error: "连接失败",
-  }[state];
+  return t({
+    connected: "Connected",
+    connecting: "Connecting",
+    disconnected: "Disconnected",
+    disabled: "Disabled",
+    error: "Connection failed",
+  }[state]);
 }
 
 function stateClass(state: McpStatus["state"]): string {
@@ -307,7 +310,7 @@ void load();
           class="px-2 text-muted-foreground"
           @click="backToPlugins"
         >
-          插件
+          {{ $t("Plugins") }}
         </Button>
         <ChevronRightIcon class="size-4 shrink-0 text-muted-foreground" />
         <span class="truncate text-sm font-medium">{{ displayName }}</span>
@@ -321,7 +324,7 @@ void load();
           class="flex items-center justify-center gap-2 py-20 text-sm text-muted-foreground"
         >
           <RefreshCwIcon class="size-4 animate-spin" />
-          正在加载
+          {{ $t("Loading") }}
         </div>
 
         <template v-else>
@@ -361,7 +364,7 @@ void load();
                 @click="openRepository"
               >
                 <ExternalLinkIcon class="size-4" />
-                查看来源
+                {{ $t("View source") }}
               </Button>
               <Button
                 v-if="marketPlugin"
@@ -380,18 +383,18 @@ void load();
                   :class="['size-4', saving && 'animate-spin']"
                 />
                 <DownloadIcon v-else class="size-4" />
-                {{ installedPlugin ? "更新" : "安装" }}
+                {{ installedPlugin ? $t("Update") : $t("Install") }}
               </Button>
               <Button
                 v-else-if="installedPlugin"
                 size="sm"
                 @click="startChat"
               >
-                开始对话
+                {{ $t("Start chat") }}
               </Button>
               <DropdownMenu v-if="installedPlugin">
                 <DropdownMenuTrigger as-child>
-                  <Button size="icon-sm" variant="ghost" title="更多操作">
+                  <Button size="icon-sm" variant="ghost" :title="$t('More actions')">
                     <SettingsIcon class="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -401,7 +404,7 @@ void load();
                     @click="removeConfirmOpen = true"
                   >
                     <Trash2Icon class="size-4" />
-                    卸载插件
+                    {{ $t("Uninstall plugin") }}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -410,7 +413,7 @@ void load();
 
           <section class="mt-10 grid gap-x-10 border-y border-border py-5 sm:grid-cols-2 lg:grid-cols-4">
             <div class="py-2">
-              <p class="text-xs text-muted-foreground">兼容性</p>
+              <p class="text-xs text-muted-foreground">{{ $t("Compatibility") }}</p>
               <p class="mt-1 flex items-center gap-1.5 text-sm font-medium">
                 <CheckCircle2Icon
                   v-if="
@@ -432,34 +435,34 @@ void load();
               </p>
             </div>
             <div class="py-2">
-              <p class="text-xs text-muted-foreground">作者</p>
+              <p class="text-xs text-muted-foreground">{{ $t("Author") }}</p>
               <p class="mt-1 truncate text-sm font-medium">
-                {{ author?.name || "未提供" }}
+                {{ author?.name || $t("Not provided") }}
               </p>
             </div>
             <div class="py-2">
-              <p class="text-xs text-muted-foreground">许可证</p>
+              <p class="text-xs text-muted-foreground">{{ $t("License") }}</p>
               <p class="mt-1 truncate text-sm font-medium">
-                {{ license || "未提供" }}
+                {{ license || $t("Not provided") }}
               </p>
             </div>
             <div class="py-2">
-              <p class="text-xs text-muted-foreground">状态</p>
+              <p class="text-xs text-muted-foreground">{{ $t("Status") }}</p>
               <div class="mt-1 flex items-center gap-2">
                 <Checkbox
                   v-if="installedPlugin"
                   :checked="installedPlugin.enabled"
                   :disabled="saving || !installedPlugin.valid"
-                  :aria-label="`${installedPlugin.enabled ? '停用' : '启用'} ${displayName}`"
+                  :aria-label="installedPlugin.enabled ? $t('Disable {name}', { name: displayName }) : $t('Enable {name}', { name: displayName })"
                   @update:checked="togglePlugin"
                 />
                 <span class="text-sm font-medium">
                   {{
                     installedPlugin
                       ? installedPlugin.enabled
-                        ? "已启用"
-                        : "已停用"
-                      : "未安装"
+                        ? $t("Enabled")
+                        : $t("Disabled")
+                      : $t("Not installed")
                   }}
                 </span>
               </div>
@@ -480,7 +483,7 @@ void load();
 
           <section class="mt-10">
             <h2 class="border-b border-border pb-3 text-lg font-medium">
-              MCP 服务器
+              {{ $t("MCP servers") }}
               <span class="ml-1 text-sm font-normal text-muted-foreground">
                 {{ previewLoading ? "…" : displayedMCPCount ?? "—" }}
               </span>
@@ -498,7 +501,7 @@ void load();
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm font-medium">{{ server.name }}</p>
                 <p class="text-xs text-muted-foreground">
-                  {{ stateLabel(server.state) }} · {{ server.tool_count }} 工具
+                  {{ stateLabel(server.state) }} · {{ $t("{count} tools", { count: server.tool_count }) }}
                 </p>
               </div>
             </div>
@@ -508,17 +511,17 @@ void load();
             >
               {{
                 installedPlugin
-                  ? "此插件没有 MCP 服务器"
+                  ? $t("This plugin has no MCP servers")
                   : preview
-                    ? "未发现 Foya 支持的 MCP 服务器"
-                    : "正在检测 MCP 服务器"
+                    ? $t("No Foya-compatible MCP servers found")
+                    : $t("Checking MCP servers")
               }}
             </p>
           </section>
 
           <section class="mt-10">
             <h2 class="border-b border-border pb-3 text-lg font-medium">
-              技能
+              {{ $t("Skills") }}
               <span class="ml-1 text-sm font-normal text-muted-foreground">
                 {{ previewLoading ? "…" : displayedSkillCount ?? "—" }}
               </span>
@@ -548,7 +551,7 @@ void load();
                   skill.enabled ? 'text-emerald-600' : 'text-muted-foreground'
                 "
               >
-                {{ skill.enabled ? "已启用" : "已停用" }}
+                {{ skill.enabled ? $t("Enabled") : $t("Disabled") }}
               </span>
             </div>
             <p
@@ -557,10 +560,10 @@ void load();
             >
               {{
                 installedPlugin
-                  ? "此插件没有技能"
+                  ? $t("This plugin has no skills")
                   : preview
-                    ? "未发现 Foya 支持的技能"
-                    : "正在检测技能"
+                    ? $t("No Foya-compatible skills found")
+                    : $t("Checking skills")
               }}
             </p>
           </section>
@@ -570,7 +573,7 @@ void load();
             class="mt-10"
           >
             <h2 class="border-b border-border pb-3 text-lg font-medium">
-              不受支持的组件
+              {{ $t("Unsupported components") }}
               <span class="ml-1 text-sm font-normal text-muted-foreground">
                 {{ preview.unsupported_components.length }}
               </span>
@@ -591,7 +594,7 @@ void load();
             class="mt-10"
           >
             <h2 class="border-b border-border pb-3 text-lg font-medium">
-              诊断
+              {{ $t("Diagnostics") }}
               <span class="ml-1 text-sm font-normal text-muted-foreground">
                 {{ diagnostics.length }}
               </span>
@@ -637,9 +640,9 @@ void load();
   <Dialog v-model:open="removeConfirmOpen">
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>卸载插件</DialogTitle>
+        <DialogTitle>{{ $t("Uninstall plugin") }}</DialogTitle>
         <DialogDescription>
-          将卸载“{{ displayName }}”。插件数据目录会保留。
+          {{ $t("Uninstall plugin confirmation", { name: displayName }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter>
@@ -648,10 +651,10 @@ void load();
           :disabled="saving"
           @click="removeConfirmOpen = false"
         >
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button variant="destructive" :disabled="saving" @click="removePlugin">
-          {{ saving ? "卸载中..." : "卸载" }}
+          {{ saving ? $t("Uninstalling") : $t("Uninstall") }}
         </Button>
       </DialogFooter>
     </DialogContent>

@@ -120,7 +120,7 @@ func (t *canvasTool) Run(ctx context.Context, call Call) (Result, error) {
 		_, _ = rand.Read(idBytes)
 		nodeID := "generation_" + hex.EncodeToString(idBytes)
 		nodes = append(nodes, canvas.Node{
-			ID: nodeID, Type: "generation", Title: "生成", Prompt: params.Prompt,
+			ID: nodeID, Type: "generation", Title: "Generate", Prompt: params.Prompt,
 			X: params.X, Y: params.Y, Width: 300, Height: 260, ZIndex: len(nodes),
 			Status: "idle", Generation: &canvas.GenerationSpec{
 				Mode: params.Mode, Model: params.Model, AspectRatio: params.AspectRatio, Count: 1,

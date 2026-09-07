@@ -39,10 +39,7 @@ func contentSHA256(content []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// UnifiedDiff 生成 old→new 的统一 diff 文本(供 UI 行内展示)。
-// 采用行级 LCS 计算最小编辑,输出带 @@ hunk 头、以 ' '/'+'/'-' 前缀的行,
-// 与常见 unified diff 兼容,便于前端按前缀着色。path 用于 ---/+++ 文件头。
-// 无变化时返回空串。
+// UnifiedDiff builds a line-based unified diff for UI rendering.
 func UnifiedDiff(path, oldText, newText string) string {
 	if oldText == newText {
 		return ""
@@ -69,13 +66,13 @@ func UnifiedDiff(path, oldText, newText string) string {
 	return b.String()
 }
 
-// splitLines 按 \n 拆分,保留结尾空行语义(末尾换行不产生多余空行)。
+// splitLines preserves content semantics without adding a trailing empty line.
 func splitLines(s string) []string {
 	if s == "" {
 		return nil
 	}
 	lines := strings.Split(s, "\n")
-	// 末尾换行会产生一个尾随空串,去掉以避免虚假的空行差异。
+	// Remove the empty element produced by a trailing newline.
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
@@ -83,14 +80,14 @@ func splitLines(s string) []string {
 }
 
 type diffOp struct {
-	kind byte // ' ' 相等, '-' 删除, '+' 新增
+	kind byte // Space is equal, minus is deleted, and plus is added.
 	text string
 }
 
-// diffLines 用行级 LCS 计算最小编辑序列。
+// diffLines computes a minimal line edit sequence with LCS.
 func diffLines(a, b []string) []diffOp {
 	n, m := len(a), len(b)
-	// LCS 长度表。
+	// LCS length table.
 	lcs := make([][]int, n+1)
 	for i := range lcs {
 		lcs[i] = make([]int, m+1)
@@ -137,9 +134,9 @@ type hunk struct {
 	lines              []string
 }
 
-// groupHunks 把编辑序列按变化点聚合成 hunk,每个变化点前后保留 ctx 行上下文。
+// groupHunks groups edits and retains ctx surrounding lines.
 func groupHunks(ops []diffOp, ctx int) []hunk {
-	// 标记哪些位置需要保留(变化行及其上下文)。
+	// Mark changed lines and their surrounding context.
 	keep := make([]bool, len(ops))
 	for i, op := range ops {
 		if op.kind != ' ' {

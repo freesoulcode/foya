@@ -80,8 +80,8 @@ onMounted(() => void loadEditors());
       :disabled="loading || opening || !selectedEditor"
       :aria-label="
         selectedEditor
-          ? `使用 ${selectedEditor.name} 打开项目`
-          : '正在查找外部编辑器'
+          ? $t('Open project with {name}', { name: selectedEditor.name })
+          : $t('Looking for external editors')
       "
       @click="openProject()"
     >
@@ -95,7 +95,7 @@ onMounted(() => void loadEditors());
         />
         <Code2Icon v-else class="size-2.5" />
       </span>
-      <span>打开</span>
+      <span>{{ $t("Open") }}</span>
     </button>
 
     <DropdownMenu>
@@ -104,7 +104,7 @@ onMounted(() => void loadEditors());
           type="button"
           class="flex w-8 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
           :disabled="loading || opening || !editors.length"
-          aria-label="选择外部编辑器"
+          :aria-label="$t('Select external editor')"
         >
           <ChevronDownIcon class="size-4" />
         </button>

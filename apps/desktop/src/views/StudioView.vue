@@ -23,14 +23,14 @@ const {
     <div v-else class="grid size-full place-items-center bg-muted/10 px-6">
       <div class="flex max-w-md flex-col items-center text-center">
         <ImageIcon class="size-8 text-muted-foreground/45" />
-        <h1 class="mt-5 text-xl font-semibold">创作工作台</h1>
+        <h1 class="mt-5 text-xl font-semibold">{{ $t("Creative workspace") }}</h1>
         <p class="mt-2 text-sm leading-6 text-muted-foreground">
-          从左侧选择一个项目，或新建项目开始创作。
+          {{ $t("Select a project from the sidebar or create one to start.") }}
         </p>
         <Button class="mt-6" :disabled="creating" @click="createProject">
           <LoaderCircleIcon v-if="creating" class="size-4 animate-spin" />
           <PlusIcon v-else class="size-4" />
-          新建项目
+          {{ $t("New project") }}
         </Button>
       </div>
     </div>

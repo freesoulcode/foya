@@ -88,5 +88,5 @@ pub(crate) async fn subscribe_terminal(
     });
     ready_rx
         .await
-        .map_err(|_| "终端订阅在连接前意外结束".to_string())?
+        .map_err(|_| "Terminal subscription ended before connecting".to_string())?
 }

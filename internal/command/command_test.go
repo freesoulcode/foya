@@ -99,7 +99,7 @@ func TestExpand(t *testing.T) {
 	if got := Expand("审查：$ARGUMENTS", "当前 PR"); got != "审查：当前 PR" {
 		t.Fatalf("expanded = %q", got)
 	}
-	if got := Expand("审查", "当前 PR"); got != "审查\n\n用户补充参数：\n当前 PR" {
+	if got := Expand("Review", "current PR"); got != "Review\n\nAdditional user arguments:\ncurrent PR" {
 		t.Fatalf("appended = %q", got)
 	}
 }

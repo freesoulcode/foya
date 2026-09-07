@@ -12,13 +12,13 @@ import (
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
-// EditOp 是一处精确替换。
+// EditOp describes one exact replacement.
 type EditOp struct {
 	OldText string `json:"old_text"`
 	NewText string `json:"new_text"`
 }
 
-// EditParams 是 edit 工具的参数。
+// EditParams contains arguments for the edit tool.
 type EditParams struct {
 	Path  string   `json:"path"`
 	Edits []EditOp `json:"edits"`
@@ -29,8 +29,8 @@ type editTool struct {
 	runner sandbox.Runner
 }
 
-// NewEditTool 创建 edit 工具:对已有文件做精确文本替换。
-// 每处 old_text 必须在文件中唯一匹配(出现且仅出现一次),否则拒绝并提示。
+// NewEditTool creates a tool for exact replacements in existing files.
+// Each old_text must match exactly once or the edit is rejected.
 func NewEditTool(gw approval.Gateway, runner sandbox.Runner) Tool {
 	return &editTool{gw: gw, runner: runner}
 }
@@ -79,24 +79,24 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	decision, err := t.gw.Request(ctx, approval.Request{
 		ToolName: "edit",
 		Action:   "write",
-		Detail:   fmt.Sprintf("编辑文件: %s (%d 处替换)", path, len(params.Edits)),
+		Detail:   fmt.Sprintf("Edit file: %s (%d replacements)", path, len(params.Edits)),
 		Resource: path,
 		Scope:    approvalPathScope(ctx, path),
 	})
 	if err != nil {
-		return errResult("审批中断: " + err.Error()), nil
+		return errResult("Approval interrupted: " + err.Error()), nil
 	}
 	if decision == approval.DecisionDenied {
-		return errResult("用户拒绝编辑文件"), nil
+		return errResult("User denied file edit"), nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return errResult(fmt.Sprintf("读取失败: %v", err)), nil
+		return errResult(fmt.Sprintf("Read failed: %v", err)), nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return errResult(fmt.Sprintf("读取文件属性失败: %v", err)), nil
+		return errResult(fmt.Sprintf("Failed to read file metadata: %v", err)), nil
 	}
 	content := string(data)
 	original := content
@@ -104,21 +104,21 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	var applied int
 	for i, op := range params.Edits {
 		if op.OldText == "" {
-			return errResult(fmt.Sprintf("第 %d 处编辑: old_text 不能为空", i+1)), nil
+			return errResult(fmt.Sprintf("Edit %d: old_text cannot be empty", i+1)), nil
 		}
 		count := strings.Count(content, op.OldText)
 		if count == 0 {
-			return errResult(fmt.Sprintf("第 %d 处编辑: old_text 在文件中未找到", i+1)), nil
+			return errResult(fmt.Sprintf("Edit %d: old_text was not found", i+1)), nil
 		}
 		if count > 1 {
-			return errResult(fmt.Sprintf("第 %d 处编辑: old_text 在文件中出现 %d 次,必须唯一;请补充更多上下文", i+1, count)), nil
+			return errResult(fmt.Sprintf("Edit %d: old_text occurs %d times and must be unique; include more context", i+1, count)), nil
 		}
 		content = strings.Replace(content, op.OldText, op.NewText, 1)
 		applied++
 	}
 
 	if err := writeFileAtBoundary(ctx, t.runner, path, []byte(content)); err != nil {
-		return errResult(fmt.Sprintf("写入失败: %v", err)), nil
+		return errResult(fmt.Sprintf("Write failed: %v", err)), nil
 	}
 
 	var change *message.FileChange
@@ -126,7 +126,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		change = trackedFileChange(path, data, true, info.Mode(), []byte(content), info.Mode())
 	}
 	return Result{
-		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("已对 %s 应用 %d 处替换", path, applied)}},
+		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("Applied %d replacements to %s", applied, path)}},
 		Diff:       UnifiedDiff(path, original, content),
 		FileChange: change,
 	}, nil

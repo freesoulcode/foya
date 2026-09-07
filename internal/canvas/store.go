@@ -164,7 +164,7 @@ func NewStore(dataDir string) (*Store, error) {
 				for index := range item.Nodes {
 					if item.Nodes[index].Status == "running" {
 						item.Nodes[index].Status = "error"
-						item.Nodes[index].Error = "应用重启前的生成任务已中断"
+						item.Nodes[index].Error = "Generation was interrupted by an application restart"
 						recovered = true
 					}
 				}
@@ -190,7 +190,7 @@ func (s *Store) Create(input CreateInput) (Document, error) {
 	now := time.Now()
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
-		title = "未命名画布"
+		title = "Untitled canvas"
 	}
 	doc := Document{
 		ID: id, Title: title, SessionID: input.SessionID, ProjectID: input.ProjectID,

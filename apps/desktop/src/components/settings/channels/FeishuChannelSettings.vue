@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import QRCode from "qrcode";
 import {
@@ -50,11 +51,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useLocale } from "@/i18n";
 
 const props = defineProps<{
   channel: FeishuBotSettings | null;
   creating?: boolean;
 }>();
+const { t } = useI18n();
+const { resolvedLocale } = useLocale();
 
 const emit = defineEmits<{
   saved: [channel: FeishuBotSettings];
@@ -65,7 +69,8 @@ const emit = defineEmits<{
 const emptySettings = (): FeishuBotSettings => ({
   id: "",
   kind: "feishu",
-  name: "飞书 Bot",
+  name: t("Feishu Bot"),
+  locale: resolvedLocale.value,
   enabled: false,
   app_id: "",
   has_app_secret: false,
@@ -103,24 +108,24 @@ const registrationActive = computed(() =>
 );
 
 const registrationStatusLabel = computed(() => {
-  if (!registration.value && registrationError.value) return "无法开始创建";
+  if (!registration.value && registrationError.value) return t("Unable to start creation");
   switch (registration.value?.status) {
     case "pending":
-      return "等待扫码确认";
+      return t("Waiting for QR code confirmation");
     case "completing":
-      return "正在创建并连接 Bot";
+      return t("Creating and connecting Bot");
     case "completed":
-      return "Bot 已创建";
+      return t("Bot created");
     case "denied":
-      return "已拒绝授权";
+      return t("Authorization denied");
     case "expired":
-      return "二维码已过期";
+      return t("QR code expired");
     case "cancelled":
-      return "已取消";
+      return t("Cancelled");
     case "error":
-      return "创建失败";
+      return t("Creation failed");
     default:
-      return "正在生成二维码";
+      return t("Generating QR code");
   }
 });
 
@@ -132,10 +137,10 @@ const languageConnections = computed(() =>
 );
 
 const statusLabel = computed(() => {
-  if (props.creating) return "未保存";
-  if (settings.value.status === "running") return "运行中";
-  if (settings.value.status === "error") return "连接异常";
-  return "已停止";
+  if (props.creating) return t("Not saved");
+  if (settings.value.status === "running") return t("Running");
+  if (settings.value.status === "error") return t("Connection error");
+  return t("Stopped");
 });
 
 const statusClass = computed(() => {
@@ -170,7 +175,8 @@ function applySettings(value: FeishuBotSettings | null) {
 
 function buildUpdate(): FeishuBotUpdate {
   return {
-    name: settings.value.name.trim() || "飞书 Bot",
+    name: settings.value.name.trim() || t("Feishu Bot"),
+    locale: resolvedLocale.value,
     enabled: settings.value.enabled,
     app_id: settings.value.app_id.trim(),
     ...(appSecret.value.trim() ? { app_secret: appSecret.value.trim() } : {}),
@@ -188,6 +194,7 @@ function buildRegistrationInput(): FeishuRegistrationInput {
   const update = buildUpdate();
   return {
     name: update.name,
+    locale: update.locale,
     connection_id: update.connection_id,
     model: update.model,
     project_id: update.project_id,
@@ -224,7 +231,9 @@ async function applyRegistrationState(
         registrationQRCode.value = dataURL;
       }
     } catch (cause) {
-      registrationError.value = `无法生成二维码：${String(cause)}`;
+      registrationError.value = t("Unable to generate QR code: {error}", {
+        error: String(cause),
+      });
     }
   }
 
@@ -298,11 +307,11 @@ async function save() {
   error.value = "";
   const update = buildUpdate();
   if (update.enabled && !update.app_id) {
-    error.value = "启用前请填写 App ID";
+    error.value = t("Enter an App ID before enabling");
     return;
   }
   if (update.enabled && !update.app_secret && !settings.value.has_app_secret) {
-    error.value = "启用前请填写 App Secret";
+    error.value = t("Enter an App Secret before enabling");
     return;
   }
   if (
@@ -311,7 +320,7 @@ async function save() {
     update.allowed_users.length === 0 &&
     update.allowed_chats.length === 0
   ) {
-    error.value = "启用前请至少添加一个用户或群聊白名单";
+    error.value = t("Add at least one allowed user or group chat before enabling");
     return;
   }
 
@@ -387,7 +396,7 @@ onBeforeUnmount(() => {
   <div class="w-full space-y-5 pb-5">
     <header class="flex flex-wrap items-center justify-between gap-3">
       <div v-if="creating && creationMode === 'choose'" class="min-w-0">
-        <h3 class="text-base font-semibold">添加飞书 Bot</h3>
+        <h3 class="text-base font-semibold">{{ $t("Add Feishu Bot") }}</h3>
       </div>
       <div v-else class="flex min-w-0 items-start gap-1">
         <Button
@@ -395,8 +404,8 @@ onBeforeUnmount(() => {
           size="icon-sm"
           variant="ghost"
           class="mt-0.5 shrink-0"
-          title="返回接入方式"
-          aria-label="返回接入方式"
+          :title="$t('Back to connection methods')"
+          :aria-label="$t('Back to connection methods')"
           @click="creationMode = 'choose'"
         >
           <ArrowLeftIcon class="size-4" />
@@ -405,7 +414,7 @@ onBeforeUnmount(() => {
           <Input
             v-model="settings.name"
             class="h-8 max-w-64 border-transparent px-0 text-base font-semibold shadow-none hover:border-input focus-visible:px-2.5"
-            aria-label="Bot 名称"
+            :aria-label="$t('Bot name')"
             :disabled="loading || saving"
           />
           <div class="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -421,13 +430,13 @@ onBeforeUnmount(() => {
               variant="ghost"
               size="icon-sm"
               :disabled="loading || saving"
-              aria-label="刷新状态"
+              :aria-label="$t('Refresh status')"
               @click="emit('refresh')"
             >
               <RefreshCwIcon class="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>刷新状态</TooltipContent>
+          <TooltipContent>{{ $t("Refresh status") }}</TooltipContent>
         </Tooltip>
         <Tooltip v-if="settings.id">
           <TooltipTrigger as-child>
@@ -435,20 +444,20 @@ onBeforeUnmount(() => {
               variant="ghost"
               size="icon-sm"
               :disabled="saving || deleting"
-              aria-label="删除 Bot"
+              :aria-label="$t('Delete Bot')"
               @click="deleteConfirmOpen = true"
             >
               <Trash2Icon class="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>删除 Bot</TooltipContent>
+          <TooltipContent>{{ $t("Delete Bot") }}</TooltipContent>
         </Tooltip>
         <label class="flex items-center gap-2 text-sm font-medium">
-          <span>{{ settings.enabled ? "已启用" : "未启用" }}</span>
+          <span>{{ settings.enabled ? $t("Enabled") : $t("Disabled") }}</span>
           <Checkbox
             :model-value="settings.enabled"
             :disabled="loading || saving"
-            aria-label="启用飞书"
+            :aria-label="$t('Enable Feishu')"
             @update:model-value="settings.enabled = $event === true"
           />
         </label>
@@ -457,11 +466,11 @@ onBeforeUnmount(() => {
         v-else-if="creationMode === 'manual'"
         class="flex items-center gap-2 text-sm font-medium"
       >
-        <span>{{ settings.enabled ? "已启用" : "未启用" }}</span>
+        <span>{{ settings.enabled ? $t("Enabled") : $t("Disabled") }}</span>
         <Checkbox
           :model-value="settings.enabled"
           :disabled="loading || saving"
-          aria-label="启用飞书"
+          :aria-label="$t('Enable Feishu')"
           @update:model-value="settings.enabled = $event === true"
         />
       </label>
@@ -471,7 +480,7 @@ onBeforeUnmount(() => {
       v-if="creating && creationMode === 'choose'"
       class="max-w-2xl"
     >
-      <h4 class="mb-3 text-sm font-semibold">选择接入方式</h4>
+      <h4 class="mb-3 text-sm font-semibold">{{ $t("Choose connection method") }}</h4>
       <div class="grid gap-2 sm:grid-cols-2">
         <button
           type="button"
@@ -483,9 +492,9 @@ onBeforeUnmount(() => {
             <QrCodeIcon class="size-5" />
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block text-sm font-semibold">扫码创建</span>
+            <span class="block text-sm font-semibold">{{ $t("Create with QR code") }}</span>
             <span class="mt-1 block text-xs text-muted-foreground">
-              自动创建应用并配置权限
+              {{ $t("Create the app and configure permissions automatically") }}
             </span>
           </span>
           <ChevronRightIcon class="size-4 shrink-0 text-muted-foreground" />
@@ -500,9 +509,9 @@ onBeforeUnmount(() => {
             <KeyRoundIcon class="size-5" />
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block text-sm font-semibold">手动配置</span>
+            <span class="block text-sm font-semibold">{{ $t("Manual setup") }}</span>
             <span class="mt-1 block text-xs text-muted-foreground">
-              使用已有企业自建应用
+              {{ $t("Use an existing custom enterprise app") }}
             </span>
           </span>
           <ChevronRightIcon class="size-4 shrink-0 text-muted-foreground" />
@@ -513,8 +522,8 @@ onBeforeUnmount(() => {
     <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h4 class="text-sm font-semibold">应用凭证</h4>
-          <p class="mt-0.5 text-xs text-muted-foreground">企业自建应用的身份信息</p>
+          <h4 class="text-sm font-semibold">{{ $t("App credentials") }}</h4>
+          <p class="mt-0.5 text-xs text-muted-foreground">{{ $t("Identity details for the custom enterprise app") }}</p>
         </div>
         <Button
           variant="ghost"
@@ -523,7 +532,7 @@ onBeforeUnmount(() => {
           @click="openUrl('https://open.feishu.cn/app')"
         >
           <ExternalLinkIcon class="size-4" />
-          开发者后台
+          {{ $t("Developer console") }}
         </Button>
       </div>
       <div class="grid gap-3 sm:grid-cols-2">
@@ -545,13 +554,13 @@ onBeforeUnmount(() => {
               v-model="appSecret"
               class="pr-10 font-mono"
               :type="showSecret ? 'text' : 'password'"
-              :placeholder="settings.has_app_secret ? '已保存，留空则保持不变' : '输入 App Secret'"
+              :placeholder="settings.has_app_secret ? $t('Saved; leave blank to keep it') : $t('Enter App Secret')"
               :disabled="loading || saving"
             />
             <button
               type="button"
               class="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-muted-foreground hover:text-foreground"
-              :aria-label="showSecret ? '隐藏 App Secret' : '显示 App Secret'"
+              :aria-label="showSecret ? $t('Hide App Secret') : $t('Show App Secret')"
               :disabled="loading || saving"
               @click="showSecret = !showSecret"
             >
@@ -565,22 +574,22 @@ onBeforeUnmount(() => {
 
     <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3">
-        <h4 class="text-sm font-semibold">运行配置</h4>
-        <p class="mt-0.5 text-xs text-muted-foreground">为飞书会话选择模型、项目和工具权限</p>
+        <h4 class="text-sm font-semibold">{{ $t("Runtime configuration") }}</h4>
+        <p class="mt-0.5 text-xs text-muted-foreground">{{ $t("Choose the model, project, and tool permissions for Feishu chats") }}</p>
       </div>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div class="min-w-0 space-y-1.5">
-          <Label for="feishu-connection">语言模型连接</Label>
+          <Label for="feishu-connection">{{ $t("Language model connection") }}</Label>
           <Select
             :model-value="settings.connection_id || '__default__'"
             :disabled="loading || saving"
             @update:model-value="selectConnection"
           >
             <SelectTrigger id="feishu-connection" class="w-full">
-              <SelectValue placeholder="默认语言模型" />
+              <SelectValue :placeholder="$t('Default language model')" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__default__">默认语言模型</SelectItem>
+              <SelectItem value="__default__">{{ $t("Default language model") }}</SelectItem>
               <SelectItem
                 v-for="connection in languageConnections"
                 :key="connection.id"
@@ -592,27 +601,27 @@ onBeforeUnmount(() => {
           </Select>
         </div>
         <div class="min-w-0 space-y-1.5">
-          <Label for="feishu-model">模型</Label>
+          <Label for="feishu-model">{{ $t("Model") }}</Label>
           <Input
             id="feishu-model"
             v-model="settings.model"
             class="font-mono"
-            placeholder="默认模型"
+            :placeholder="$t('Default model')"
             :disabled="loading || saving"
           />
         </div>
         <div class="min-w-0 space-y-1.5">
-          <Label for="feishu-project">工作项目</Label>
+          <Label for="feishu-project">{{ $t("Working project") }}</Label>
           <Select
             :model-value="settings.project_id || '__none__'"
             :disabled="loading || saving"
             @update:model-value="selectProject"
           >
             <SelectTrigger id="feishu-project" class="w-full">
-              <SelectValue placeholder="不绑定项目" />
+              <SelectValue :placeholder="$t('No project')" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__none__">不绑定项目</SelectItem>
+              <SelectItem value="__none__">{{ $t("No project") }}</SelectItem>
               <SelectItem
                 v-for="project in projects"
                 :key="project.id"
@@ -624,8 +633,8 @@ onBeforeUnmount(() => {
           </Select>
         </div>
         <div class="min-w-0 space-y-1.5">
-          <Label>工具审批</Label>
-          <ButtonGroup class="w-full" aria-label="工具审批">
+          <Label>{{ $t("Tool approval") }}</Label>
+          <ButtonGroup class="w-full" :aria-label="$t('Tool approval')">
             <Button
               class="flex-1 shadow-none"
               size="sm"
@@ -635,7 +644,7 @@ onBeforeUnmount(() => {
               :disabled="loading || saving"
               @click="settings.approval_mode = 'auto'"
             >
-              自动判断
+              {{ $t("Automatic") }}
             </Button>
             <Button
               class="flex-1 shadow-none"
@@ -646,7 +655,7 @@ onBeforeUnmount(() => {
               :disabled="loading || saving"
               @click="settings.approval_mode = 'full_access'"
             >
-              完全访问
+              {{ $t("Full access") }}
             </Button>
           </ButtonGroup>
         </div>
@@ -656,22 +665,22 @@ onBeforeUnmount(() => {
     <section v-if="!creating || creationMode === 'manual'">
       <div class="mb-3 flex items-center justify-between gap-4">
         <div>
-          <h4 class="text-sm font-semibold">访问范围</h4>
-          <p class="mt-0.5 text-xs text-muted-foreground">限制可以调用本机 Agent 的会话</p>
+          <h4 class="text-sm font-semibold">{{ $t("Access scope") }}</h4>
+          <p class="mt-0.5 text-xs text-muted-foreground">{{ $t("Limit which chats can invoke the local agent") }}</p>
         </div>
         <label class="flex items-center gap-2 text-sm">
-          <span>允许全部</span>
+          <span>{{ $t("Allow all") }}</span>
           <Checkbox
             :model-value="settings.allow_all"
             :disabled="loading || saving"
-            aria-label="允许所有用户和群聊"
+            :aria-label="$t('Allow all users and group chats')"
             @update:model-value="settings.allow_all = $event === true"
           />
         </label>
       </div>
       <div v-if="!settings.allow_all" class="grid gap-3 sm:grid-cols-2">
         <div class="min-w-0 space-y-1.5">
-          <Label for="feishu-users">用户 Open ID</Label>
+          <Label for="feishu-users">{{ $t("User Open IDs") }}</Label>
           <Textarea
             id="feishu-users"
             v-model="allowedUsers"
@@ -681,7 +690,7 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="min-w-0 space-y-1.5">
-          <Label for="feishu-chats">群聊 ID</Label>
+          <Label for="feishu-chats">{{ $t("Group chat IDs") }}</Label>
           <Textarea
             id="feishu-chats"
             v-model="allowedChats"
@@ -704,14 +713,14 @@ onBeforeUnmount(() => {
     >
       <Button :disabled="loading || saving" @click="save">
         <SaveIcon class="size-4" />
-        {{ saving ? "保存中..." : settings.enabled ? "保存并启动" : "保存" }}
+        {{ saving ? $t("Saving") : settings.enabled ? $t("Save and start") : $t("Save") }}
       </Button>
     </div>
 
     <Dialog v-model:open="registrationOpen">
       <DialogContent class="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>扫码添加飞书 Bot</DialogTitle>
+          <DialogTitle>{{ $t("Add Feishu Bot with QR code") }}</DialogTitle>
           <DialogDescription>{{ registrationStatusLabel }}</DialogDescription>
         </DialogHeader>
 
@@ -719,7 +728,7 @@ onBeforeUnmount(() => {
           <img
             v-if="registrationQRCode && registration?.status === 'pending'"
             :src="registrationQRCode"
-            alt="飞书授权二维码"
+            :alt="$t('Feishu authorization QR code')"
             class="size-56 bg-white object-contain"
           />
           <LoaderCircleIcon
@@ -743,20 +752,20 @@ onBeforeUnmount(() => {
             @click="openRegistrationURL"
           >
             <ExternalLinkIcon class="size-4" />
-            在浏览器打开
+            {{ $t("Open in browser") }}
           </Button>
           <Button
             v-if="!registrationActive && registration?.status !== 'completed'"
             @click="startRegistration"
           >
             <RefreshCwIcon class="size-4" />
-            重新生成
+            {{ $t("Regenerate") }}
           </Button>
           <Button
             variant="ghost"
             @click="registrationOpen = false"
           >
-            取消
+            {{ $t("Cancel") }}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -765,17 +774,17 @@ onBeforeUnmount(() => {
     <Dialog v-model:open="deleteConfirmOpen">
       <DialogContent class="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>删除 {{ settings.name || "飞书 Bot" }}？</DialogTitle>
+          <DialogTitle>{{ $t("Delete {name}?", { name: settings.name || $t("Feishu Bot") }) }}</DialogTitle>
         </DialogHeader>
         <p class="text-sm text-muted-foreground">
-          将停止该 Bot 并删除它的渠道配置，不会删除已有 Foya 会话。
+          {{ $t("The Bot will stop and its channel configuration will be deleted. Existing Foya chats will remain.") }}
         </p>
         <DialogFooter>
           <Button variant="outline" :disabled="deleting" @click="deleteConfirmOpen = false">
-            取消
+            {{ $t("Cancel") }}
           </Button>
           <Button variant="destructive" :disabled="deleting" @click="remove">
-            {{ deleting ? "删除中..." : "删除" }}
+            {{ deleting ? $t("Deleting") : $t("Delete") }}
           </Button>
         </DialogFooter>
       </DialogContent>

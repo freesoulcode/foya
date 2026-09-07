@@ -397,11 +397,11 @@ func (t *browserTools) approve(
 		return nil
 	}
 	action := "browser_interact"
-	detail := "操作内置浏览器: " + request.Action
+	detail := "Control built-in browser: " + request.Action
 	resource := sessionID
 	if request.Action == "open" || request.Action == "navigate" {
 		action = "network"
-		detail = "浏览器访问: " + request.URL
+		detail = "Browser access: " + request.URL
 		resource = request.URL
 	}
 	decision, err := t.approval.Request(ctx, approval.Request{

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   BlocksIcon,
   DownloadIcon,
@@ -31,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 
 const mcpConfig = ref<McpConfig>({ version: 1, servers: [] });
+const { t } = useI18n();
 const mcpStatuses = ref<McpStatus[]>([]);
 const pendingMcpDelete = ref<McpServerConfig | null>(null);
 const mcpAddOpen = ref(false);
@@ -60,13 +62,14 @@ async function loadMcp() {
 }
 
 function mcpStateLabel(state?: McpStatus["state"]): string {
-  return {
-    connected: "已连接",
-    connecting: "连接中",
-    disconnected: "未连接",
-    disabled: "已停用",
-    error: "连接失败",
-  }[state ?? "disconnected"];
+  const keys: Record<McpStatus["state"], string> = {
+    connected: "Connected",
+    connecting: "Connecting",
+    disconnected: "Disconnected",
+    disabled: "Disabled",
+    error: "Connection failed",
+  };
+  return t(keys[state ?? "disconnected"]);
 }
 
 function mcpStateClass(state?: McpStatus["state"]): string {
@@ -131,7 +134,7 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
 
 function normalizeMcpServer(id: string, value: unknown): McpServerConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${id} 的配置格式无效`);
+    throw new Error(t("Invalid configuration format for {id}", { id }));
   }
   const item = value as Record<string, unknown>;
   const command = typeof item.command === "string" ? item.command : "";
@@ -147,7 +150,9 @@ function normalizeMcpServer(id: string, value: unknown): McpServerConfig {
     : rawTransport.replace("-", "_") === "sse"
       ? "sse"
       : "streamable_http";
-  if (!command && !url) throw new Error(`${id} 缺少 command 或 url`);
+  if (!command && !url) {
+    throw new Error(t("{id} is missing command or url", { id }));
+  }
   return {
     id,
     name: typeof item.name === "string" ? item.name : id,
@@ -174,7 +179,7 @@ function normalizeMcpServer(id: string, value: unknown): McpServerConfig {
 function parseMcpJSON(source: string): McpServerConfig[] {
   const parsed = JSON.parse(source) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("JSON 顶层必须是对象");
+    throw new Error(t("The top level of JSON must be an object"));
   }
   const root = parsed as Record<string, unknown>;
   if (Array.isArray(root.servers)) {
@@ -197,7 +202,7 @@ async function addMcpFromJSON() {
   mcpAddError.value = "";
   try {
     const incoming = parseMcpJSON(mcpJSON.value);
-    if (incoming.length === 0) throw new Error("JSON 中没有 MCP 服务器");
+    if (incoming.length === 0) throw new Error(t("JSON contains no MCP servers"));
     const merged = new Map(mcpConfig.value.servers.map((item) => [item.id, item]));
     for (const item of incoming) merged.set(item.id, item);
     await updateMcpServers(Array.from(merged.values()));
@@ -239,16 +244,16 @@ void loadMcp();
 
 <template>
   <SettingsPage
-    title="MCP 服务器"
-    description="管理可供 Agent 调用的外部工具服务器。"
+    :title="$t('MCP servers')"
+    :description="$t('Manage external tool servers available to the agent.')"
   >
     <template #actions>
       <Button
         size="icon-sm"
         variant="ghost"
         :disabled="loading || saving"
-        title="刷新状态"
-        aria-label="刷新 MCP 状态"
+        :title="$t('Refresh status')"
+        :aria-label="$t('Refresh MCP status')"
         @click="loadMcp"
       >
         <RefreshCwIcon
@@ -263,14 +268,14 @@ void loadMcp();
         @click="openMcpAdd()"
       >
         <PlusIcon class="size-4" />
-        添加服务器
+        {{ $t("Add server") }}
       </Button>
     </template>
 
     <div class="min-h-0 flex-1 border-y border-border">
       <section class="flex h-full min-w-0 flex-col">
         <div class="flex h-11 items-center border-b border-border px-3 text-sm font-medium">
-          已安装
+          {{ $t("Installed") }}
         </div>
         <div class="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
           <div
@@ -289,7 +294,7 @@ void loadMcp();
               <span class="block truncate text-xs text-muted-foreground">
                 {{ mcpStateLabel(mcpStatus(server.id)?.state) }}
                 <template v-if="mcpStatus(server.id)?.state === 'connected'">
-                  · {{ mcpStatus(server.id)?.tool_count ?? 0 }} 工具
+                  · {{ $t("{count} tools", { count: mcpStatus(server.id)?.tool_count ?? 0 }) }}
                 </template>
               </span>
             </span>
@@ -297,7 +302,7 @@ void loadMcp();
               <Checkbox
                 :checked="server.enabled"
                 :disabled="saving"
-                :aria-label="`${server.enabled ? '停用' : '启用'} ${server.name}`"
+                :aria-label="server.enabled ? $t('Disable {name}', { name: server.name }) : $t('Enable {name}', { name: server.name })"
                 @update:checked="toggleMcpServer(server)"
               />
             </label>
@@ -306,7 +311,7 @@ void loadMcp();
               variant="ghost"
               class="text-muted-foreground hover:text-destructive"
               :disabled="saving"
-              title="删除服务器"
+              :title="$t('Delete server')"
               @click="pendingMcpDelete = server"
             >
               <Trash2Icon class="size-4" />
@@ -316,7 +321,7 @@ void loadMcp();
             v-if="!loading && mcpConfig.servers.length === 0"
             class="px-3 py-8 text-center text-sm text-muted-foreground"
           >
-            暂无 MCP 服务器
+            {{ $t("No MCP servers") }}
           </p>
         </div>
       </section>
@@ -327,9 +332,9 @@ void loadMcp();
   <Dialog v-model:open="mcpAddOpen">
     <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col gap-0 p-0">
       <DialogHeader class="border-b border-border px-5 py-4">
-        <DialogTitle>添加 MCP</DialogTitle>
+        <DialogTitle>{{ $t("Add MCP") }}</DialogTitle>
         <DialogDescription class="sr-only">
-          从市场安装或导入 MCP JSON 配置
+          {{ $t("Install from the marketplace or import an MCP JSON configuration") }}
         </DialogDescription>
       </DialogHeader>
 
@@ -340,7 +345,7 @@ void loadMcp();
           @click="openMcpAdd('market')"
         >
           <DownloadIcon class="size-4" />
-          市场
+          {{ $t("Marketplace") }}
         </Button>
         <Button
           size="sm"
@@ -359,7 +364,7 @@ void loadMcp();
             <Input
               v-model="mcpMarketQuery"
               class="pl-9"
-              placeholder="搜索 MCP 服务"
+              :placeholder="$t('Search MCP servers')"
               @keydown.enter.prevent="searchMcpMarket"
             />
           </div>
@@ -372,7 +377,7 @@ void loadMcp();
               class="size-4"
               :class="mcpMarketLoading && 'animate-spin'"
             />
-            搜索
+            {{ $t("Search") }}
           </Button>
         </div>
 
@@ -410,10 +415,10 @@ void loadMcp();
             >
               {{
                 mcpInstalled(item.id)
-                  ? "已安装"
+                  ? $t("Installed")
                   : item.installable
-                    ? "安装"
-                    : item.reason || "不可安装"
+                    ? $t("Install")
+                    : item.reason || $t("Not installable")
               }}
             </Button>
           </div>
@@ -421,11 +426,11 @@ void loadMcp();
             v-if="!mcpMarketLoading && mcpMarketResults.length === 0"
             class="px-5 py-10 text-center text-sm text-muted-foreground"
           >
-            未找到可用服务
+            {{ $t("No available servers found") }}
           </p>
         </div>
         <p class="border-t border-border px-5 py-2 text-[11px] text-muted-foreground">
-          数据来自官方 MCP Registry（Preview）
+          {{ $t("Data from the official MCP Registry (Preview)") }}
         </p>
       </div>
 
@@ -450,7 +455,7 @@ void loadMcp();
             :disabled="saving || !mcpJSON.trim()"
             @click="addMcpFromJSON"
           >
-            {{ saving ? "添加中..." : "添加" }}
+            {{ saving ? $t("Adding") : $t("Add") }}
           </Button>
         </div>
       </div>
@@ -470,9 +475,9 @@ void loadMcp();
   >
     <DialogContent class="max-w-md">
       <DialogHeader>
-        <DialogTitle>删除 MCP 服务器</DialogTitle>
+        <DialogTitle>{{ $t("Delete MCP server") }}</DialogTitle>
         <DialogDescription>
-          将删除“{{ pendingMcpDelete?.name || pendingMcpDelete?.id }}”的配置并断开连接。
+          {{ $t("Delete MCP server confirmation", { name: pendingMcpDelete?.name || pendingMcpDelete?.id || "" }) }}
         </DialogDescription>
       </DialogHeader>
       <DialogFooter>
@@ -481,14 +486,14 @@ void loadMcp();
           :disabled="saving"
           @click="pendingMcpDelete = null"
         >
-          取消
+          {{ $t("Cancel") }}
         </Button>
         <Button
           variant="destructive"
           :disabled="saving"
           @click="deleteMcpServer"
         >
-          {{ saving ? "删除中..." : "删除" }}
+          {{ saving ? $t("Deleting") : $t("Delete") }}
         </Button>
       </DialogFooter>
     </DialogContent>

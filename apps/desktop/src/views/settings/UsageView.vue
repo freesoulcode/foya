@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ActivityIcon,
   CalendarCheck2Icon,
@@ -19,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api, type DailyUsage, type UsageStatistics } from "@/lib/api";
 
 type RangeDays = 7 | 30;
+const { locale, t } = useI18n();
 
 interface HeatmapDay extends DailyUsage {
   column: number;
@@ -54,60 +56,73 @@ const heatmapPanel = ref<HTMLElement | null>(null);
 const heatmapTooltip = ref<HeatmapTooltip | null>(null);
 let requestSequence = 0;
 
-const numberFormatter = new Intl.NumberFormat("zh-CN");
-const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-});
+const numberFormatter = computed(() => new Intl.NumberFormat(locale.value));
+const compactNumberFormatter = computed(() =>
+  new Intl.NumberFormat(locale.value, {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  })
+);
+const dateFormatter = computed(() =>
+  new Intl.DateTimeFormat(locale.value, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+);
 
 const metrics = computed(() => {
   const value = statistics.value;
   return [
     {
       key: "tokens",
-      label: "Tokens 用量",
+      label: t("Token usage"),
       icon: FlameIcon,
       value: formatCompactNumber(value?.total_tokens ?? 0),
       detail: value
-        ? `输入 ${formatCompactNumber(value.input_tokens)} · 输出 ${formatCompactNumber(value.output_tokens)}`
+        ? t("Input {input} · Output {output}", {
+            input: formatCompactNumber(value.input_tokens),
+            output: formatCompactNumber(value.output_tokens),
+          })
         : "",
     },
     {
       key: "sessions",
-      label: "会话数量",
+      label: t("Chats"),
       icon: MessagesSquareIcon,
       value: formatNumber(value?.session_count ?? 0),
       detail: "",
     },
     {
       key: "messages",
-      label: "消息数量",
+      label: t("Messages"),
       icon: MessageSquareIcon,
       value: formatNumber(value?.message_count ?? 0),
       detail: "",
     },
     {
       key: "active-days",
-      label: "活跃天数",
+      label: t("Active days"),
       icon: CalendarDaysIcon,
       value: formatNumber(value?.active_days ?? 0),
-      detail: `最近 ${rangeDays.value} 天`,
+      detail: t("Last {days} days", { days: rangeDays.value }),
     },
     {
       key: "streak",
-      label: "当前连续天数",
+      label: t("Current streak"),
       icon: CalendarCheck2Icon,
       value: formatNumber(value?.current_streak ?? 0),
       detail: "",
     },
     {
       key: "model",
-      label: "最常用模型",
+      label: t("Most used model"),
       icon: ActivityIcon,
-      value: value?.most_used_model || "暂无数据",
+      value: value?.most_used_model || t("No data"),
       detail: value?.most_used_model
-        ? `占 Token 用量 ${value.most_used_model_share}%`
+        ? t("{share}% of token usage", {
+            share: value.most_used_model_share,
+          })
         : "",
       compact: true,
     },
@@ -185,7 +200,7 @@ const tokenChartDetail = computed(() => {
   const days = selectedDailyUsage.value;
   const total = days.reduce((sum, day) => sum + day.token_count, 0);
   return {
-    label: "日均",
+    label: t("Daily average"),
     tokens: days.length > 0 ? Math.round(total / days.length) : 0,
   };
 });
@@ -196,7 +211,7 @@ const tokenChartDateLabels = computed(() => {
   const indexes = [...new Set([0, Math.floor((days.length - 1) / 2), days.length - 1])];
   return indexes.map((index) => ({
     index,
-    label: new Intl.DateTimeFormat("zh-CN", {
+    label: new Intl.DateTimeFormat(locale.value, {
       month: "numeric",
       day: "numeric",
     }).format(localDate(days[index].date)),
@@ -206,15 +221,12 @@ const tokenChartDateLabels = computed(() => {
 const modelRanking = computed(() => statistics.value?.model_usage?.slice(0, 8) ?? []);
 
 function formatNumber(value: number) {
-  return numberFormatter.format(value);
+  return numberFormatter.value.format(value);
 }
 
 function formatCompactNumber(value: number) {
   if (value < 10_000) return formatNumber(value);
-  const divisor = value >= 100_000_000 ? 100_000_000 : 10_000;
-  const suffix = value >= 100_000_000 ? "亿" : "万";
-  const scaled = value / divisor;
-  return `${scaled.toFixed(1).replace(/\.0$/, "")}${suffix}`;
+  return compactNumberFormatter.value.format(value);
 }
 
 function localDate(date: string) {
@@ -236,8 +248,12 @@ function heatmapClass(level: number) {
 }
 
 function heatmapLabel(day: HeatmapDay) {
-  const date = dateFormatter.format(localDate(day.date));
-  return `${date}：${formatNumber(day.message_count)} 条消息，${formatNumber(day.token_count)} Tokens`;
+  const date = dateFormatter.value.format(localDate(day.date));
+  return t("{date}: {messages} messages, {tokens} tokens", {
+    date,
+    messages: formatNumber(day.message_count),
+    tokens: formatNumber(day.token_count),
+  });
 }
 
 function updateTokenHover(event: MouseEvent) {
@@ -308,12 +324,12 @@ onMounted(loadStatistics);
 
 <template>
   <SettingsPage
-    title="使用统计"
-    description="查看本机最近的应用用量与活跃趋势。"
+    :title="$t('Usage')"
+    :description="$t('View recent local usage and activity trends.')"
     content-class="min-h-0 flex-1 overflow-y-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
   >
     <template #actions>
-      <ButtonGroup aria-label="统计周期">
+      <ButtonGroup :aria-label="$t('Statistics period')">
         <Button
           v-for="days in ([7, 30] as const)"
           :key="days"
@@ -328,7 +344,7 @@ onMounted(loadStatistics);
           :aria-pressed="rangeDays === days"
           @click="selectRange(days)"
         >
-          最近 {{ days }} 天
+          {{ $t("Last {days} days", { days }) }}
         </Button>
       </ButtonGroup>
     </template>
@@ -341,11 +357,11 @@ onMounted(loadStatistics);
       >
         <span class="flex min-w-0 items-center gap-2">
           <CircleAlertIcon class="size-4 shrink-0" />
-          <span class="truncate">统计加载失败：{{ error }}</span>
+          <span class="truncate">{{ $t("Failed to load statistics: {error}", { error }) }}</span>
         </span>
         <Button variant="outline" size="sm" @click="loadStatistics">
           <RefreshCwIcon />
-          重试
+          {{ $t("Retry") }}
         </Button>
       </div>
 
@@ -395,7 +411,7 @@ onMounted(loadStatistics);
           v-if="refreshing"
           class="absolute inset-0 grid place-items-center bg-background/55 backdrop-blur-[1px]"
         >
-          <RefreshCwIcon class="size-5 animate-spin text-muted-foreground" aria-label="正在刷新" />
+          <RefreshCwIcon class="size-5 animate-spin text-muted-foreground" :aria-label="$t('Refreshing')" />
         </div>
       </div>
 
@@ -408,9 +424,9 @@ onMounted(loadStatistics);
             <div>
               <h3 class="flex items-center gap-2 text-sm font-medium">
                 <ChartNoAxesColumnIncreasingIcon class="size-4 text-muted-foreground" />
-                每日 Token 趋势
+                {{ $t("Daily token trend") }}
               </h3>
-              <p class="mt-1 text-xs text-muted-foreground">最近 {{ rangeDays }} 天</p>
+              <p class="mt-1 text-xs text-muted-foreground">{{ $t("Last {days} days", { days: rangeDays }) }}</p>
             </div>
             <div class="text-right">
               <p class="text-xs text-muted-foreground">{{ tokenChartDetail.label }}</p>
@@ -430,7 +446,7 @@ onMounted(loadStatistics);
                 class="block w-full overflow-visible"
                 :viewBox="`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`"
                 role="img"
-                :aria-label="`最近 ${rangeDays} 天每日 Token 用量趋势`"
+                :aria-label="$t('Daily token usage trend for the last {days} days', { days: rangeDays })"
                 @mousemove="updateTokenHover"
               >
                 <line
@@ -506,7 +522,7 @@ onMounted(loadStatistics);
                   <span class="font-normal text-muted-foreground">Tokens</span>
                 </p>
                 <p class="mt-0.5 text-xs tabular-nums text-muted-foreground">
-                  {{ formatNumber(selectedTokenPoint.message_count) }} 条消息
+                  {{ $t("{count} messages", { count: formatNumber(selectedTokenPoint.message_count) }) }}
                 </p>
               </div>
             </div>
@@ -520,7 +536,7 @@ onMounted(loadStatistics);
             v-else
             class="mt-5 grid h-48 place-items-center rounded-md border border-dashed text-sm text-muted-foreground"
           >
-            暂无 Token 数据
+            {{ $t("No token data") }}
           </div>
         </section>
 
@@ -528,9 +544,9 @@ onMounted(loadStatistics);
           <div>
             <h3 class="flex items-center gap-2 text-sm font-medium">
               <TrophyIcon class="size-4 text-muted-foreground" />
-              模型用量排行
+              {{ $t("Model usage ranking") }}
             </h3>
-            <p class="mt-1 text-xs text-muted-foreground">最近 {{ rangeDays }} 天</p>
+            <p class="mt-1 text-xs text-muted-foreground">{{ $t("Last {days} days", { days: rangeDays }) }}</p>
           </div>
 
           <ol v-if="modelRanking.length" class="mt-5 space-y-4">
@@ -552,7 +568,7 @@ onMounted(loadStatistics);
                   />
                 </div>
                 <p class="mt-1.5 text-xs tabular-nums text-muted-foreground">
-                  {{ formatNumber(item.request_count) }} 次请求
+                  {{ $t("{count} requests", { count: formatNumber(item.request_count) }) }}
                 </p>
               </div>
               <div class="pl-2 text-right">
@@ -565,7 +581,7 @@ onMounted(loadStatistics);
             v-else
             class="mt-5 grid h-48 place-items-center rounded-md border border-dashed text-sm text-muted-foreground"
           >
-            暂无模型用量
+            {{ $t("No model usage") }}
           </div>
         </section>
       </div>
@@ -573,18 +589,18 @@ onMounted(loadStatistics);
       <section ref="heatmapPanel" class="relative order-1 rounded-lg border bg-background p-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 class="text-sm font-medium">活跃热力图</h3>
-            <p class="mt-1 text-xs text-muted-foreground">近一年</p>
+            <h3 class="text-sm font-medium">{{ $t("Activity heatmap") }}</h3>
+            <p class="mt-1 text-xs text-muted-foreground">{{ $t("Past year") }}</p>
           </div>
-          <div class="flex items-center gap-2 text-xs text-muted-foreground" aria-label="活跃度图例">
-            <span>较少</span>
+          <div class="flex items-center gap-2 text-xs text-muted-foreground" :aria-label="$t('Activity legend')">
+            <span>{{ $t("Less") }}</span>
             <span
               v-for="level in [0, 1, 2, 3, 4]"
               :key="level"
               class="size-3 rounded-[3px] border"
               :class="heatmapClass(level)"
             />
-            <span>较多</span>
+            <span>{{ $t("More") }}</span>
           </div>
         </div>
 
@@ -622,7 +638,7 @@ onMounted(loadStatistics);
             {{ dateFormatter.format(localDate(heatmapTooltip.day.date)) }}
           </p>
           <div class="mt-1.5 flex items-center gap-3 text-xs tabular-nums">
-            <span>{{ formatNumber(heatmapTooltip.day.message_count) }} 条消息</span>
+            <span>{{ $t("{count} messages", { count: formatNumber(heatmapTooltip.day.message_count) }) }}</span>
             <span>{{ formatNumber(heatmapTooltip.day.token_count) }} Tokens</span>
           </div>
         </div>

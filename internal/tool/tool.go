@@ -1,8 +1,7 @@
-// Package tool 定义工具接口、注册表与路由。
+// Package tool defines tool interfaces, registration, and routing.
 //
-// 工具是模型可调用的执行单元:声明喂给模型的 schema、把模型返回的
-// 调用路由到 handler、执行并结构化回灌。工具是内核的核心扩展点——
-// 子 agent、Computer Use 等能力都以工具形态暴露给模型。
+// Tools expose schemas to the model, route calls to handlers, execute actions,
+// and return structured results. They are the kernel's core extension point.
 package tool
 
 import (
@@ -12,23 +11,23 @@ import (
 	"github.com/freesoulcode/foya/internal/provider"
 )
 
-// Exposure 控制工具对模型的可见性。
+// Exposure controls tool visibility to the model.
 type Exposure string
 
 const (
-	ExposureDirect   Exposure = "direct"   // 初始即在模型工具列表中
-	ExposureDeferred Exposure = "deferred" // 延迟加载 schema,经 tool-search 拉取(省 token)
-	ExposureHidden   Exposure = "hidden"   // 不暴露给模型
+	ExposureDirect   Exposure = "direct"   // Included in the initial tool list.
+	ExposureDeferred Exposure = "deferred" // Loaded through tool-search when needed.
+	ExposureHidden   Exposure = "hidden"   // Never exposed to the model.
 )
 
-// Call 是模型发起的一次工具调用。
+// Call is a tool invocation requested by the model.
 type Call struct {
 	ID    string
 	Name  string
-	Input []byte // 原始 JSON 参数
+	Input []byte // Raw JSON arguments.
 }
 
-// ContentPart 是工具结果的一个内容块(文本 / 图片 / artifact 引用)。
+// ContentPart is one text, image, or artifact result block.
 type ContentPart struct {
 	Type       string // text / image / artifact_ref
 	Text       string
@@ -38,22 +37,21 @@ type ContentPart struct {
 	Attachment *message.AttachmentRef
 }
 
-// Result 是工具执行结果。
+// Result is the outcome of a tool execution.
 type Result struct {
 	Content    []ContentPart
-	IsError    bool // 失败也结构化回灌给模型自我修正
-	Terminate  bool // 是否提前结束该回合批次
+	IsError    bool // Errors are returned to the model for self-correction.
+	Terminate  bool // Whether to end the current turn batch early.
 	FileChange *message.FileChange
-	// Diff 是文件变更的统一 diff 文本(仅 write/edit 等文件工具填充)。
-	// 仅供 UI 展示,不回灌模型(与 message.Reasoning 同样处理)。
+	// Diff is a unified file diff for UI rendering and is not sent to the model.
 	Diff string
 }
 
-// Tool 是模型可调用的执行单元。
+// Tool is an executable operation available to the model.
 type Tool interface {
 	Name() string
-	Description() string // 给模型看的工具说明
-	Spec() []byte        // 参数 JSON Schema,喂给模型
+	Description() string // Description shown to the model.
+	Spec() []byte        // JSON Schema sent to the model.
 	Exposure() Exposure
 	Run(ctx context.Context, call Call) (Result, error)
 }
@@ -65,14 +63,14 @@ type ParallelTool interface {
 	Parallel() bool
 }
 
-// Registry 管理工具集合。
+// Registry manages available tools.
 type Registry interface {
-	Register(t Tool)         // 内置工具
-	RegisterExternal(t Tool) // MCP / 动态工具,可去重
+	Register(t Tool)         // Built-in tool.
+	RegisterExternal(t Tool) // MCP or dynamic tool, deduplicated by name.
 	Unregister(name string)
 	Get(name string) (Tool, bool)
 	List() []Tool
-	Specs() []provider.ToolDef // 生成喂给模型的工具定义
+	Specs() []provider.ToolDef // Tool definitions sent to the model.
 	SpecsFor(activeDeferred map[string]bool) []provider.ToolDef
 	SearchDeferred(query string, limit int) []Tool
 }

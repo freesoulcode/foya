@@ -25,8 +25,9 @@ import {
   type BrowserActionRequest,
   type DefaultModels,
 } from "@/lib/api";
+import { translate } from "@/i18n";
 
-// 新建对话草稿态的配置:在真正创建会话前由用户选择模型、项目和审批档位。
+// Settings selected before a draft becomes a persisted chat.
 export interface DraftConfig {
   connectionID: string;
   model: string;
@@ -35,10 +36,10 @@ export interface DraftConfig {
   approvalMode: ApprovalMode;
 }
 
-// 默认审批档位:危险操作前询问(与内核默认值一致)。
+// Default approval mode matches the kernel and prompts before risky operations.
 const DEFAULT_APPROVAL: ApprovalMode = "manual";
 
-// 内核事件(与 Go event.Event 对齐的子集)。
+// Public subset of Go event.Event.
 interface KernelEvent {
   seq: number;
   kind: string;
@@ -47,7 +48,7 @@ interface KernelEvent {
   payload?: unknown;
 }
 
-// 单例状态:整个应用共享一个内核连接与会话集合。
+// Singleton state shared by the entire application.
 const ready = ref(false);
 const connecting = ref(false);
 const connectError = ref("");
@@ -55,14 +56,13 @@ const sessions = ref<Session[]>([]);
 const projects = ref<ProjectInfo[]>([]);
 const activeId = ref<string>("");
 const streaming = ref(false);
-// 哪些会话正在运行 AI 回合(sessionId → true)。供侧边栏给运行中的会话加动画,
-// 与当前激活会话无关:切到别的会话后,原会话仍显示运行态。
+// Running state is tracked per chat, independent of the active chat.
 const runningSessions = ref<Record<string, boolean>>({});
-// 非当前会话产生了尚未查看的回合结果。进入会话后清除。
+// Unread results produced by inactive chats are cleared when opened.
 const unreadSessions = ref<Record<string, boolean>>({});
 const compactingSessions = ref<Record<string, boolean>>({});
 
-// 新对话草稿态的配置(activeId === "" 时生效)。
+// Draft configuration used while activeId is empty.
 const draft = reactive<DraftConfig>({
   connectionID: "",
   model: "",
@@ -71,7 +71,7 @@ const draft = reactive<DraftConfig>({
   approvalMode: DEFAULT_APPROVAL,
 });
 
-// 连接目录及其模型清单。模型按 Connection 分组，避免同名模型歧义。
+// Model catalogs grouped by connection to disambiguate identical model names.
 const connectionModels = ref<ConnectionModelGroup[]>([]);
 const modelsLoading = ref(false);
 const modelsError = ref("");
@@ -82,13 +82,13 @@ const defaultModels = ref<DefaultModels>({
   video: { connection_id: "", model: "" },
 });
 
-// 每个会话的消息与订阅状态(按会话缓存,切换时不丢)。
+// Per-chat messages and subscriptions persist across navigation.
 const messagesBySession = ref<Record<string, ChatMessage[]>>({});
 const subscribed = new Set<string>();
 const streamingIdx: Record<string, number> = {};
-// 已删除会话:其迟到事件(如 turn_complete)一律丢弃,不重建消息桶。
+// Ignore late events from deleted chats instead of rebuilding their buckets.
 const deletedSessions = new Set<string>();
-// 待发送队列由内核持有;这里仅按会话保存 SSE/GET 投影。
+// The kernel owns queues; this state stores their SSE and GET projections.
 const queuedBySession = ref<Record<string, QueuedMessage[]>>({});
 const usageBySession = ref<Record<string, ContextUsage>>({});
 const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
@@ -97,7 +97,7 @@ const workflowsBySession = ref<Record<string, WorkflowRecord | null>>({});
 const backgroundCommandsBySession = ref<Record<string, BackgroundCommand[]>>({});
 const fileReviewsBySession = ref<Record<string, PendingFileReview>>({});
 
-// 待处理的审批请求(requestId → 请求详情),UI 据此弹确认框。
+// Pending approval requests keyed by request ID.
 export interface PendingApproval {
   id: string;
   session: string;
@@ -154,7 +154,7 @@ function ensureBucket(id: string) {
   if (!messagesBySession.value[id]) messagesBySession.value[id] = [];
 }
 
-// 从后往前找最近一条 assistant 消息(用于挂载 tool_call 视图)。
+// Find the latest assistant message that can receive a tool call.
 function findLastAssistantIdx(bucket: ChatMessage[]): number {
   for (let i = bucket.length - 1; i >= 0; i--) {
     if (bucket[i].role === "assistant") return i;
@@ -205,14 +205,13 @@ async function hydrateAgentRun(parentSessionId: string, run: AgentRunSnapshot) {
   await subscribe(childId);
 }
 
-// 确保气泡有 segments 数组,并返回它(用于按序追加思考/文本/工具段)。
+// Ensure a message has ordered segments and return them.
 function ensureSegments(msg: ChatMessage): NonNullable<ChatMessage["segments"]> {
   if (!msg.segments) msg.segments = [];
   return msg.segments;
 }
 
-// 追加一段流式增量(思考或正文):若末段同类则并入,否则新开一段。
-// 这样「思考→工具→思考→回复」的交错顺序被如实记录为多个段。
+// Append a streamed delta, merging adjacent segments of the same kind.
 function appendDelta(msg: ChatMessage, kind: "reasoning" | "text", delta: string) {
   const segs = ensureSegments(msg);
   const last = segs[segs.length - 1];
@@ -223,7 +222,7 @@ function appendDelta(msg: ChatMessage, kind: "reasoning" | "text", delta: string
   }
 }
 
-// 处理某会话的一条 SSE 事件。
+// Apply one SSE event to a chat projection.
 function handleEvent(sessionId: string, data: string) {
   let ev: KernelEvent;
   try {
@@ -231,7 +230,7 @@ function handleEvent(sessionId: string, data: string) {
   } catch {
     return;
   }
-  // 已删除会话的迟到事件直接丢弃,不重建消息桶(删除可能晚于事件到达)。
+  // Deletion can race with delivery, so discard late events for deleted chats.
   if (deletedSessions.has(sessionId)) return;
   ensureBucket(sessionId);
   const bucket = messagesBySession.value[sessionId];
@@ -241,12 +240,12 @@ function handleEvent(sessionId: string, data: string) {
       const delta = ev.payload as string;
       let idx = streamingIdx[sessionId] ?? -1;
       if (idx < 0) {
-        // 兜底:若乐观气泡缺失(如热更新后),补建一条。
+        // Recreate the optimistic bubble when it is missing after a reload.
         bucket.push({ role: "assistant", content: "" });
         idx = bucket.length - 1;
         streamingIdx[sessionId] = idx;
       }
-      // 首个 delta 到达,清除可能的 pending/error 态,开始填内容。
+      // The first delta clears pending or error state.
       bucket[idx].error = false;
       bucket[idx].content += delta;
       appendDelta(bucket[idx], "text", delta);
@@ -254,8 +253,7 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "reasoning_delta": {
-      // 思考内容增量:按序追加为 reasoning 段。工具执行后模型再次思考时,
-      // 因末段已是 tool,会自动新开一段 reasoning,从而保留多次思考。
+      // Preserve repeated reasoning phases by appending ordered segments.
       const delta = ev.payload as string;
       let idx = streamingIdx[sessionId] ?? -1;
       if (idx < 0) {
@@ -271,8 +269,7 @@ function handleEvent(sessionId: string, data: string) {
     case "message_end":
     case "message_imported": {
       const m = { ...(ev.payload as ChatMessage), event_seq: ev.seq };
-      // 用户消息由内核事件统一落到界面,而非只在发起请求的客户端乐观插入;
-      // 因此同一会话的其它在线客户端也能看到新回合。
+      // Kernel events project user messages to every connected client.
       if (m.role === "user") {
         bucket.push(m);
         break;
@@ -280,12 +277,12 @@ function handleEvent(sessionId: string, data: string) {
       const idx = streamingIdx[sessionId] ?? -1;
       if (m.role === "assistant" && idx >= 0) {
         bucket[idx].event_seq = m.event_seq;
-        // 内容以流式累积的 delta 为准;仅在无 delta 时用服务端 payload 兜底。
+        // Prefer accumulated deltas and use the final payload as a fallback.
         if (!bucket[idx].content && m.content) {
           bucket[idx].content = m.content;
           appendDelta(bucket[idx], "text", m.content);
         }
-        // 思考内容兜底:流式未收到 reasoning 段但服务端 payload 有,则补一段。
+        // Restore reasoning from the final payload if no delta was received.
         if (m.reasoning && !bucket[idx].segments?.some((s) => s.kind === "reasoning")) {
           ensureSegments(bucket[idx]).unshift({ kind: "reasoning", text: m.reasoning });
         }
@@ -294,15 +291,13 @@ function handleEvent(sessionId: string, data: string) {
         if (m.turn_status) bucket[idx].turn_status = m.turn_status;
         if (m.turn_reason) bucket[idx].turn_reason = m.turn_reason;
         bucket[idx].error = false;
-        // 仅当本条消息不携带 tool_calls(即最终回复)时才释放流式槽位。
-        // 携带 tool_calls 时回合尚未结束:工具执行后模型会继续输出,
-        // 后续 delta 应追加到同一条气泡,而非新建气泡拆成两条消息。
-        // streaming 也不在此复位,由 turn_complete / error 统一负责。
+        // Tool-call messages do not end the turn. Keep the same streaming slot
+        // so later deltas remain in one bubble; turn_complete or error resets it.
         if (!m.tool_calls) {
           streamingIdx[sessionId] = -1;
         }
       }
-      // tool 结果消息通过 tool_end 事件展示,不重复插入。
+      // Tool results are rendered from tool_end events.
       break;
     }
     case "history_rewound": {
@@ -328,12 +323,12 @@ function handleEvent(sessionId: string, data: string) {
         input: string;
         status?: ToolCallView["status"];
       };
-      // 找到当前流式助手消息,挂上 tool_call 视图。
+      // Attach the tool call to the current streaming assistant message.
       const asstIdx = findLastAssistantIdx(bucket);
       if (asstIdx >= 0) {
         const msg = bucket[asstIdx];
         if (!msg.tool_calls) msg.tool_calls = [];
-        // 避免重复(消息回放时可能已存在)。
+        // Replay may already contain this tool call.
         if (!msg.tool_calls.find((tc) => tc.id === p.id)) {
           const tool = {
             id: p.id,
@@ -342,15 +337,15 @@ function handleEvent(sessionId: string, data: string) {
             status: p.status ?? "queued",
           };
           msg.tool_calls.push(tool);
-          // 按序追加为 tool 段:插在当前思考/文本之后,后续思考会另起新段。
+          // Preserve ordering by appending a tool segment.
           ensureSegments(msg).push({ kind: "tool", tool });
         }
       }
       break;
     }
     case "tool_update": {
-      // 执行前回填完整参数(tool_begin 在参数刚开始流式生成时已发出,
-      // 那时只有名称;此处补上完整 input)。若卡片因回放等原因不存在则兜底创建。
+      // Fill complete arguments before execution. tool_begin may contain only
+      // a name while arguments are still streaming.
       const p = ev.payload as {
         id: string;
         name: string;
@@ -416,7 +411,7 @@ function handleEvent(sessionId: string, data: string) {
           if (p.diff) tc.diff = p.diff;
           if (p.attachments) tc.attachments = p.attachments;
         }
-        // 同步更新 segments 中对应的 tool 段(与 tool_calls 是不同对象引用)。
+        // Segments and tool_calls hold different object references.
         const seg = bucket[asstIdx].segments?.find(
           (s) => s.kind === "tool" && s.tool.id === p.id
         );
@@ -553,7 +548,7 @@ function handleEvent(sessionId: string, data: string) {
       }
       break;
     case "session_updated": {
-      // 会话元数据变更(标题/模型等),按 id 替换本地会话项,侧边栏自动响应。
+      // Replace updated chat metadata by ID.
       const updated = ev.payload as Session;
       if (updated && updated.id) {
         const idx = sessions.value.findIndex((s) => s.id === updated.id);
@@ -562,8 +557,7 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "session_deleted": {
-      // 会话被删除(可能来自其他设备):从列表移除,清理本地缓存;
-      // 若正在查看该会话,切换到另一个会话或进入草稿态。
+      // A remote deletion removes local state and selects another chat or a draft.
       const p = ev.payload as { id?: string };
       const id = p?.id ?? sessionId;
       removeSession(id);
@@ -589,7 +583,7 @@ function handleEvent(sessionId: string, data: string) {
       break;
     }
     case "error": {
-      // 优先填入当前回合的空 assistant 气泡,避免多出一条错误消息。
+      // Reuse the current empty assistant bubble for errors.
       delete runningSessions.value[sessionId];
       const text = `⚠️ ${String(ev.payload)}`;
       const idx = streamingIdx[sessionId] ?? -1;
@@ -606,7 +600,7 @@ function handleEvent(sessionId: string, data: string) {
   }
 }
 
-// 订阅某会话事件流(幂等)。
+// Subscribe to a chat event stream idempotently.
 async function subscribe(sessionId: string) {
   if (subscribed.has(sessionId)) return;
   subscribed.add(sessionId);
@@ -638,7 +632,7 @@ async function refreshFileReview(sessionId: string) {
       error: "",
     };
   } catch (error) {
-    console.error("加载待审查文件失败:", error);
+    console.error("Failed to load files awaiting review:", error);
   }
 }
 
@@ -650,7 +644,7 @@ function refreshActiveFileReview() {
   return refreshFileReview(sessionId);
 }
 
-// 拉取所有连接及其模型目录。单个连接的目录失败不阻塞其它连接。
+// Load every connection catalog without letting one failure block the others.
 async function refreshConnections() {
   modelsLoading.value = true;
   modelsError.value = "";
@@ -726,7 +720,7 @@ async function listSessionsWhenKernelReady(): Promise<Session[]> {
     } catch (error) {
       lastError = error;
       const message = String(error);
-      if (!message.includes("连接内核失败") && !message.includes("client error (Connect)")) {
+      if (!message.includes("Failed to connect to kernel") && !message.includes("client error (Connect)")) {
         throw error;
       }
       if (attempt < 40) await new Promise((resolve) => window.setTimeout(resolve, 250));
@@ -735,7 +729,7 @@ async function listSessionsWhenKernelReady(): Promise<Session[]> {
   throw lastError;
 }
 
-// 连接内核:等待 sidecar 就绪后拉会话列表,选中或新建一个会话。
+// Wait for the sidecar, load chats, and select an existing chat or draft.
 async function connect() {
   if (ready.value || connecting.value) return;
   connecting.value = true;
@@ -751,19 +745,18 @@ async function connect() {
       ensureBucket("");
     }
     ready.value = true;
-    // 连接就绪后拉取连接目录与模型列表。
+    // Load model catalogs after the kernel connection is ready.
     void refreshConnections();
   } catch (e) {
-    // 不再静默吞错:把失败原因暴露到界面,便于定位(如内核未就绪、命令缺失)。
+    // Surface startup failures so missing commands and kernel issues are visible.
     connectError.value = String(e);
-    console.error("连接内核失败:", e);
+    console.error("Failed to connect to kernel:", e);
   } finally {
     connecting.value = false;
   }
 }
 
-// 进入新对话草稿态:不立即创建会话,直到用户发送第一条消息。
-// 从项目分组发起时继承 Project ID;全局新建仍使用无项目草稿。
+// Enter draft state without creating a chat until the first message is sent.
 function newSession(projectID = "") {
   activeId.value = "";
   ensureBucket("");
@@ -784,14 +777,11 @@ function newSession(projectID = "") {
   draft.approvalMode = DEFAULT_APPROVAL;
 }
 
-// 把后端扁平历史折叠成带有序 segments 的气泡序列。
-// 后端一个回合按步骤产生多条消息:assistant#1(思考+工具调用)→ tool(结果)
-// → assistant#2(思考+回复)……前端把「同一回合内连续的 assistant/tool 消息」
-// 合并为一个气泡,按真实顺序还原「思考→工具→思考→回复」的交错。
-// 回合边界:user 消息。
+// Fold flat backend history into assistant bubbles with ordered segments.
+// User messages delimit turns; consecutive assistant and tool messages merge.
 function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
-  let cur: ChatMessage | null = null; // 当前正在聚合的 assistant 气泡
+  let cur: ChatMessage | null = null;
 
   for (const m of history) {
     if (m.role === "user") {
@@ -815,7 +805,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       if (m.reasoning) segs.push({ kind: "reasoning", text: m.reasoning });
       if (m.content) {
         segs.push({ kind: "text", text: m.content });
-        cur.content += m.content; // 供复制/滚动等仍读 content 的地方使用
+        cur.content += m.content;
       }
       if (m.turn_started_at) cur.turn_started_at = m.turn_started_at;
       if (m.turn_completed_at) cur.turn_completed_at = m.turn_completed_at;
@@ -831,7 +821,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       continue;
     }
     if (m.role === "tool") {
-      // 工具结果:回填到当前气泡对应 tool 段(按 tool_call_id 关联)。
+      // Fill the matching tool segment using tool_call_id.
       if (cur) {
         if (m.event_seq) cur.event_seq = m.event_seq;
         const seg = cur.segments!.find(
@@ -853,14 +843,14 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       }
       continue;
     }
-    // system 等其它角色:原样保留(通常不入历史)。
+    // Preserve other roles unchanged.
     out.push(m);
     cur = null;
   }
   return out;
 }
 
-// 切换到某会话:首次进入时加载历史并订阅。
+// Load history and subscribe the first time a chat is opened.
 async function select(id: string) {
   activeId.value = id;
   delete unreadSessions.value[id];
@@ -886,7 +876,7 @@ async function select(id: string) {
     api.getWorkflow(id),
     api.listBackgroundCommands(id),
     api.loadFileReview(id).catch((error) => {
-      console.error("加载待审查文件失败:", error);
+      console.error("Failed to load files awaiting review:", error);
       return {
         files: [],
         file_state_token: "",
@@ -909,8 +899,7 @@ async function select(id: string) {
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
-// 局部更新当前会话的可变配置(模型/项目/审批档位)。
-// 调用内核 PATCH 接口,并同步更新本地会话对象;审批档位切换对后续工具调用立即生效。
+// Persist mutable chat settings and update the local projection.
 async function updateSession(id: string, patch: UpdateSessionPatch) {
   const updated = await api.updateSession(id, patch);
   const idx = sessions.value.findIndex((s) => s.id === id);
@@ -918,13 +907,12 @@ async function updateSession(id: string, patch: UpdateSessionPatch) {
   return updated;
 }
 
-// 手动改名:置 title_is_manual,此后内核自动标题不再覆盖。
-// 内核会广播 session_updated,本地会话项随之更新。
+// Manual renames prevent generated titles from replacing the value.
 async function renameSession(id: string, title: string) {
   return updateSession(id, { title });
 }
 
-// 置顶/取消置顶:走 PATCH,返回的会话项直接替换本地项。
+// Persist a pin change and replace the local chat.
 async function pinSession(id: string, pinned: boolean) {
   return updateSession(id, { pinned });
 }
@@ -944,7 +932,7 @@ async function forkSession(id: string, throughSeq?: number) {
   return forked;
 }
 
-// 从本地集合移除会话并清理缓存;若移除的是当前会话,切到另一个或进入草稿态。
+// Remove local chat state and select another chat or enter draft state.
 function removeSession(id: string) {
   deletedSessions.add(id);
   const idx = sessions.value.findIndex((s) => s.id === id);
@@ -959,7 +947,7 @@ function removeSession(id: string) {
   delete compactingSessions.value[id];
   delete backgroundCommandsBySession.value[id];
   delete fileReviewsBySession.value[id];
-  // 清理该会话的待处理审批。
+  // Clear pending approvals for this chat.
   for (const [aid, a] of Object.entries(pendingApprovals.value)) {
     if (a.session === id) delete pendingApprovals.value[aid];
   }
@@ -978,14 +966,13 @@ function removeSession(id: string) {
   }
 }
 
-// 删除会话:调用内核 DELETE(中断回合、清历史、广播),成功后本地移除。
-// 非活跃会话不订阅其 SSE,故删除后需这里主动移除;活跃会话的广播也会到达,去重即可。
+// Delete the chat in the kernel, then remove local state idempotently.
 async function deleteSession(id: string) {
   await api.deleteSession(id);
   removeSession(id);
 }
 
-// 回执审批决策(批准/拒绝)。
+// Resolve an approval request.
 async function resolveApproval(
   sessionId: string,
   requestId: string,
@@ -1009,15 +996,14 @@ async function cancelQuestions(sessionId: string, batchId: string) {
   delete pendingQuestions.value[batchId];
 }
 
-// 中断当前会话正在运行的回合(用户点停止)。后端会传播 ctx 取消,
-// 中断 provider HTTP 请求、工具执行与审批等待;待发送队列保留并暂停。
+// Stop the active turn while preserving and pausing its queued messages.
 async function cancelTurn() {
   const id = activeId.value;
   if (!id) return;
   try {
     await api.cancelTurn(id);
   } catch (e) {
-    console.error("中断回合失败:", e);
+    console.error("Failed to stop turn:", e);
   }
 }
 
@@ -1027,7 +1013,7 @@ async function cancelTool(toolCallId: string) {
   try {
     await api.cancelTool(id, toolCallId);
   } catch (e) {
-    console.error("中断命令失败:", e);
+    console.error("Failed to stop command:", e);
   }
 }
 
@@ -1087,7 +1073,7 @@ async function backgroundTool(
     backgroundCommandsBySession.value[id] = (
       backgroundCommandsBySession.value[id] ?? []
     ).filter((item) => item.command_id !== pendingId);
-    console.error("切换后台运行失败:", e);
+    console.error("Failed to move command to background:", e);
     return undefined;
   }
 }
@@ -1110,7 +1096,7 @@ async function revealToolCommand(
       await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
   }
-  console.error("打开命令终端失败:", lastError);
+  console.error("Failed to open command terminal:", lastError);
   return undefined;
 }
 
@@ -1125,12 +1111,11 @@ async function stopBackgroundCommand(commandId: string) {
       (item) => item.command_id !== commandId
     );
   } catch (e) {
-    console.error("终止后台命令失败:", e);
+    console.error("Failed to stop background command:", e);
   }
 }
 
-// 确保草稿态拥有一个真实会话。工作台能力和发送消息共用这条创建路径，
-// 避免同一份草稿配置在不同入口重复组装。
+// Persist a draft chat through one shared path for the workspace and composer.
 async function ensureSession(): Promise<string> {
   if (activeId.value) return activeId.value;
   const s = await api.createSession({
@@ -1149,9 +1134,8 @@ async function ensureSession(): Promise<string> {
   return s.id;
 }
 
-// 发送一条消息。内核原子决定直接启动或进入队列;用户消息与运行态
-// 统一由 SSE 事件投影,从而让多个客户端保持一致。
-// 若当前为草稿态(尚未创建会话),先用草稿配置创建会话再发送。
+// Submit a message. The kernel atomically starts or queues it and projects state
+// through SSE so all clients remain consistent.
 async function send(
   text: string,
   files: File[] = [],
@@ -1170,7 +1154,7 @@ async function send(
       ensureBucket(id);
       messagesBySession.value[id].push({
         role: "assistant",
-        content: `⚠️ 压缩失败：${String(e)}`,
+        content: translate("Compaction failed: {error}", { error: String(e) }),
         error: true,
       });
     }
@@ -1204,7 +1188,7 @@ async function send(
       ensureBucket(id);
       messagesBySession.value[id].push({
         role: "assistant",
-        content: `⚠️ 发送失败：${String(e)}`,
+        content: translate("Send failed: {error}", { error: String(e) }),
         error: true,
       });
     } else {
@@ -1236,7 +1220,7 @@ async function rewindSentMessage(messageSeq: number) {
       headSeq: 0,
       fileStateToken: "",
       forceFileKeys: [],
-      error: `回退失败：${String(error)}`,
+      error: translate("Rewind failed: {error}", { error: String(error) }),
     };
   }
 }
@@ -1266,7 +1250,7 @@ async function confirmHistoryRewind() {
     };
   } catch (error) {
     pending.submitting = false;
-    pending.error = `回退失败：${String(error)}`;
+    pending.error = translate("Rewind failed: {error}", { error: String(error) });
   }
 }
 
@@ -1319,7 +1303,7 @@ async function resolveActiveFileReview(action: "keep" | "undo") {
     const current = fileReviewsBySession.value[sessionId];
     if (current) {
       current.submitting = false;
-      current.error = `处理失败：${String(error)}`;
+      current.error = translate("Operation failed: {error}", { error: String(error) });
     }
   }
 }
@@ -1339,7 +1323,7 @@ async function editQueuedMessage(messageId: string, text: string) {
     await api.updateQueuedMessage(id, messageId, { message: text });
     queuedBySession.value[id] = await api.listQueuedMessages(id);
   } catch (e) {
-    console.error("编辑待发送消息失败:", e);
+    console.error("Failed to edit queued message:", e);
   }
 }
 
@@ -1353,7 +1337,7 @@ async function reorderQueuedMessage(messageId: string, position: number) {
     await api.updateQueuedMessage(id, messageId, { position });
     queuedBySession.value[id] = await api.listQueuedMessages(id);
   } catch (e) {
-    console.error("调整待发送顺序失败:", e);
+    console.error("Failed to reorder queued message:", e);
   }
 }
 
@@ -1366,7 +1350,7 @@ async function deleteQueuedMessage(messageId: string) {
       (item) => item.id !== messageId
     );
   } catch (e) {
-    console.error("删除待发送消息失败:", e);
+    console.error("Failed to delete queued message:", e);
   }
 }
 
@@ -1377,7 +1361,7 @@ async function dispatchQueuedMessage(messageId: string) {
     await api.dispatchQueuedMessage(id, messageId);
     queuedBySession.value[id] = await api.listQueuedMessages(id);
   } catch (e) {
-    console.error("立即发送失败:", e);
+    console.error("Failed to send queued message immediately:", e);
   }
 }
 
@@ -1394,7 +1378,7 @@ async function closeWorkflow(id: string) {
   try {
     workflowsBySession.value[id] = await api.closeWorkflow(id, workflow.id);
   } catch (e) {
-    console.error("退出工作流失败:", e);
+    console.error("Failed to close workflow:", e);
   }
 }
 

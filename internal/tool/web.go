@@ -117,7 +117,7 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 	decision, err := t.gateway.Request(ctx, approval.Request{
 		ToolName: t.Name(),
 		Action:   "network",
-		Detail:   "联网搜索: " + params.Query,
+		Detail:   "Web search: " + params.Query,
 		Resource: params.Query,
 		Scope:    webAccessScope,
 	})
@@ -173,7 +173,7 @@ func (t *webFetchTool) Run(ctx context.Context, call Call) (Result, error) {
 	decision, err := t.gateway.Request(ctx, approval.Request{
 		ToolName: t.Name(),
 		Action:   "network",
-		Detail:   "读取网页: " + location.String(),
+		Detail:   "Read web page: " + location.String(),
 		Resource: location.String(),
 		Scope:    webAccessScope,
 	})

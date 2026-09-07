@@ -1,7 +1,7 @@
-// Package session 定义会话及多会话管理。
+// Package session defines chats and multi-chat lifecycle management.
 //
-// 会话归内核所有,客户端无状态。一个 session 可被多个客户端订阅,
-// 事件广播给所有订阅者。session 支持多设备并发连接。
+// Chats belong to the kernel and clients remain stateless. Multiple clients
+// can subscribe to one chat and receive the same event stream.
 package session
 
 import (
@@ -15,17 +15,17 @@ import (
 )
 
 var (
-	// ErrNotFound 表示会话不存在。
+	// ErrNotFound indicates that a chat does not exist.
 	ErrNotFound = errors.New("session not found")
-	// ErrProjectLocked 表示已绑定项目的会话不能切换或清空项目。
+	// ErrProjectLocked indicates that an attached project cannot be changed.
 	ErrProjectLocked = errors.New("session project is locked")
-	// ErrInvalidReasoningEffort 表示推理强度不在内核支持的统一档位中。
+	// ErrInvalidReasoningEffort indicates an unsupported reasoning level.
 	ErrInvalidReasoningEffort = errors.New("invalid reasoning effort")
-	// ErrInvalidApprovalMode 表示审批模式不是受支持的新模式。
+	// ErrInvalidApprovalMode indicates an unsupported approval mode.
 	ErrInvalidApprovalMode = errors.New("invalid approval mode")
 )
 
-// Phase 是会话当前阶段。
+// Phase is the current chat phase.
 type Phase string
 
 const (
@@ -43,8 +43,8 @@ const (
 	AgentModePlanReady AgentMode = "plan_ready"
 )
 
-// ReasoningEffort 是推理模型的会话级推理强度。
-// 空值表示不覆盖模型服务的默认行为。
+// ReasoningEffort is the chat-level reasoning intensity.
+// An empty value preserves the model provider default.
 type ReasoningEffort string
 
 const (
@@ -64,7 +64,7 @@ func ValidReasoningEffort(effort string) bool {
 	}
 }
 
-// TaskStatus 是会话内执行任务的当前状态。
+// TaskStatus is the current state of a task within a chat.
 type TaskStatus string
 
 const (
@@ -73,13 +73,13 @@ const (
 	TaskStatusCompleted  TaskStatus = "completed"
 )
 
-// Task 是模型维护的会话内任务列表条目。
+// Task is one model-managed item in a chat task list.
 type Task struct {
 	Content string     `json:"content"`
 	Status  TaskStatus `json:"status"`
 }
 
-// Session 是一个长生命周期的交互会话。
+// Session is a long-lived interactive chat.
 type Session struct {
 	ID              string          `json:"id"`
 	ParentID        string          `json:"parent_id,omitempty"`
@@ -118,8 +118,8 @@ type SpawnedBy struct {
 	ParentToolCallID string `json:"parent_tool_call_id"`
 }
 
-// CreateOptions 是新建会话时可由客户端指定的参数。
-// 零值字段由上层(backend/server)填充默认值。
+// CreateOptions contains client-selected settings for a new chat.
+// The backend or server fills defaults for zero values.
 type CreateOptions struct {
 	ConnectionID      string
 	Model             string
@@ -138,30 +138,29 @@ type CreateOptions struct {
 	AgentMaxTurns     int
 }
 
-// Manager 管理多会话生命周期。
+// Manager controls the lifecycle of multiple chats.
 type Manager interface {
 	Create(opts CreateOptions) (*Session, error)
 	Get(id string) (*Session, bool)
 	List() []*Session
-	// Update 局部更新会话配置。项目只能从空值绑定一次，绑定后不可更换。
-	// 入参为指针,nil 表示该字段不变。
+	// Update partially updates chat settings. A project can only be attached once.
+	// A nil pointer leaves that field unchanged.
 	Update(id string, connectionID, model, reasoningEffort, projectID, approvalMode *string) (*Session, error)
-	// SetPhase 更新由内核控制的执行阶段。
+	// SetPhase updates the kernel-controlled execution phase.
 	SetPhase(id string, phase Phase) (*Session, error)
 	SetAgentMode(id string, mode, prePlanMode AgentMode) (*Session, error)
 	SetTasks(id string, tasks []Task) (*Session, error)
-	// SetGeneratedTitle 设置自动生成的标题(if-absent 语义)。
-	// 仅当标题为空且用户未手动改名时写入,返回是否写入成功。
-	// AI 结果永不覆盖手动改名。
+	// SetGeneratedTitle stores a generated title only when no title exists.
+	// It never overwrites a manual rename.
 	SetGeneratedTitle(id, title string) (bool, error)
 	// ResetGeneratedTitle clears an automatic title before regenerating it from
 	// an edited first turn. Manually assigned titles are never changed.
 	ResetGeneratedTitle(id string) (*Session, bool, error)
-	// Rename 手动改名,置 TitleIsManual=true,此后自动标题不再覆盖。
+	// Rename assigns a manual title that generated titles cannot overwrite.
 	Rename(id, title string) error
-	// SetPinned 置顶/取消置顶。置顶记录 PinnedAt 用于同组内排序。
+	// SetPinned updates pin state and records PinnedAt for ordering.
 	SetPinned(id string, pinned bool) (*Session, error)
-	// Delete 永久删除会话及其元数据。
+	// Delete permanently removes a chat and its metadata.
 	Delete(id string) error
 	Close(id string) error
 }

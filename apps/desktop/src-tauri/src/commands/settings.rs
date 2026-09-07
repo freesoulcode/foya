@@ -3,19 +3,19 @@ use tauri::ipc::Channel;
 use super::encode_query_component;
 use crate::kernel;
 
-/// 列出已配置的模型连接(key 脱敏)。
+/// List configured model connections with redacted keys.
 #[tauri::command]
 pub(crate) async fn list_connections() -> Result<String, String> {
     kernel::request("GET", "/connections", None).await
 }
 
-/// 新建一个 API Key 模型连接。
+/// Create an API-key model connection.
 #[tauri::command]
 pub(crate) async fn create_connection(config: serde_json::Value) -> Result<String, String> {
     kernel::request("POST", "/connections", Some(&config.to_string())).await
 }
 
-/// 局部更新一个模型连接。
+/// Partially update a model connection.
 #[tauri::command]
 pub(crate) async fn update_connection(
     connection_id: String,
@@ -36,7 +36,7 @@ pub(crate) async fn delete_connection(connection_id: String) -> Result<(), Strin
         .map(|_| ())
 }
 
-/// 拉取指定连接可用的模型目录。
+/// Load the model catalog for a connection.
 #[tauri::command]
 pub(crate) async fn list_connection_models(
     connection_id: String,
@@ -389,7 +389,7 @@ fn context_resource(kind: &str) -> Result<&'static str, String> {
     match kind {
         "rule" => Ok("rules"),
         "memory" => Ok("memories"),
-        _ => Err("未知上下文类型".into()),
+        _ => Err("Unknown context type".into()),
     }
 }
 
@@ -448,7 +448,7 @@ pub(crate) async fn subscribe_context_events(channel: Channel<String>) -> Result
     });
     ready_rx
         .await
-        .map_err(|_| "规则与记忆事件订阅在连接前意外结束".to_string())?
+        .map_err(|_| "Rule and memory event subscription ended before connecting".to_string())?
 }
 
 #[tauri::command]

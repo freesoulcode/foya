@@ -2,7 +2,7 @@ use tauri::ipc::Channel;
 
 use crate::kernel;
 
-/// 建会话,返回会话 JSON。options 为可选的创建参数(model/project_id/approval_mode)。
+/// Create a chat and return its JSON. Options can specify model, project_id, and approval_mode.
 #[tauri::command]
 pub(crate) async fn create_session(options: Option<serde_json::Value>) -> Result<String, String> {
     let body = options.map(|v| v.to_string());
@@ -23,7 +23,7 @@ pub(crate) async fn fork_session(
     .await
 }
 
-/// 局部更新会话(模型/工作目录/审批档位),返回更新后的会话 JSON。
+/// Partially update a chat and return its JSON.
 #[tauri::command]
 pub(crate) async fn update_session(
     session_id: String,
@@ -37,7 +37,7 @@ pub(crate) async fn update_session(
     .await
 }
 
-/// 提交一轮对话。
+/// Submit one chat turn.
 #[tauri::command]
 pub(crate) async fn submit_turn(
     session_id: String,
@@ -82,7 +82,7 @@ pub(crate) async fn upload_image(
         body,
     )
     .await?;
-    String::from_utf8(response).map_err(|e| format!("附件响应不是 UTF-8: {e}"))
+    String::from_utf8(response).map_err(|e| format!("Attachment response is not UTF-8: {e}"))
 }
 
 #[tauri::command]
@@ -110,7 +110,7 @@ pub(crate) async fn delete_artifact(session_id: String, artifact_id: String) -> 
     .map(|_| ())
 }
 
-/// 回退一条已完成的用户消息到输入框,并裁剪当前 active history。
+/// Rewind a completed user message to the composer and trim active history.
 #[tauri::command]
 pub(crate) async fn rewind_turn(
     session_id: String,
@@ -135,13 +135,13 @@ pub(crate) async fn rewind_turn(
     .await
 }
 
-/// 读取当前会话尚未处理的 Agent 文件变更。
+/// Load pending agent file changes for the current chat.
 #[tauri::command]
 pub(crate) async fn load_file_review(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/file-review"), None).await
 }
 
-/// 保留或撤销当前会话尚未处理的 Agent 文件变更。
+/// Keep or undo pending agent file changes for the current chat.
 #[tauri::command]
 pub(crate) async fn resolve_file_review(
     session_id: String,
@@ -165,19 +165,19 @@ pub(crate) async fn resolve_file_review(
     .await
 }
 
-/// 手动压缩会话的已完成历史。
+/// Manually compact completed chat history.
 #[tauri::command]
 pub(crate) async fn compact_session(session_id: String) -> Result<String, String> {
     kernel::request("POST", &format!("/sessions/{session_id}/compact"), None).await
 }
 
-/// 读取会话的待发送队列。
+/// Load a chat queue.
 #[tauri::command]
 pub(crate) async fn list_queued_messages(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/queue"), None).await
 }
 
-/// 显式追加一条待发送消息。
+/// Add a message to the queue explicitly.
 #[tauri::command]
 pub(crate) async fn enqueue_message(
     session_id: String,
@@ -201,7 +201,7 @@ pub(crate) async fn enqueue_message(
     .await
 }
 
-/// 编辑待发送消息正文或顺序。
+/// Edit queued message content or position.
 #[tauri::command]
 pub(crate) async fn update_queued_message(
     session_id: String,
@@ -216,7 +216,7 @@ pub(crate) async fn update_queued_message(
     .await
 }
 
-/// 删除一条待发送消息。
+/// Delete a queued message.
 #[tauri::command]
 pub(crate) async fn delete_queued_message(
     session_id: String,
@@ -231,7 +231,7 @@ pub(crate) async fn delete_queued_message(
     .map(|_| ())
 }
 
-/// 取消当前回合并优先发送选中的队列消息。
+/// Cancel the current turn and dispatch the selected queued message.
 #[tauri::command]
 pub(crate) async fn dispatch_queued_message(
     session_id: String,
@@ -245,25 +245,25 @@ pub(crate) async fn dispatch_queued_message(
     .await
 }
 
-/// 列出所有会话。
+/// List all chats.
 #[tauri::command]
 pub(crate) async fn list_sessions() -> Result<String, String> {
     kernel::request("GET", "/sessions", None).await
 }
 
-/// 列出一个父会话的直接子 Agent 会话。
+/// List direct sub-agent chats for a parent chat.
 #[tauri::command]
 pub(crate) async fn list_child_sessions(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/children"), None).await
 }
 
-/// 列出父会话创建的异步 Agent runs。
+/// List asynchronous agent runs created by a parent chat.
 #[tauri::command]
 pub(crate) async fn list_agent_runs(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/agents"), None).await
 }
 
-/// 启动一个异步 Agent run。
+/// Start an asynchronous agent run.
 #[tauri::command]
 pub(crate) async fn start_agent(
     session_id: String,
@@ -277,7 +277,7 @@ pub(crate) async fn start_agent(
     .await
 }
 
-/// 取消一个异步 Agent run。
+/// Cancel an asynchronous agent run.
 #[tauri::command]
 pub(crate) async fn cancel_agent(session_id: String, run_id: String) -> Result<(), String> {
     kernel::request(
@@ -289,31 +289,31 @@ pub(crate) async fn cancel_agent(session_id: String, run_id: String) -> Result<(
     .map(|_| ())
 }
 
-/// 读取父任务树的 token 预算。
+/// Load the parent task tree token budget.
 #[tauri::command]
 pub(crate) async fn load_agent_budget(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/agent-budget"), None).await
 }
 
-/// 加载某会话的对话历史。
+/// Load chat history.
 #[tauri::command]
 pub(crate) async fn load_history(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/history"), None).await
 }
 
-/// 读取会话最近一次模型请求的 token 使用情况。
+/// Load token usage for the latest model request.
 #[tauri::command]
 pub(crate) async fn load_usage(session_id: String) -> Result<String, String> {
     kernel::request("GET", &format!("/sessions/{session_id}/usage"), None).await
 }
 
-/// 读取全局应用使用统计。
+/// Load global application usage statistics.
 #[tauri::command]
 pub(crate) async fn load_usage_statistics(days: u16) -> Result<String, String> {
     kernel::request("GET", &format!("/usage?days={days}"), None).await
 }
 
-/// 订阅会话事件流。在后台异步任务持续把 SSE 事件经 Channel 推给前端。
+/// Subscribe to chat events and forward SSE events through a Channel.
 #[tauri::command]
 pub(crate) async fn subscribe_events(
     session_id: String,
@@ -325,10 +325,10 @@ pub(crate) async fn subscribe_events(
     });
     ready_rx
         .await
-        .map_err(|_| "事件订阅在连接前意外结束".to_string())?
+        .map_err(|_| "Event subscription ended before connecting".to_string())?
 }
 
-/// 回执审批决策(批准/拒绝)。
+/// Resolve an approval decision.
 #[tauri::command]
 pub(crate) async fn resolve_approval(
     session_id: String,
@@ -372,7 +372,7 @@ pub(crate) async fn cancel_questions(session_id: String, batch_id: String) -> Re
     .map(|_| ())
 }
 
-/// 中断当前会话正在运行的回合(用户点停止)。
+/// Stop the active turn for the current chat.
 #[tauri::command]
 pub(crate) async fn cancel_turn(session_id: String) -> Result<(), String> {
     kernel::request("POST", &format!("/sessions/{session_id}/cancel"), None)
@@ -453,7 +453,7 @@ pub(crate) async fn stop_background_command(
     .await
 }
 
-/// 删除会话(中断回合、清除元数据与历史、广播移除)。
+/// Delete a chat, cancel its turn, clear its data, and broadcast removal.
 #[tauri::command]
 pub(crate) async fn delete_session(session_id: String) -> Result<(), String> {
     kernel::request("DELETE", &format!("/sessions/{session_id}"), None)

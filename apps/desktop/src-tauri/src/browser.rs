@@ -126,7 +126,7 @@ fn browser_view_label(browser_id: &str) -> Result<String, String> {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     {
-        return Err("浏览器实例 ID 无效".into());
+        return Err("Invalid browser instance ID".into());
     }
     Ok(format!("{BROWSER_VIEW_PREFIX}-{browser_id}"))
 }
@@ -141,9 +141,9 @@ fn sanitize_browser_element(
     let parsed = element
         .page_url
         .parse::<tauri::Url>()
-        .map_err(|_| "元素来源网址无效")?;
+        .map_err(|_| "Invalid element source URL")?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("元素来源只允许 HTTP 或 HTTPS 地址".into());
+        return Err("Element sources must use HTTP or HTTPS".into());
     }
     element.page_url = truncate_chars(parsed.as_str(), 2_048);
     element.page_title = truncate_chars(element.page_title.trim(), 300);
@@ -152,7 +152,7 @@ fn sanitize_browser_element(
     element.text = truncate_chars(element.text.trim(), 2_000);
     element.html = truncate_chars(element.html.trim(), 8_000);
     if element.tag.is_empty() || element.selector.is_empty() {
-        return Err("选中的页面元素信息不完整".into());
+        return Err("Selected page element information is incomplete".into());
     }
     Ok(element)
 }
@@ -198,7 +198,7 @@ const BROWSER_ELEMENT_PICKER_SCRIPT: &str = r##"
   });
   const addButton = document.createElement("button");
   addButton.type = "button";
-  addButton.textContent = "添加到对话";
+  addButton.textContent = "__FOYA_ADD_TO_CHAT__";
   Object.assign(addButton.style, {
     height: "30px",
     padding: "0 10px",
@@ -212,7 +212,7 @@ const BROWSER_ELEMENT_PICKER_SCRIPT: &str = r##"
   const cancelButton = document.createElement("button");
   cancelButton.type = "button";
   cancelButton.textContent = "×";
-  cancelButton.title = "取消选择";
+  cancelButton.title = "__FOYA_CANCEL_SELECTION__";
   Object.assign(cancelButton.style, {
     width: "30px",
     height: "30px",
@@ -973,10 +973,10 @@ pub(crate) async fn navigate_browser(
 ) -> Result<(), String> {
     let parsed = url.parse::<tauri::Url>().map_err(|e| e.to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("只允许打开 HTTP 或 HTTPS 地址".into());
+        return Err("Only HTTP or HTTPS URLs can be opened".into());
     }
     if viewport.width <= 0.0 || viewport.height <= 0.0 {
-        return Err("浏览器预览区域尺寸无效".into());
+        return Err("Invalid browser preview bounds".into());
     }
     let position = tauri::LogicalPosition::new(viewport.x, viewport.y);
     let size = tauri::LogicalSize::new(viewport.width, viewport.height);
@@ -999,7 +999,7 @@ pub(crate) async fn navigate_browser(
         return Ok(());
     }
 
-    let window = app.get_window("main").ok_or("主窗口不可用")?;
+    let window = app.get_window("main").ok_or("Main window is unavailable")?;
     let load_browser_id = browser_id.clone();
     let title_browser_id = browser_id.clone();
     let navigation_browser_id = browser_id.clone();
@@ -1153,23 +1153,29 @@ pub(crate) fn set_browser_element_picker(
     app: tauri::AppHandle,
     browser_id: String,
     enabled: bool,
+    add_label: String,
+    cancel_label: String,
 ) -> Result<(), String> {
     let label = browser_view_label(&browser_id)?;
     let Some(webview) = app.get_webview(&label) else {
-        return Err("浏览器页面尚未打开".into());
+        return Err("Browser page is not open".into());
     };
     if enabled {
         ACTIVE_BROWSER_PICKERS
             .lock()
-            .map_err(|_| "无法更新元素选择状态")?
+            .map_err(|_| "Unable to update element picker state")?
             .insert(browser_id);
-        webview
-            .eval(BROWSER_ELEMENT_PICKER_SCRIPT)
-            .map_err(|e| e.to_string())
+        let add_label = serde_json::to_string(&add_label).map_err(|error| error.to_string())?;
+        let cancel_label =
+            serde_json::to_string(&cancel_label).map_err(|error| error.to_string())?;
+        let script = BROWSER_ELEMENT_PICKER_SCRIPT
+            .replace("\"__FOYA_ADD_TO_CHAT__\"", &add_label)
+            .replace("\"__FOYA_CANCEL_SELECTION__\"", &cancel_label);
+        webview.eval(script).map_err(|e| e.to_string())
     } else {
         ACTIVE_BROWSER_PICKERS
             .lock()
-            .map_err(|_| "无法更新元素选择状态")?
+            .map_err(|_| "Unable to update element picker state")?
             .remove(&browser_id);
         webview
             .eval("window.__foyaElementPicker && window.__foyaElementPicker.disable();")
@@ -1191,15 +1197,15 @@ async fn capture_webview_screenshot(webview: tauri::Webview) -> Result<Vec<u8>, 
             let sender = Mutex::new(Some(sender));
             let completion = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
                 let result = if image.is_null() {
-                    Err("Webview 截图失败".into())
+                    Err("Webview screenshot failed".into())
                 } else {
                     let image = &*image;
                     image
                         .TIFFRepresentation()
-                        .ok_or_else(|| "无法读取 Webview 截图".to_string())
+                        .ok_or_else(|| "Unable to read Webview screenshot".to_string())
                         .and_then(|tiff| {
                             NSBitmapImageRep::imageRepWithData(&tiff)
-                                .ok_or_else(|| "无法转换 Webview 截图".to_string())
+                                .ok_or_else(|| "Unable to convert Webview screenshot".to_string())
                         })
                         .and_then(|bitmap| {
                             let properties = NSDictionary::<_, AnyObject>::new();
@@ -1209,7 +1215,7 @@ async fn capture_webview_screenshot(webview: tauri::Webview) -> Result<Vec<u8>, 
                                     &properties,
                                 )
                                 .map(|png| png.to_vec())
-                                .ok_or_else(|| "无法编码 Webview 截图".to_string())
+                                .ok_or_else(|| "Unable to encode Webview screenshot".to_string())
                         })
                 };
                 if let Ok(mut slot) = sender.lock() {
@@ -1225,13 +1231,13 @@ async fn capture_webview_screenshot(webview: tauri::Webview) -> Result<Vec<u8>, 
 
     tokio::time::timeout(std::time::Duration::from_secs(15), receiver)
         .await
-        .map_err(|_| "Webview 截图超时".to_string())?
-        .map_err(|_| "Webview 截图通道已关闭".to_string())?
+        .map_err(|_| "Webview screenshot timed out".to_string())?
+        .map_err(|_| "Webview screenshot channel closed".to_string())?
 }
 
 #[cfg(not(target_os = "macos"))]
 async fn capture_webview_screenshot(_webview: tauri::Webview) -> Result<Vec<u8>, String> {
-    Err("当前平台尚不支持 Webview 截图".into())
+    Err("Webview screenshots are not supported on this platform".into())
 }
 
 #[tauri::command]
@@ -1240,11 +1246,11 @@ pub(crate) async fn execute_browser_action(
     request: BrowserActionRequest,
 ) -> Result<BrowserActionResult, String> {
     if request.id.is_empty() || request.id.len() > 128 {
-        return Err("浏览器动作 ID 无效".into());
+        return Err("Invalid browser action ID".into());
     }
     let label = browser_view_label(&request.browser_id)?;
     let Some(webview) = app.get_webview(&label) else {
-        return Err("浏览器页面尚未打开".into());
+        return Err("Browser page is not open".into());
     };
 
     if matches!(request.action.as_str(), "open" | "navigate") {
@@ -1253,7 +1259,7 @@ pub(crate) async fn execute_browser_action(
             .parse::<tauri::Url>()
             .map_err(|e| e.to_string())?;
         if !matches!(parsed.scheme(), "http" | "https") {
-            return Err("只允许打开 HTTP 或 HTTPS 地址".into());
+            return Err("Only HTTP or HTTPS URLs can be opened".into());
         }
         webview
             .navigate(parsed.clone())
@@ -1280,7 +1286,7 @@ pub(crate) async fn execute_browser_action(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     PENDING_BROWSER_ACTIONS
         .lock()
-        .map_err(|_| "无法创建浏览器动作")?
+        .map_err(|_| "Unable to create browser action")?
         .insert(request_id.clone(), sender);
 
     if let Err(error) = webview.eval(BROWSER_ACTION_RUNTIME_SCRIPT) {
@@ -1310,7 +1316,7 @@ pub(crate) async fn execute_browser_action(
                     .parse::<tauri::Url>()
                     .map_err(|e| e.to_string())?;
                 if !matches!(parsed.scheme(), "http" | "https") {
-                    return Err("只允许打开 HTTP 或 HTTPS 地址".into());
+                    return Err("Only HTTP or HTTPS URLs can be opened".into());
                 }
                 webview
                     .navigate(parsed.clone())
@@ -1323,12 +1329,12 @@ pub(crate) async fn execute_browser_action(
             }
             Ok(result)
         }
-        Ok(Err(_)) => Err("浏览器动作通道已关闭".into()),
+        Ok(Err(_)) => Err("Browser action channel closed".into()),
         Err(_) => {
             if let Ok(mut pending) = PENDING_BROWSER_ACTIONS.lock() {
                 pending.remove(&request_id);
             }
-            Err("浏览器动作超时".into())
+            Err("Browser action timed out".into())
         }
     }
 }
@@ -1339,13 +1345,13 @@ pub(crate) fn browser_action_result(
     result: BrowserActionResult,
 ) -> Result<(), String> {
     if request_id.is_empty() || request_id.len() > 128 {
-        return Err("浏览器动作 ID 无效".into());
+        return Err("Invalid browser action ID".into());
     }
     let sender = PENDING_BROWSER_ACTIONS
         .lock()
-        .map_err(|_| "无法读取浏览器动作")?
+        .map_err(|_| "Unable to read browser action")?
         .remove(&request_id)
-        .ok_or("浏览器动作已结束")?;
+        .ok_or("Browser action already ended")?;
     let _ = sender.send(result);
     Ok(())
 }
@@ -1378,5 +1384,5 @@ pub(crate) async fn resolve_browser_action(
     _request_id: String,
     _result: BrowserActionResult,
 ) -> Result<(), String> {
-    Err("Windows 传输尚未实现".into())
+    Err("Windows transport is not implemented".into())
 }

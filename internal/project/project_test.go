@@ -28,7 +28,7 @@ func TestManagerPersistsProjectsWithSharedFolders(t *testing.T) {
 	if first.ID == second.ID {
 		t.Fatalf("projects sharing a folder must remain distinct: first=%#v second=%#v", first, second)
 	}
-	if first.Name != "新项目" || first.Path == "" ||
+	if first.Name != "New project" || first.Path == "" ||
 		second.Name != "代码项目" || second.Path != first.Path {
 		t.Fatalf("unexpected first project: %#v", first)
 	}

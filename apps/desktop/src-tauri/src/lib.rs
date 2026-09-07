@@ -24,8 +24,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            // macOS 用 titleBarStyle=Overlay(在 tauri.conf.json)保留红绿灯;
-            // 其他平台关闭原生装饰,改用前端自绘标题栏(WindowControls)。
+            // macOS keeps native window controls through titleBarStyle=Overlay in tauri.conf.json;
+            // other platforms disable native decorations and render WindowControls.
             #[cfg(not(target_os = "macos"))]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -33,15 +33,15 @@ pub fn run() {
                 }
             }
 
-            // 启动时把打包进来的 Go 内核 sidecar 拉起(connect-or-spawn 的 spawn 部分)。
-            // Tauri 会自动解析当前平台对应的二进制(如 foya-aarch64-apple-darwin)。
+            // Start the bundled Go kernel sidecar during application setup.
+            // Tauri resolves the binary for the current platform automatically.
             let mut sidecar = app
                 .shell()
                 .sidecar("foya")?
                 .env("FOYA_PARENT_PID", std::process::id().to_string());
-            // BYOK:把 provider 配置从当前进程环境透传给内核 sidecar。
-            // 脚手架阶段靠环境变量注入(启动 app 前 export FOYA_PROVIDER_*);
-            // 后续改为从设置界面写入、key 存 OS keychain。
+            // Forward BYOK provider configuration to the kernel sidecar.
+            // The bootstrap path reads environment variables exported before startup;
+            // settings now persist configuration while secrets use the OS keychain.
             for key in [
                 "FOYA_PROVIDER_BASE_URL",
                 "FOYA_PROVIDER_API_KEY",
