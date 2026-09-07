@@ -105,6 +105,7 @@ type Backend struct {
 const (
 	canvasGenerationTimeout      = 5 * time.Minute
 	canvasVideoGenerationTimeout = 30 * time.Minute
+	canvasMediaNodeHeaderHeight  = 32
 )
 
 // SetCapabilityManagers attaches optional capability services assembled by the
@@ -418,7 +419,8 @@ func (b *Backend) GenerateCanvasImage(ctx context.Context, id string, input canv
 			current.Nodes[index].Error = ""
 			if asset.Width > 0 && asset.Height > 0 {
 				current.Nodes[index].Width = 360
-				current.Nodes[index].Height = 360 * float64(asset.Height) / float64(asset.Width)
+				current.Nodes[index].Height = canvasMediaNodeHeaderHeight +
+					360*float64(asset.Height)/float64(asset.Width)
 			}
 		}
 	}

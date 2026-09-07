@@ -713,20 +713,23 @@ async function refreshProjects() {
 }
 
 async function listSessionsWhenKernelReady(): Promise<Session[]> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 40; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       return await api.listSessions();
     } catch (error) {
-      lastError = error;
       const message = String(error);
-      if (!message.includes("Failed to connect to kernel") && !message.includes("client error (Connect)")) {
+      const connectionError =
+        message.includes("Failed to connect to kernel") ||
+        message.includes("client error (Connect)") ||
+        message === translate("Unable to connect to the kernel");
+      if (!connectionError) {
         throw error;
       }
-      if (attempt < 40) await new Promise((resolve) => window.setTimeout(resolve, 250));
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, Math.min(1000, 250 + Math.floor(attempt / 20) * 250))
+      );
     }
   }
-  throw lastError;
 }
 
 // Wait for the sidecar, load chats, and select an existing chat or draft.

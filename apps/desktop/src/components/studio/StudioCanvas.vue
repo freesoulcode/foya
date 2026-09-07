@@ -54,6 +54,8 @@ const emit = defineEmits<{
 type Snapshot = { nodes: CanvasNode[]; edges: CanvasEdge[] };
 type Tool = "select" | "pan";
 
+const NODE_HEADER_HEIGHT = 32;
+
 const viewportEl = ref<HTMLElement>();
 const fileInput = ref<HTMLInputElement>();
 const project = ref<CanvasDocument>();
@@ -69,6 +71,7 @@ const connectingFrom = ref("");
 const connectionTarget = ref("");
 const connectionCursor = ref<{ x: number; y: number }>();
 const assetURLs = ref<Record<string, string>>({});
+const mediaRatios = ref<Record<string, number>>({});
 const connections = ref<ConnectionConfig[]>([]);
 const defaultModels = ref<DefaultModels>();
 const history = ref<Snapshot[]>([]);
@@ -419,7 +422,10 @@ function startResize(event: PointerEvent, node: CanvasNode) {
   const applyResize = () => {
     frame = 0;
     node.width = Math.round(Math.max(120, width + pendingPoint.x - origin.x));
-    node.height = Math.round(Math.max(72, height + pendingPoint.y - origin.y));
+    const mediaRatio = mediaRatios.value[node.id];
+    node.height = mediaRatio
+      ? Math.round(NODE_HEADER_HEIGHT + node.width / mediaRatio)
+      : Math.round(Math.max(72, height + pendingPoint.y - origin.y));
   };
   const move = (next: PointerEvent) => {
     pendingPoint = worldPoint(next);
@@ -556,6 +562,31 @@ function resetView() {
   scheduleSave(500);
 }
 
+function aspectRatioValue(value?: string) {
+  const [width, height] = (value ?? "").split(":").map(Number);
+  return width > 0 && height > 0 ? width / height : 1;
+}
+
+function fitMediaNode(node: CanvasNode, width: number, height: number) {
+  if (width <= 0 || height <= 0) return;
+  const ratio = width / height;
+  mediaRatios.value = { ...mediaRatios.value, [node.id]: ratio };
+  const fittedHeight = Math.round(NODE_HEADER_HEIGHT + node.width / ratio);
+  if (Math.abs(node.height - fittedHeight) < 1) return;
+  node.height = fittedHeight;
+  scheduleSave();
+}
+
+function fitImageNode(node: CanvasNode, event: Event) {
+  const image = event.currentTarget as HTMLImageElement | null;
+  if (image) fitMediaNode(node, image.naturalWidth, image.naturalHeight);
+}
+
+function fitVideoNode(node: CanvasNode, event: Event) {
+  const video = event.currentTarget as HTMLVideoElement | null;
+  if (video) fitMediaNode(node, video.videoWidth, video.videoHeight);
+}
+
 function addNode(type: "text" | "generation", at = centerPoint()) {
   if (!project.value) return;
   commitHistory();
@@ -617,9 +648,10 @@ async function generateMedia(node: CanvasNode) {
   clearTimeout(saveTimer);
   commitHistory();
   const outputID = id(mode);
-  const landscape = ["16:9", "4:3", "3:2"].includes(node.generation.aspect_ratio ?? "");
+  const outputRatio = aspectRatioValue(node.generation.aspect_ratio);
+  const landscape = outputRatio >= 1;
   const outputWidth = mode === "video" ? (landscape ? 420 : 236) : 360;
-  const outputHeight = mode === "video" ? (landscape ? 236 : 420) : 360;
+  const outputHeight = Math.round(NODE_HEADER_HEIGHT + outputWidth / outputRatio);
   const output: CanvasNode = {
     id: outputID,
     type: mode,
@@ -774,6 +806,7 @@ async function uploadFiles(files: FileList | File[]) {
       const asset: CanvasAsset = result.asset;
       const width = asset.kind === "video" ? 420 : Math.min(480, asset.width || 360);
       const ratio = asset.width && asset.height ? asset.width / asset.height : 16 / 9;
+      const height = NODE_HEADER_HEIGHT + Math.max(100, width / ratio);
       commitHistory();
       const node: CanvasNode = {
         id: id(asset.kind),
@@ -781,9 +814,9 @@ async function uploadFiles(files: FileList | File[]) {
         title: asset.name,
         asset_id: asset.id,
         x: point.x - width / 2 + offset,
-        y: point.y - width / ratio / 2 + offset,
+        y: point.y - height / 2 + offset,
         width,
-        height: Math.max(100, width / ratio),
+        height,
         z_index: nodes.value.length + 1,
       };
       project.value.nodes = [...nodes.value, node];
@@ -1018,8 +1051,9 @@ onBeforeUnmount(() => {
             v-else-if="node.type === 'image' && node.asset_id && assetURLs[node.asset_id]"
             :src="assetURLs[node.asset_id]"
             :alt="assets.get(node.asset_id)?.name ?? ''"
-            class="pointer-events-none min-h-0 flex-1 select-none object-contain"
+            class="pointer-events-none min-h-0 w-full flex-1 select-none object-contain"
             draggable="false"
+            @load="fitImageNode(node, $event)"
           />
           <video
             v-else-if="node.type === 'video' && node.asset_id && assetURLs[node.asset_id]"
@@ -1027,6 +1061,7 @@ onBeforeUnmount(() => {
             class="min-h-0 flex-1 bg-black object-contain"
             controls
             @pointerdown.stop
+            @loadedmetadata="fitVideoNode(node, $event)"
           />
           <div v-else-if="node.type === 'generation'" class="min-h-0 flex-1 space-y-2 overflow-auto p-3" @pointerdown.stop>
             <Select
