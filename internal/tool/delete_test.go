@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 func TestDeleteMovesWorkspaceFileToTrashAndReturnsArtifact(t *testing.T) {
@@ -18,7 +18,7 @@ func TestDeleteMovesWorkspaceFileToTrashAndReturnsArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := filepath.Join(t.TempDir(), "obsolete.txt")
-	gateway := &recordingGateway{decision: approval.DecisionApproved}
+	gateway := &recordingGateway{decision: interaction.DecisionApproved}
 	instance := &deleteTool{
 		gw: gateway,
 		trash: func(source string) error {
@@ -138,9 +138,9 @@ func TestDeleteFullAccessAllowsProtectedAndOutsidePaths(t *testing.T) {
 			return nil
 		},
 	}
-	ctx := approval.WithMode(
+	ctx := interaction.WithMode(
 		WithCWD(context.Background(), workspace),
-		approval.ModeFullAccess,
+		interaction.ModeFullAccess,
 	)
 
 	for _, path := range []string{protected, outside} {

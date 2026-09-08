@@ -15,11 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/question"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+
 	"github.com/robfig/cron/v3"
 )
 
@@ -39,42 +37,42 @@ var (
 )
 
 type Task struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Prompt        string        `json:"prompt"`
-	Cron          string        `json:"cron"`
-	Timezone      string        `json:"timezone"`
-	Enabled       bool          `json:"enabled"`
-	ConnectionID  string        `json:"connection_id,omitempty"`
-	Model         string        `json:"model,omitempty"`
-	ProjectID     string        `json:"project_id,omitempty"`
-	ApprovalMode  approval.Mode `json:"approval_mode"`
-	LastStatus    RunStatus     `json:"last_status"`
-	LastError     string        `json:"last_error,omitempty"`
-	LastSessionID string        `json:"last_session_id,omitempty"`
-	LastRunAt     *time.Time    `json:"last_run_at,omitempty"`
-	NextRunAt     *time.Time    `json:"next_run_at,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Prompt        string           `json:"prompt"`
+	Cron          string           `json:"cron"`
+	Timezone      string           `json:"timezone"`
+	Enabled       bool             `json:"enabled"`
+	ConnectionID  string           `json:"connection_id,omitempty"`
+	Model         string           `json:"model,omitempty"`
+	ProjectID     string           `json:"project_id,omitempty"`
+	ApprovalMode  interaction.Mode `json:"approval_mode"`
+	LastStatus    RunStatus        `json:"last_status"`
+	LastError     string           `json:"last_error,omitempty"`
+	LastSessionID string           `json:"last_session_id,omitempty"`
+	LastRunAt     *time.Time       `json:"last_run_at,omitempty"`
+	NextRunAt     *time.Time       `json:"next_run_at,omitempty"`
+	CreatedAt     time.Time        `json:"created_at"`
+	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
 type Input struct {
-	Name         string        `json:"name"`
-	Prompt       string        `json:"prompt"`
-	Cron         string        `json:"cron"`
-	Timezone     string        `json:"timezone,omitempty"`
-	Enabled      bool          `json:"enabled"`
-	ConnectionID string        `json:"connection_id,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	ProjectID    string        `json:"project_id,omitempty"`
-	ApprovalMode approval.Mode `json:"approval_mode"`
+	Name         string           `json:"name"`
+	Prompt       string           `json:"prompt"`
+	Cron         string           `json:"cron"`
+	Timezone     string           `json:"timezone,omitempty"`
+	Enabled      bool             `json:"enabled"`
+	ConnectionID string           `json:"connection_id,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ApprovalMode interaction.Mode `json:"approval_mode"`
 }
 
 type Runtime interface {
-	CreateSession(session.CreateOptions) (*session.Session, error)
-	RenameSession(context.Context, string, string) (*session.Session, error)
-	Subscribe(context.Context, string) <-chan event.Event
-	SubmitChatInput(context.Context, string, message.UserInput) error
+	CreateSession(conversation.CreateOptions) (*conversation.Session, error)
+	RenameSession(context.Context, string, string) (*conversation.Session, error)
+	Subscribe(context.Context, string) <-chan conversation.Event
+	SubmitChatInput(context.Context, string, conversation.UserInput) error
 	CancelQuestions(string, string) error
 }
 
@@ -322,7 +320,7 @@ func (m *Manager) trigger(id string) (Task, error) {
 }
 
 func (m *Manager) execute(ctx context.Context, task Task) {
-	sessionItem, err := m.runtime.CreateSession(session.CreateOptions{
+	sessionItem, err := m.runtime.CreateSession(conversation.CreateOptions{
 		ConnectionID: task.ConnectionID,
 		Model:        task.Model,
 		ProjectID:    task.ProjectID,
@@ -334,7 +332,7 @@ func (m *Manager) execute(ctx context.Context, task Task) {
 	}
 	_, _ = m.runtime.RenameSession(context.WithoutCancel(ctx), sessionItem.ID, "Automation: "+task.Name)
 	events := m.runtime.Subscribe(ctx, sessionItem.ID)
-	if err := m.runtime.SubmitChatInput(ctx, sessionItem.ID, message.UserInput{Text: task.Prompt}); err != nil {
+	if err := m.runtime.SubmitChatInput(ctx, sessionItem.ID, conversation.UserInput{Text: task.Prompt}); err != nil {
 		m.finish(task.ID, sessionItem.ID, RunStatusFailed, err)
 		return
 	}
@@ -351,13 +349,13 @@ func (m *Manager) execute(ctx context.Context, task Task) {
 				return
 			}
 			switch item.Kind {
-			case event.KindQuestionRequested:
-				if batch, ok := item.Payload.(question.Batch); ok {
+			case conversation.KindQuestionRequested:
+				if batch, ok := item.Payload.(interaction.Batch); ok {
 					_ = m.runtime.CancelQuestions(sessionItem.ID, batch.ID)
 				}
-			case event.KindError:
+			case conversation.KindError:
 				runErr = fmt.Errorf("%v", item.Payload)
-			case event.KindTurnComplete:
+			case conversation.KindTurnComplete:
 				if runErr != nil {
 					m.finish(task.ID, sessionItem.ID, RunStatusFailed, runErr)
 				} else {
@@ -513,9 +511,9 @@ func taskFromInput(id string, input Input) (Task, cron.Schedule, error) {
 		return Task{}, nil, fmt.Errorf("invalid automation timezone: %w", err)
 	}
 	if input.ApprovalMode == "" {
-		input.ApprovalMode = approval.ModeAuto
+		input.ApprovalMode = interaction.ModeAuto
 	}
-	if input.ApprovalMode != approval.ModeAuto && input.ApprovalMode != approval.ModeFullAccess {
+	if input.ApprovalMode != interaction.ModeAuto && input.ApprovalMode != interaction.ModeFullAccess {
 		return Task{}, nil, errors.New("automation approval mode must be auto or full_access")
 	}
 	spec := "CRON_TZ=" + input.Timezone + " " + input.Cron

@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,22 +21,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/channel/feishu"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/kernel"
 	"github.com/freesoulcode/foya/internal/mcpclient"
-	"github.com/freesoulcode/foya/internal/message"
+
 	"github.com/freesoulcode/foya/internal/server"
-	"github.com/freesoulcode/foya/internal/session"
+
 	"github.com/freesoulcode/foya/internal/websearch"
 )
 
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "serve":
+			runDaemon(os.Args[2:])
+			return
 		case "exec":
 			runExec(os.Args[2:])
 			return
@@ -65,26 +69,37 @@ func main() {
 			return
 		}
 	}
-	runDaemon()
+	runDaemon(os.Args[1:])
 }
 
 // runDaemon starts the persistent kernel process.
-func runDaemon() {
-	cfg := config.Default()
-	app, err := kernel.New(cfg)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "kernel initialization failed:", err)
+func runDaemon(args []string) {
+	if err := serveDaemon(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func serveDaemon(args []string) error {
+	cfg, err := daemonConfig(args)
+	if err != nil {
+		return err
+	}
+	app, err := kernel.New(cfg)
+	if err != nil {
+		return fmt.Errorf("kernel initialization failed: %w", err)
+	}
 	defer app.Close()
-	srv := server.New(cfg, app.Backend())
+	srv := server.New(cfg, app.Service())
 	srv.SetChannelManager(app.Channels())
 	srv.SetAutomationManager(app.Automations())
 
 	ln, desc, err := listen(cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "kernel listen failed:", err)
-		os.Exit(1)
+		return fmt.Errorf("kernel listen failed: %w", err)
 	}
 	defer ln.Close()
 	if cfg.Transport == config.TransportUnixSocket {
@@ -92,37 +107,111 @@ func runDaemon() {
 	}
 	fmt.Printf("foya kernel listening on %s\n", desc)
 
-	httpServer := &http.Server{Handler: srv.Handler()}
+	httpServer := newHTTPServer(srv.Handler())
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- httpServer.Serve(ln)
+		serveErr <- serveHTTP(httpServer, ln, cfg)
 	}()
 
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
+	defer stop()
 	parentDone := watchParentProcess()
-	if parentDone == nil {
-		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintln(os.Stderr, "kernel exited:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	select {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintln(os.Stderr, "kernel exited:", err)
-			os.Exit(1)
+			return fmt.Errorf("kernel exited: %w", err)
 		}
+		return nil
+	case <-ctx.Done():
 	case <-parentDone:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			fmt.Fprintln(os.Stderr, "kernel shutdown failed:", err)
-		}
-		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintln(os.Stderr, "kernel exited:", err)
-		}
 	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("kernel shutdown failed: %w", err)
+	}
+	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("kernel exited: %w", err)
+	}
+	return nil
+}
+
+func daemonConfig(args []string) (config.Config, error) {
+	cfg := config.Default()
+	flags := flag.NewFlagSet("foya serve", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	listenAddr := flags.String("listen", cfg.Addr, "TCP listen address")
+	socketPath := flags.String("socket", cfg.SocketPath, "Unix socket path")
+	dataDir := flags.String("data-dir", cfg.DataDir, "persistent data directory")
+	authTokenHashFile := flags.String("auth-token-hash-file", cfg.AuthTokenHashFile, "SHA-256 bearer token digest file")
+	tlsCert := flags.String("tls-cert", cfg.TLSCertFile, "TLS certificate file")
+	tlsKey := flags.String("tls-key", cfg.TLSKeyFile, "TLS private key file")
+	allowPlaintext := flags.Bool("allow-plaintext", cfg.AllowPlaintext, "allow HTTP for a trusted reverse proxy")
+	if err := flags.Parse(args); err != nil {
+		return config.Config{}, fmt.Errorf("parse server flags: %w", err)
+	}
+	if flags.NArg() != 0 {
+		return config.Config{}, errors.New("usage: foya serve [--listen host:port] [--data-dir path] [--auth-token-hash-file path] [--tls-cert path --tls-key path]")
+	}
+
+	previousDataDir := cfg.DataDir
+	cfg.DataDir = strings.TrimSpace(*dataDir)
+	cfg.SocketPath = strings.TrimSpace(*socketPath)
+	socketWasSet := false
+	flags.Visit(func(item *flag.Flag) {
+		if item.Name == "socket" {
+			socketWasSet = true
+		}
+	})
+	if !socketWasSet && cfg.DataDir != previousDataDir {
+		cfg.SocketPath = filepath.Join(cfg.DataDir, "kernel.sock")
+	}
+	cfg.Addr = strings.TrimSpace(*listenAddr)
+	cfg.AuthTokenHashFile = strings.TrimSpace(*authTokenHashFile)
+	cfg.TLSCertFile = strings.TrimSpace(*tlsCert)
+	cfg.TLSKeyFile = strings.TrimSpace(*tlsKey)
+	cfg.AllowPlaintext = *allowPlaintext
+	if cfg.Addr != "" {
+		cfg.Transport = config.TransportTCP
+		cfg.Lifecycle = config.LifecycleService
+	} else {
+		cfg.Transport = config.TransportUnixSocket
+		cfg.Lifecycle = config.LifecycleEphemeral
+		cfg.AuthTokenSHA256 = ""
+	}
+	if cfg.Transport == config.TransportTCP && cfg.AuthTokenHashFile != "" {
+		if cfg.AuthTokenSHA256 != "" {
+			return config.Config{}, errors.New("configure only one of FOYA_AUTH_TOKEN_SHA256 and FOYA_AUTH_TOKEN_HASH_FILE")
+		}
+		tokenHash, err := os.ReadFile(cfg.AuthTokenHashFile)
+		if err != nil {
+			return config.Config{}, fmt.Errorf("read auth token hash file: %w", err)
+		}
+		cfg.AuthTokenSHA256 = strings.ToLower(strings.TrimSpace(string(tokenHash)))
+	}
+	if err := config.ValidateServerConfig(cfg); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+}
+
+func serveHTTP(httpServer *http.Server, ln net.Listener, cfg config.Config) error {
+	if cfg.Transport == config.TransportTCP && cfg.TLSCertFile != "" {
+		return httpServer.ServeTLS(ln, cfg.TLSCertFile, cfg.TLSKeyFile)
+	}
+	return httpServer.Serve(ln)
 }
 
 // listen creates the configured transport listener.
@@ -130,7 +219,14 @@ func listen(cfg config.Config) (net.Listener, string, error) {
 	switch cfg.Transport {
 	case config.TransportTCP:
 		ln, err := net.Listen("tcp", cfg.Addr)
-		return ln, cfg.Addr, err
+		if err != nil {
+			return nil, "", err
+		}
+		scheme := "http"
+		if cfg.TLSCertFile != "" {
+			scheme = "https"
+		}
+		return ln, scheme + "://" + ln.Addr().String(), nil
 	default: // TransportUnixSocket
 		return listenUnix(cfg.SocketPath)
 	}
@@ -182,7 +278,7 @@ func runExec(args []string) {
 	projectID := flags.String("project", "", "project id")
 	connection := flags.String("connection", "", "model connection id")
 	model := flags.String("model", "", "model id")
-	mode := flags.String("approval", string(approval.ModeManual), "manual, auto, or full_access")
+	mode := flags.String("approval", string(interaction.ModeManual), "manual, auto, or full_access")
 	var images stringListFlag
 	flags.Var(&images, "image", "image path (repeatable)")
 	_ = flags.Parse(args)
@@ -197,29 +293,29 @@ func runExec(args []string) {
 	}
 	app := newApp()
 	defer app.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
-	sess, err := app.Backend().CreateSession(session.CreateOptions{
+	sess, err := app.Service().CreateSession(conversation.CreateOptions{
 		ConnectionID: *connection, Model: *model, ProjectID: *projectID, ApprovalMode: *mode,
 	})
 	if err != nil {
 		fatal(err)
 	}
-	attachments := make([]message.AttachmentRef, 0, len(images))
+	attachments := make([]conversation.AttachmentRef, 0, len(images))
 	for _, path := range images {
 		file, openErr := os.Open(path)
 		if openErr != nil {
 			fatal(openErr)
 		}
-		ref, putErr := app.Backend().PutImage(ctx, sess.ID, filepath.Base(path), file)
+		ref, putErr := app.Service().PutImage(ctx, sess.ID, filepath.Base(path), file)
 		_ = file.Close()
 		if putErr != nil {
 			fatal(putErr)
 		}
 		attachments = append(attachments, ref)
 	}
-	events := app.Backend().Subscribe(ctx, sess.ID)
-	if _, err := app.Backend().SubmitInput(ctx, sess.ID, message.UserInput{
+	events := app.Service().Subscribe(ctx, sess.ID)
+	if _, err := app.Service().SubmitInput(ctx, sess.ID, conversation.UserInput{
 		Text: prompt, Attachments: attachments,
 	}); err != nil {
 		fatal(err)
@@ -227,27 +323,27 @@ func runExec(args []string) {
 	reader := bufio.NewReader(os.Stdin)
 	for item := range events {
 		switch item.Kind {
-		case event.KindMessageDelta:
+		case conversation.KindMessageDelta:
 			if text, ok := item.Payload.(string); ok {
 				fmt.Print(text)
 			}
-		case event.KindApprovalReq:
-			request, ok := item.Payload.(approval.Request)
+		case conversation.KindApprovalReq:
+			request, ok := item.Payload.(interaction.Request)
 			if !ok {
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "\nApprove %s: %s? [y/N] ", request.ToolName, request.Detail)
 			answer, _ := reader.ReadString('\n')
-			decision := approval.DecisionDenied
+			decision := interaction.DecisionDenied
 			if strings.EqualFold(strings.TrimSpace(answer), "y") {
-				decision = approval.DecisionApproved
+				decision = interaction.DecisionApproved
 			}
-			if err := app.Backend().ResolveApproval(request.ID, string(decision)); err != nil {
+			if err := app.Service().ResolveApproval(request.ID, string(decision)); err != nil {
 				fatal(err)
 			}
-		case event.KindError:
+		case conversation.KindError:
 			fmt.Fprintln(os.Stderr, "\n", item.Payload)
-		case event.KindTurnComplete:
+		case conversation.KindTurnComplete:
 			fmt.Println()
 			return
 		}
@@ -264,7 +360,7 @@ func runBot(args []string) {
 	connectionID := flags.String("connection", os.Getenv("FOYA_FEISHU_CONNECTION_ID"), "model connection id")
 	model := flags.String("model", os.Getenv("FOYA_FEISHU_MODEL"), "model id")
 	projectID := flags.String("project", os.Getenv("FOYA_FEISHU_PROJECT_ID"), "project id")
-	mode := flags.String("approval", envOrDefault("FOYA_FEISHU_APPROVAL_MODE", string(approval.ModeAuto)), "auto or full_access")
+	mode := flags.String("approval", envOrDefault("FOYA_FEISHU_APPROVAL_MODE", string(interaction.ModeAuto)), "auto or full_access")
 	allowAll := flags.Bool("allow-all", false, "allow every Feishu user and chat")
 	allowUsers := stringListFlag(splitCommaList(os.Getenv("FOYA_FEISHU_ALLOWED_USERS")))
 	allowChats := stringListFlag(splitCommaList(os.Getenv("FOYA_FEISHU_ALLOWED_CHATS")))
@@ -278,7 +374,10 @@ func runBot(args []string) {
 		fatal(errors.New("Feishu app ID and app secret are required"))
 	}
 
-	cfg := config.Default()
+	cfg, err := daemonConfig(nil)
+	if err != nil {
+		fatal(err)
+	}
 	cfg.DisableExternalIntegrations = true
 	app, err := kernel.New(cfg)
 	if err != nil {
@@ -292,7 +391,7 @@ func runBot(args []string) {
 		ConnectionID: *connectionID,
 		Model:        *model,
 		ProjectID:    *projectID,
-		ApprovalMode: approval.Mode(*mode),
+		ApprovalMode: interaction.Mode(*mode),
 		AllowedUsers: append([]string(nil), allowUsers...),
 		AllowedChats: append([]string(nil), allowChats...),
 		AllowAll:     *allowAll,
@@ -318,15 +417,15 @@ func runBot(args []string) {
 		defer os.Remove(cfg.SocketPath)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
-	srv := server.New(cfg, app.Backend())
+	srv := server.New(cfg, app.Service())
 	srv.SetChannelManager(app.Channels())
 	srv.SetAutomationManager(app.Automations())
-	httpServer := &http.Server{Handler: srv.Handler()}
+	httpServer := newHTTPServer(srv.Handler())
 	httpResult := make(chan error, 1)
 	go func() {
-		httpResult <- httpServer.Serve(ln)
+		httpResult <- serveHTTP(httpServer, ln, cfg)
 	}()
 	fmt.Printf("foya kernel listening on %s\n", desc)
 	fmt.Println("foya Feishu bot starting")
@@ -388,9 +487,9 @@ func runAgents(args []string) {
 		err   error
 	)
 	if *projectID == "" {
-		items, err = app.Backend().Agents(context.Background())
+		items, err = app.Service().Agents(context.Background())
 	} else {
-		items, err = app.Backend().ProjectAgents(context.Background(), *projectID)
+		items, err = app.Service().ProjectAgents(context.Background(), *projectID)
 	}
 	if err != nil {
 		fatal(err)
@@ -415,9 +514,9 @@ func runSkills(args []string) {
 			err   error
 		)
 		if *projectID == "" {
-			items, err = app.Backend().AllSkills(context.Background())
+			items, err = app.Service().AllSkills(context.Background())
 		} else {
-			items, err = app.Backend().ProjectSkills(context.Background(), *projectID)
+			items, err = app.Service().ProjectSkills(context.Background(), *projectID)
 		}
 		if err != nil {
 			fatal(err)
@@ -428,7 +527,7 @@ func runSkills(args []string) {
 	if len(args) != 2 || (args[0] != "enable" && args[0] != "disable") {
 		fatal(fmt.Errorf("usage: foya skills list [--project <id>]|enable <ref>|disable <ref>"))
 	}
-	if err := app.Backend().SetSkillEnabled(args[1], args[0] == "enable"); err != nil {
+	if err := app.Service().SetSkillEnabled(args[1], args[0] == "enable"); err != nil {
 		fatal(err)
 	}
 }
@@ -437,7 +536,7 @@ func runProjects(args []string) {
 	app := newApp()
 	defer app.Close()
 	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
-		items, err := app.Backend().Projects()
+		items, err := app.Service().Projects()
 		if err != nil {
 			fatal(err)
 		}
@@ -445,7 +544,7 @@ func runProjects(args []string) {
 		return
 	}
 	if len(args) == 2 && args[0] == "add" {
-		item, err := app.Backend().RegisterProject(args[1], "")
+		item, err := app.Service().RegisterProject(args[1], "")
 		if err != nil {
 			fatal(err)
 		}
@@ -453,7 +552,7 @@ func runProjects(args []string) {
 		return
 	}
 	if len(args) == 2 && args[0] == "delete" {
-		if err := app.Backend().DeleteProject(context.Background(), args[1]); err != nil {
+		if err := app.Service().DeleteProject(context.Background(), args[1]); err != nil {
 			fatal(err)
 		}
 		return
@@ -486,7 +585,7 @@ func runContextItems(kind string, args []string) {
 			if flags.NArg() != 0 {
 				break
 			}
-			settings, err := app.Backend().MemorySettings()
+			settings, err := app.Service().MemorySettings()
 			if err != nil {
 				fatal(err)
 			}
@@ -496,7 +595,7 @@ func runContextItems(kind string, args []string) {
 			if flags.NArg() != 0 {
 				break
 			}
-			settings, err := app.Backend().UpdateMemorySettings(contextdata.MemorySettings{
+			settings, err := app.Service().UpdateMemorySettings(contextdata.MemorySettings{
 				Enabled: action == "enable",
 			})
 			if err != nil {
@@ -508,7 +607,7 @@ func runContextItems(kind string, args []string) {
 			if flags.NArg() != 0 {
 				break
 			}
-			item, err := app.Backend().Memory(scope, *projectID)
+			item, err := app.Service().Memory(scope, *projectID)
 			if err != nil {
 				fatal(err)
 			}
@@ -519,7 +618,7 @@ func runContextItems(kind string, args []string) {
 			if content == "" {
 				break
 			}
-			item, err := app.Backend().SetMemory(scope, *projectID, content)
+			item, err := app.Service().SetMemory(scope, *projectID, content)
 			if err != nil {
 				fatal(err)
 			}
@@ -529,7 +628,7 @@ func runContextItems(kind string, args []string) {
 			if flags.NArg() != 0 {
 				break
 			}
-			if err := app.Backend().ClearMemory(scope, *projectID); err != nil {
+			if err := app.Service().ClearMemory(scope, *projectID); err != nil {
 				fatal(err)
 			}
 			return
@@ -548,7 +647,7 @@ func runContextItems(kind string, args []string) {
 			items any
 			err   error
 		)
-		items, err = app.Backend().Rules(scope, *projectID)
+		items, err = app.Service().Rules(scope, *projectID)
 		if err != nil {
 			fatal(err)
 		}
@@ -563,7 +662,7 @@ func runContextItems(kind string, args []string) {
 			item any
 			err  error
 		)
-		item, err = app.Backend().CreateRule(scope, *projectID, content)
+		item, err = app.Service().CreateRule(scope, *projectID, content)
 		if err != nil {
 			fatal(err)
 		}
@@ -579,7 +678,7 @@ func runContextItems(kind string, args []string) {
 			item any
 			err  error
 		)
-		item, err = app.Backend().UpdateRule(id, content)
+		item, err = app.Service().UpdateRule(id, content)
 		if err != nil {
 			fatal(err)
 		}
@@ -590,7 +689,7 @@ func runContextItems(kind string, args []string) {
 			break
 		}
 		var err error
-		err = app.Backend().DeleteRule(flags.Arg(0))
+		err = app.Service().DeleteRule(flags.Arg(0))
 		if err != nil {
 			fatal(err)
 		}
@@ -614,7 +713,7 @@ func runMCP(args []string) {
 	app := newApp()
 	defer app.Close()
 	if len(args) == 0 || args[0] == "list" {
-		statuses, err := app.Backend().MCPStatuses()
+		statuses, err := app.Service().MCPStatuses()
 		if err != nil {
 			fatal(err)
 		}
@@ -630,7 +729,7 @@ func runMCP(args []string) {
 		if err := json.Unmarshal(data, &next); err != nil {
 			fatal(err)
 		}
-		if err := app.Backend().ReplaceMCPConfig(context.Background(), next); err != nil {
+		if err := app.Service().ReplaceMCPConfig(context.Background(), next); err != nil {
 			fatal(err)
 		}
 		return
@@ -642,7 +741,7 @@ func runWebSearch(args []string) {
 	app := newApp()
 	defer app.Close()
 	if len(args) == 0 || args[0] == "show" {
-		settings, err := app.Backend().WebSearchSettings()
+		settings, err := app.Service().WebSearchSettings()
 		if err != nil {
 			fatal(err)
 		}
@@ -650,7 +749,7 @@ func runWebSearch(args []string) {
 		return
 	}
 	if len(args) >= 2 && args[0] == "test" {
-		results, source, err := app.Backend().SearchWeb(context.Background(), strings.Join(args[1:], " "))
+		results, source, err := app.Service().SearchWeb(context.Background(), strings.Join(args[1:], " "))
 		if err != nil {
 			fatal(err)
 		}
@@ -668,7 +767,7 @@ func runWebSearch(args []string) {
 				Enabled: true, SearchEngineID: args[2], APIKey: args[3],
 			}},
 		}
-		if err := app.Backend().UpdateWebSearchSettings(settings); err != nil {
+		if err := app.Service().UpdateWebSearchSettings(settings); err != nil {
 			fatal(err)
 		}
 		return

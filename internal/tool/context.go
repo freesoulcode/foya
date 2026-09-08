@@ -3,7 +3,7 @@ package tool
 import (
 	"context"
 
-	"github.com/freesoulcode/foya/internal/provider"
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 // ctxKey identifies tool values stored in a context.
@@ -97,7 +97,7 @@ func ActiveToolFromContext(ctx context.Context, name string) bool {
 
 // ModelRuntime identifies the model and provider bound to the current turn.
 type ModelRuntime struct {
-	Provider provider.Provider
+	Provider model.Provider
 	Model    string
 }
 

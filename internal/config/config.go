@@ -3,12 +3,15 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Transport identifies the kernel transport.
@@ -16,7 +19,7 @@ type Transport string
 
 const (
 	TransportUnixSocket Transport = "unix"    // Local Unix domain socket.
-	TransportTCP        Transport = "tcp_tls" // Remote TCP with TLS.
+	TransportTCP        Transport = "tcp_tls" // Remote TCP, normally protected by TLS.
 )
 
 // Lifecycle controls the kernel process lifecycle.
@@ -34,8 +37,18 @@ type Config struct {
 	SocketPath string // Unix socket path.
 	Addr       string // TCP listen address.
 	DataDir    string // Event log and SQLite index directory.
-	Agents     AgentLimits
-	Telemetry  Telemetry
+	// AuthTokenSHA256 contains only the hex-encoded digest of the remote bearer
+	// token so the reusable credential never resides on the kernel host.
+	AuthTokenSHA256 string
+	// AuthTokenHashFile is resolved by the process entry point so unreadable
+	// credential files fail startup instead of silently disabling auth.
+	AuthTokenHashFile string
+	TLSCertFile       string
+	TLSKeyFile        string
+	// AllowPlaintext permits HTTP on TCP for a trusted reverse-proxy network.
+	AllowPlaintext bool
+	Agents         AgentLimits
+	Telemetry      Telemetry
 	// DisableExternalIntegrations prevents short-lived CLI commands from
 	// starting persisted long-running transports such as the Feishu bot.
 	DisableExternalIntegrations bool
@@ -67,6 +80,7 @@ type Telemetry struct {
 }
 
 var ErrInvalidAgentLimits = errors.New("invalid agent limits")
+var ErrInvalidServerConfig = errors.New("invalid server config")
 
 // Provider contains legacy single-connection BYOK settings.
 type Provider struct {
@@ -158,11 +172,26 @@ func (c Connection) Provider() Provider {
 
 // Default returns configuration for the local desktop application.
 func Default() Config {
+	dataDir := envString("FOYA_DATA_DIR", DefaultDataDir())
+	socketPath := envString("FOYA_SOCKET_PATH", filepath.Join(dataDir, "kernel.sock"))
+	listenAddr := strings.TrimSpace(os.Getenv("FOYA_LISTEN_ADDR"))
+	transport := TransportUnixSocket
+	lifecycle := LifecycleEphemeral
+	if listenAddr != "" {
+		transport = TransportTCP
+		lifecycle = LifecycleService
+	}
 	return Config{
-		Transport:  TransportUnixSocket,
-		Lifecycle:  LifecycleEphemeral,
-		SocketPath: DefaultSocketPath(),
-		DataDir:    DefaultDataDir(),
+		Transport:         transport,
+		Lifecycle:         lifecycle,
+		SocketPath:        socketPath,
+		Addr:              listenAddr,
+		DataDir:           dataDir,
+		AuthTokenSHA256:   strings.TrimSpace(os.Getenv("FOYA_AUTH_TOKEN_SHA256")),
+		AuthTokenHashFile: strings.TrimSpace(os.Getenv("FOYA_AUTH_TOKEN_HASH_FILE")),
+		TLSCertFile:       strings.TrimSpace(os.Getenv("FOYA_TLS_CERT_FILE")),
+		TLSKeyFile:        strings.TrimSpace(os.Getenv("FOYA_TLS_KEY_FILE")),
+		AllowPlaintext:    envBool("FOYA_ALLOW_PLAINTEXT", false),
 		Agents: AgentLimits{
 			MaxGlobalConcurrency: envInt("FOYA_AGENT_MAX_GLOBAL_CONCURRENCY", 4),
 			MaxPerRoot:           envInt("FOYA_AGENT_MAX_PER_ROOT", 4),
@@ -178,6 +207,41 @@ func Default() Config {
 		},
 		Provider: providerFromEnv(),
 	}
+}
+
+// ValidateServerConfig rejects remote configurations that could accidentally
+// expose the kernel's file and command APIs without transport protection.
+func ValidateServerConfig(cfg Config) error {
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return fmt.Errorf("%w: data directory is required", ErrInvalidServerConfig)
+	}
+	switch cfg.Transport {
+	case TransportUnixSocket:
+		if strings.TrimSpace(cfg.SocketPath) == "" {
+			return fmt.Errorf("%w: Unix socket path is required", ErrInvalidServerConfig)
+		}
+	case TransportTCP:
+		if _, _, err := net.SplitHostPort(cfg.Addr); err != nil {
+			return fmt.Errorf("%w: invalid listen address %q: %v", ErrInvalidServerConfig, cfg.Addr, err)
+		}
+		if len(cfg.AuthTokenSHA256) != 64 {
+			return fmt.Errorf("%w: remote auth token SHA-256 must contain 64 hexadecimal characters", ErrInvalidServerConfig)
+		}
+		if _, err := hex.DecodeString(cfg.AuthTokenSHA256); err != nil {
+			return fmt.Errorf("%w: remote auth token SHA-256 is invalid", ErrInvalidServerConfig)
+		}
+		hasCert := strings.TrimSpace(cfg.TLSCertFile) != ""
+		hasKey := strings.TrimSpace(cfg.TLSKeyFile) != ""
+		if hasCert != hasKey {
+			return fmt.Errorf("%w: TLS certificate and key must be configured together", ErrInvalidServerConfig)
+		}
+		if !hasCert && !cfg.AllowPlaintext {
+			return fmt.Errorf("%w: remote TCP requires TLS or explicit allow-plaintext", ErrInvalidServerConfig)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported transport %q", ErrInvalidServerConfig, cfg.Transport)
+	}
+	return nil
 }
 
 func envBool(name string, fallback bool) bool {

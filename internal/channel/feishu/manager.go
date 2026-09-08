@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	foyachannel "github.com/freesoulcode/foya/internal/channel"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 type Status string
@@ -26,53 +26,53 @@ const (
 )
 
 type Settings struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Locale       string        `json:"locale,omitempty"`
-	Enabled      bool          `json:"enabled"`
-	AppID        string        `json:"app_id"`
-	AppSecret    string        `json:"app_secret,omitempty"`
-	ConnectionID string        `json:"connection_id,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	ProjectID    string        `json:"project_id,omitempty"`
-	ApprovalMode approval.Mode `json:"approval_mode"`
-	AllowedUsers []string      `json:"allowed_users"`
-	AllowedChats []string      `json:"allowed_chats"`
-	AllowAll     bool          `json:"allow_all"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Locale       string           `json:"locale,omitempty"`
+	Enabled      bool             `json:"enabled"`
+	AppID        string           `json:"app_id"`
+	AppSecret    string           `json:"app_secret,omitempty"`
+	ConnectionID string           `json:"connection_id,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ApprovalMode interaction.Mode `json:"approval_mode"`
+	AllowedUsers []string         `json:"allowed_users"`
+	AllowedChats []string         `json:"allowed_chats"`
+	AllowAll     bool             `json:"allow_all"`
 }
 
 type UpdateInput struct {
-	Name         string        `json:"name"`
-	Locale       string        `json:"locale,omitempty"`
-	Enabled      bool          `json:"enabled"`
-	AppID        string        `json:"app_id"`
-	AppSecret    string        `json:"app_secret,omitempty"`
-	ConnectionID string        `json:"connection_id,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	ProjectID    string        `json:"project_id,omitempty"`
-	ApprovalMode approval.Mode `json:"approval_mode"`
-	AllowedUsers []string      `json:"allowed_users"`
-	AllowedChats []string      `json:"allowed_chats"`
-	AllowAll     bool          `json:"allow_all"`
+	Name         string           `json:"name"`
+	Locale       string           `json:"locale,omitempty"`
+	Enabled      bool             `json:"enabled"`
+	AppID        string           `json:"app_id"`
+	AppSecret    string           `json:"app_secret,omitempty"`
+	ConnectionID string           `json:"connection_id,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ApprovalMode interaction.Mode `json:"approval_mode"`
+	AllowedUsers []string         `json:"allowed_users"`
+	AllowedChats []string         `json:"allowed_chats"`
+	AllowAll     bool             `json:"allow_all"`
 }
 
 type State struct {
-	ID           string        `json:"id"`
-	Kind         string        `json:"kind"`
-	Name         string        `json:"name"`
-	Locale       string        `json:"locale"`
-	Enabled      bool          `json:"enabled"`
-	AppID        string        `json:"app_id"`
-	HasAppSecret bool          `json:"has_app_secret"`
-	ConnectionID string        `json:"connection_id,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	ProjectID    string        `json:"project_id,omitempty"`
-	ApprovalMode approval.Mode `json:"approval_mode"`
-	AllowedUsers []string      `json:"allowed_users"`
-	AllowedChats []string      `json:"allowed_chats"`
-	AllowAll     bool          `json:"allow_all"`
-	Status       Status        `json:"status"`
-	LastError    string        `json:"last_error,omitempty"`
+	ID           string           `json:"id"`
+	Kind         string           `json:"kind"`
+	Name         string           `json:"name"`
+	Locale       string           `json:"locale"`
+	Enabled      bool             `json:"enabled"`
+	AppID        string           `json:"app_id"`
+	HasAppSecret bool             `json:"has_app_secret"`
+	ConnectionID string           `json:"connection_id,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ApprovalMode interaction.Mode `json:"approval_mode"`
+	AllowedUsers []string         `json:"allowed_users"`
+	AllowedChats []string         `json:"allowed_chats"`
+	AllowAll     bool             `json:"allow_all"`
+	Status       Status           `json:"status"`
+	LastError    string           `json:"last_error,omitempty"`
 }
 
 type channelFactory func(appID, appSecret string) Channel
@@ -585,7 +585,7 @@ func normalizeSettings(settings Settings) Settings {
 	settings.AllowedUsers = cleanIDs(settings.AllowedUsers)
 	settings.AllowedChats = cleanIDs(settings.AllowedChats)
 	if settings.ApprovalMode == "" {
-		settings.ApprovalMode = approval.ModeAuto
+		settings.ApprovalMode = interaction.ModeAuto
 	}
 	if settings.Locale != "en-US" && settings.Locale != "zh-CN" {
 		settings.Locale = "zh-CN"
@@ -594,8 +594,8 @@ func normalizeSettings(settings Settings) Settings {
 }
 
 func validateSettings(settings Settings) error {
-	if settings.ApprovalMode != approval.ModeAuto &&
-		settings.ApprovalMode != approval.ModeFullAccess {
+	if settings.ApprovalMode != interaction.ModeAuto &&
+		settings.ApprovalMode != interaction.ModeFullAccess {
 		return errors.New("Feishu channel approval mode must be auto or full_access")
 	}
 	if !settings.Enabled {

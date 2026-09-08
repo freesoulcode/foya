@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 const (
@@ -19,11 +19,11 @@ const (
 )
 
 type taskSessionManager interface {
-	Get(id string) (*session.Session, bool)
-	SetTasks(id string, tasks []session.Task) (*session.Session, error)
+	Get(id string) (*conversation.Session, bool)
+	SetTasks(id string, tasks []conversation.Task) (*conversation.Session, error)
 }
 
-type sessionUpdateNotifier func(context.Context, *session.Session)
+type sessionUpdateNotifier func(context.Context, *conversation.Session)
 
 type updateTasksTool struct {
 	sessions taskSessionManager
@@ -35,14 +35,14 @@ type readTasksTool struct {
 }
 
 type updateTasksParams struct {
-	Tasks []session.Task `json:"tasks"`
+	Tasks []conversation.Task `json:"tasks"`
 }
 
 type readTasksResponse struct {
-	Tasks      []session.Task `json:"tasks"`
-	Total      int            `json:"total"`
-	Completed  int            `json:"completed"`
-	InProgress string         `json:"in_progress,omitempty"`
+	Tasks      []conversation.Task `json:"tasks"`
+	Total      int                 `json:"total"`
+	Completed  int                 `json:"completed"`
+	InProgress string              `json:"in_progress,omitempty"`
 }
 
 type updateTasksResponse struct {
@@ -85,17 +85,17 @@ func (t *readTasksTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("session not found"), nil
 	}
 	response := readTasksResponse{
-		Tasks: append([]session.Task(nil), current.Tasks...),
+		Tasks: append([]conversation.Task(nil), current.Tasks...),
 	}
 	if response.Tasks == nil {
-		response.Tasks = []session.Task{}
+		response.Tasks = []conversation.Task{}
 	}
 	response.Total = len(response.Tasks)
 	for _, task := range response.Tasks {
-		if task.Status == session.TaskStatusCompleted {
+		if task.Status == conversation.TaskStatusCompleted {
 			response.Completed++
 		}
-		if task.Status == session.TaskStatusInProgress {
+		if task.Status == conversation.TaskStatusInProgress {
 			response.InProgress = task.Content
 		}
 	}
@@ -151,7 +151,7 @@ func (t *updateTasksTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	oldStatus := make(map[string]session.TaskStatus, len(current.Tasks))
+	oldStatus := make(map[string]conversation.TaskStatus, len(current.Tasks))
 	for _, task := range current.Tasks {
 		oldStatus[task.Content] = task.Status
 	}
@@ -167,11 +167,11 @@ func (t *updateTasksTool) Run(ctx context.Context, call Call) (Result, error) {
 	return textResult(string(data)), nil
 }
 
-func normalizeTasks(input []session.Task) ([]session.Task, error) {
+func normalizeTasks(input []conversation.Task) ([]conversation.Task, error) {
 	if len(input) > maxSessionTasks {
 		return nil, fmt.Errorf("tasks may contain at most %d items", maxSessionTasks)
 	}
-	out := make([]session.Task, 0, len(input))
+	out := make([]conversation.Task, 0, len(input))
 	inProgress := 0
 	for i, item := range input {
 		content := strings.Join(strings.Fields(item.Content), " ")
@@ -182,14 +182,14 @@ func normalizeTasks(input []session.Task) ([]session.Task, error) {
 			return nil, fmt.Errorf("task %d content must be %d characters or fewer", i+1, maxSessionTaskRunes)
 		}
 		switch item.Status {
-		case session.TaskStatusPending, session.TaskStatusInProgress, session.TaskStatusCompleted:
+		case conversation.TaskStatusPending, conversation.TaskStatusInProgress, conversation.TaskStatusCompleted:
 		default:
 			return nil, fmt.Errorf("task %d has invalid status %q", i+1, item.Status)
 		}
-		if item.Status == session.TaskStatusInProgress {
+		if item.Status == conversation.TaskStatusInProgress {
 			inProgress++
 		}
-		out = append(out, session.Task{
+		out = append(out, conversation.Task{
 			Content: content,
 			Status:  item.Status,
 		})
@@ -200,16 +200,16 @@ func normalizeTasks(input []session.Task) ([]session.Task, error) {
 	return out, nil
 }
 
-func summarizeTasks(tasks []session.Task, oldStatus map[string]session.TaskStatus) updateTasksResponse {
+func summarizeTasks(tasks []conversation.Task, oldStatus map[string]conversation.TaskStatus) updateTasksResponse {
 	response := updateTasksResponse{Total: len(tasks)}
 	for _, task := range tasks {
-		if task.Status == session.TaskStatusCompleted {
+		if task.Status == conversation.TaskStatusCompleted {
 			response.Completed++
-			if old, ok := oldStatus[task.Content]; ok && old != session.TaskStatusCompleted {
+			if old, ok := oldStatus[task.Content]; ok && old != conversation.TaskStatusCompleted {
 				response.JustCompleted = append(response.JustCompleted, task.Content)
 			}
 		}
-		if task.Status == session.TaskStatusInProgress {
+		if task.Status == conversation.TaskStatusInProgress {
 			response.InProgress = task.Content
 		}
 	}

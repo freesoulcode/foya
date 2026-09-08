@@ -5,15 +5,15 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/tool"
-	"github.com/freesoulcode/foya/internal/workflow"
+	workflow "github.com/freesoulcode/foya/internal/workflow"
 )
 
 type hiddenWorkflowTool struct{}
 
-func (hiddenWorkflowTool) Name() string               { return workflow.SubmitSpecToolName }
-func (hiddenWorkflowTool) Description() string        { return "submit spec" }
-func (hiddenWorkflowTool) Spec() []byte                { return []byte(`{"type":"object"}`) }
-func (hiddenWorkflowTool) Exposure() tool.Exposure     { return tool.ExposureHidden }
+func (hiddenWorkflowTool) Name() string            { return workflow.SubmitSpecToolName }
+func (hiddenWorkflowTool) Description() string     { return "submit spec" }
+func (hiddenWorkflowTool) Spec() []byte            { return []byte(`{"type":"object"}`) }
+func (hiddenWorkflowTool) Exposure() tool.Exposure { return tool.ExposureHidden }
 func (hiddenWorkflowTool) Run(context.Context, tool.Call) (tool.Result, error) {
 	return tool.Result{}, nil
 }

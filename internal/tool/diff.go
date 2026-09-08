@@ -7,7 +7,7 @@ import (
 	"io/fs"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 func trackedFileChange(
@@ -17,8 +17,8 @@ func trackedFileChange(
 	beforeMode fs.FileMode,
 	after []byte,
 	afterMode fs.FileMode,
-) *message.FileChange {
-	change := &message.FileChange{
+) *conversation.FileChange {
+	change := &conversation.FileChange{
 		Path:            path,
 		BeforeExists:    beforeExists,
 		BeforeMode:      uint32(beforeMode.Perm()),

@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 func TestForkSessionRoute(t *testing.T) {
 	handler, sourceID := newQueueTestServer(t)
 
-	var forked session.Session
+	var forked conversation.Session
 	status := requestJSON(t, handler, http.MethodPost, "/sessions/"+sourceID+"/fork", nil, &forked)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want %d", status, http.StatusOK)

@@ -1,0 +1,16 @@
+.git
+.gitignore
+.DS_Store
+.env
+.env.*
+apps/desktop/node_modules
+apps/desktop/dist
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/binaries
+**/node_modules
+**/dist
+**/target
+bin
+deploy/secrets
+foya
+run

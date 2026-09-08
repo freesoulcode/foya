@@ -5,17 +5,17 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/provider"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	modelapi "github.com/freesoulcode/foya/internal/model"
 )
 
 type guardianCompleter struct {
 	response string
 	err      error
-	request  provider.Request
+	request  modelapi.Request
 }
 
-func (c *guardianCompleter) Complete(_ context.Context, request provider.Request) (string, error) {
+func (c *guardianCompleter) Complete(_ context.Context, request modelapi.Request) (string, error) {
 	c.request = request
 	return c.response, c.err
 }
@@ -31,7 +31,7 @@ func TestGuardianReviewerUsesSessionModelAndParsesDecision(t *testing.T) {
 		userRequest:     "run the tests",
 		projectPath:     "/workspace",
 	}
-	review, err := reviewer.Review(context.Background(), approval.Request{
+	review, err := reviewer.Review(context.Background(), interaction.Request{
 		ToolName: "bash",
 		Action:   "execute",
 		Detail:   "go test ./...",
@@ -67,7 +67,7 @@ func TestGuardianReviewerFailsClosed(t *testing.T) {
 			reviewer := guardianReviewer{
 				completer: &guardianCompleter{response: test.response, err: test.err},
 			}
-			if review, err := reviewer.Review(context.Background(), approval.Request{}); err == nil || review.Approved {
+			if review, err := reviewer.Review(context.Background(), interaction.Request{}); err == nil || review.Approved {
 				t.Fatalf("review = %#v, err = %v", review, err)
 			}
 		})
@@ -75,8 +75,8 @@ func TestGuardianReviewerFailsClosed(t *testing.T) {
 }
 
 func TestGuardianReviewerRequiresCompleter(t *testing.T) {
-	_, err := (guardianReviewer{}).Review(context.Background(), approval.Request{})
-	if !errors.Is(err, approval.ErrGuardianUnavailable) {
+	_, err := (guardianReviewer{}).Review(context.Background(), interaction.Request{})
+	if !errors.Is(err, interaction.ErrGuardianUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
 }

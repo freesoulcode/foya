@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/freesoulcode/foya/internal/canvas"
+	canvas "github.com/freesoulcode/foya/internal/canvas"
 )
 
 type canvasStore interface {

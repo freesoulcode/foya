@@ -8,8 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 const (
@@ -25,8 +24,8 @@ type activeMessageEventReader interface {
 	ActiveMessageEvent(
 		ctx context.Context,
 		session string,
-		seq event.Seq,
-	) (event.Event, bool, error)
+		seq conversation.Seq,
+	) (conversation.Event, bool, error)
 }
 
 type historyReadToolResult struct {
@@ -128,7 +127,7 @@ func (t *historyReadToolResult) Run(ctx context.Context, call Call) (Result, err
 	ev, ok, err := t.events.ActiveMessageEvent(
 		ctx,
 		sessionID,
-		event.Seq(params.EventSeq),
+		conversation.Seq(params.EventSeq),
 	)
 	if err != nil {
 		return errResult("read tool result failed: " + err.Error()), nil
@@ -136,8 +135,8 @@ func (t *historyReadToolResult) Run(ctx context.Context, call Call) (Result, err
 	if !ok {
 		return errResult("active tool result was not found"), nil
 	}
-	item, ok := ev.Payload.(message.Message)
-	if !ok || item.Role != message.RoleTool || item.ToolCallID != params.ToolCallID {
+	item, ok := ev.Payload.(conversation.Message)
+	if !ok || item.Role != conversation.RoleTool || item.ToolCallID != params.ToolCallID {
 		return errResult("event does not match the referenced tool result"), nil
 	}
 

@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 type Kind string
@@ -387,7 +387,7 @@ func (m *Manager) SubmitSpec(sessionID string, documents SpecDocuments) (Record,
 	return record, nil
 }
 
-func validateSpecDocuments(documents SpecDocuments) ([]session.Task, error) {
+func validateSpecDocuments(documents SpecDocuments) ([]conversation.Task, error) {
 	if documents.Title == "" || documents.Spec == "" ||
 		documents.Tasks == "" || documents.Checklist == "" {
 		return nil, errors.New("title, spec, tasks, and checklist documents are required")
@@ -412,7 +412,7 @@ func validateSpecDocuments(documents SpecDocuments) ([]session.Task, error) {
 	return tasks, nil
 }
 
-func (m *Manager) SpecTaskItems(id string) ([]session.Task, error) {
+func (m *Manager) SpecTaskItems(id string) ([]conversation.Task, error) {
 	record, ok := m.Get(id)
 	if !ok {
 		return nil, ErrNotFound
@@ -441,20 +441,20 @@ func (m *Manager) SpecTaskItems(id string) ([]session.Task, error) {
 	})
 }
 
-func parseSpecTaskItems(content string) ([]session.Task, error) {
-	items := make([]session.Task, 0)
+func parseSpecTaskItems(content string) ([]conversation.Task, error) {
+	items := make([]conversation.Task, 0)
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		status := session.TaskStatusPending
+		status := conversation.TaskStatusPending
 		switch {
 		case strings.HasPrefix(line, "- [ ] "):
 			line = strings.TrimSpace(strings.TrimPrefix(line, "- [ ] "))
 		case strings.HasPrefix(line, "- [x] "):
 			line = strings.TrimSpace(strings.TrimPrefix(line, "- [x] "))
-			status = session.TaskStatusCompleted
+			status = conversation.TaskStatusCompleted
 		case strings.HasPrefix(line, "- [X] "):
 			line = strings.TrimSpace(strings.TrimPrefix(line, "- [X] "))
-			status = session.TaskStatusCompleted
+			status = conversation.TaskStatusCompleted
 		default:
 			continue
 		}
@@ -462,7 +462,7 @@ func parseSpecTaskItems(content string) ([]session.Task, error) {
 			if len([]rune(line)) > maxSpecTaskRunes {
 				return nil, fmt.Errorf("spec task must be %d characters or fewer", maxSpecTaskRunes)
 			}
-			items = append(items, session.Task{Content: line, Status: status})
+			items = append(items, conversation.Task{Content: line, Status: status})
 		}
 	}
 	if len(items) == 0 {
@@ -476,7 +476,7 @@ func parseSpecTaskItems(content string) ([]session.Task, error) {
 
 func (m *Manager) SyncSpecTaskProgress(
 	sessionID string,
-	tasks []session.Task,
+	tasks []conversation.Task,
 ) (Record, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -503,7 +503,7 @@ func (m *Manager) SyncSpecTaskProgress(
 	next, changed := syncTaskCheckboxes(string(data), tasks)
 	allCompleted := len(tasks) > 0
 	for _, task := range tasks {
-		if task.Status != session.TaskStatusCompleted {
+		if task.Status != conversation.TaskStatusCompleted {
 			allCompleted = false
 			break
 		}
@@ -677,8 +677,8 @@ func hasChecklistItems(content string) bool {
 	return false
 }
 
-func syncTaskCheckboxes(content string, tasks []session.Task) (string, bool) {
-	statuses := make(map[string]session.TaskStatus, len(tasks))
+func syncTaskCheckboxes(content string, tasks []conversation.Task) (string, bool) {
+	statuses := make(map[string]conversation.TaskStatus, len(tasks))
 	for _, task := range tasks {
 		statuses[taskKey(task.Content)] = task.Status
 	}
@@ -698,7 +698,7 @@ func syncTaskCheckboxes(content string, tasks []session.Task) (string, bool) {
 			continue
 		}
 		marker := byte(' ')
-		if status == session.TaskStatusCompleted {
+		if status == conversation.TaskStatusCompleted {
 			marker = 'x'
 		}
 		markerIndex := leading + 3

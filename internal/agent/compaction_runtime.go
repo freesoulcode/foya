@@ -10,10 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/compaction"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+
+	modelapi "github.com/freesoulcode/foya/internal/model"
 )
 
 const (
@@ -33,25 +32,25 @@ type compactionFailureCircuit struct {
 }
 
 type compactionDiagnostic struct {
-	Trigger         string                 `json:"trigger"`
-	Phase           compaction.Phase       `json:"phase,omitempty"`
-	Stage           string                 `json:"stage"`
-	Outcome         string                 `json:"outcome"`
-	Reason          string                 `json:"reason,omitempty"`
-	ThroughSeq      event.Seq              `json:"through_seq,omitempty"`
-	CoveredMessages int                    `json:"covered_messages,omitempty"`
-	CheckpointID    string                 `json:"checkpoint_id,omitempty"`
-	EstimatedBefore int64                  `json:"estimated_tokens_before,omitempty"`
-	EstimatedAfter  int64                  `json:"estimated_tokens_after,omitempty"`
-	Pressure        compaction.Pressure    `json:"pressure,omitempty"`
-	Layers          *compaction.LayerUsage `json:"layers,omitempty"`
+	Trigger         string                       `json:"trigger"`
+	Phase           conversation.CompactionPhase `json:"phase,omitempty"`
+	Stage           string                       `json:"stage"`
+	Outcome         string                       `json:"outcome"`
+	Reason          string                       `json:"reason,omitempty"`
+	ThroughSeq      conversation.Seq             `json:"through_seq,omitempty"`
+	CoveredMessages int                          `json:"covered_messages,omitempty"`
+	CheckpointID    string                       `json:"checkpoint_id,omitempty"`
+	EstimatedBefore int64                        `json:"estimated_tokens_before,omitempty"`
+	EstimatedAfter  int64                        `json:"estimated_tokens_after,omitempty"`
+	Pressure        conversation.Pressure        `json:"pressure,omitempty"`
+	Layers          *conversation.LayerUsage     `json:"layers,omitempty"`
 }
 
 type generatedCheckpointProjection struct {
-	kind              compaction.ProjectionKind
+	kind              conversation.ProjectionKind
 	summary           string
-	segments          []compaction.Segment
-	level             compaction.CheckpointLevel
+	segments          []conversation.Segment
+	level             conversation.CheckpointLevel
 	providerRoute     string
 	providerStateKind string
 	providerState     json.RawMessage
@@ -94,10 +93,10 @@ func (e *Engine) clearCompactionFailures(sessionID string) {
 	e.compactionFailures.Delete(sessionID)
 }
 
-func compactionFingerprint(plan compaction.Plan, route string) string {
+func compactionFingerprint(plan conversation.Plan, route string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
 		"%s\x00%s\x00%s\x00%s\x00%d\x00%d",
-		compaction.PromptVersion,
+		conversation.PromptVersion,
 		route,
 		plan.PreviousCheckpointID,
 		plan.SourceDigest,
@@ -110,25 +109,25 @@ func compactionFingerprint(plan compaction.Plan, route string) string {
 func deterministicCompactionFailure(err error) bool {
 	return errors.Is(err, errCompactionInvalidSummary) ||
 		errors.Is(err, errCompactionNoSavings) ||
-		compaction.IsContextOverflow(err.Error())
+		conversation.IsContextOverflow(err.Error())
 }
 
-func compactionInput(plan compaction.Plan) []message.Message {
-	input := []message.Message{{
-		Role:    message.RoleSystem,
+func compactionInput(plan conversation.Plan) []conversation.Message {
+	input := []conversation.Message{{
+		Role:    conversation.RoleSystem,
 		Content: compactionSystemPrompt,
 	}}
 	if plan.PreviousSummary != "" {
-		input = append(input, message.Message{
-			Role: message.RoleSystem,
+		input = append(input, conversation.Message{
+			Role: conversation.RoleSystem,
 			Content: "<previous_checkpoint>\n" +
 				plan.PreviousSummary +
 				"\n</previous_checkpoint>",
 		})
 	}
 	input = append(input, plan.SourceMessages...)
-	return append(input, message.Message{
-		Role:    message.RoleUser,
+	return append(input, conversation.Message{
+		Role:    conversation.RoleUser,
 		Content: "Produce the continuation checkpoint now.",
 	})
 }
@@ -136,22 +135,22 @@ func compactionInput(plan compaction.Plan) []message.Message {
 func (e *Engine) generateCheckpointProjection(
 	ctx context.Context,
 	sessionID, model string,
-	prov provider.Provider,
-	generator compaction.Compactor,
-	previous *compaction.Checkpoint,
-	plan compaction.Plan,
+	prov modelapi.Provider,
+	generator conversation.Compactor,
+	previous *conversation.Checkpoint,
+	plan conversation.Plan,
 	route string,
 ) (generatedCheckpointProjection, error) {
-	if generator.Kind() == compaction.ProjectionProviderNative {
-		request := provider.Request{
+	if generator.Kind() == conversation.ProjectionProviderNative {
+		request := modelapi.Request{
 			Model:           model,
 			ReasoningEffort: e.resolveReasoningEffort(sessionID),
-			Messages:        provider.TextMessages(compactionInput(plan)),
+			Messages:        modelMessages(compactionInput(plan)),
 		}
 		if previous != nil &&
-			previous.ProjectionKind == compaction.ProjectionProviderNative &&
+			previous.ProjectionKind == conversation.ProjectionProviderNative &&
 			previous.ProviderRoute == route {
-			request.ContextState = &provider.ContextState{
+			request.ContextState = &modelapi.ContextState{
 				Kind: previous.ProviderStateKind,
 				Data: append(json.RawMessage(nil), previous.ProviderState...),
 			}
@@ -161,7 +160,7 @@ func (e *Engine) generateCheckpointProjection(
 			return generatedCheckpointProjection{}, err
 		}
 		e.recordCompactionUsage(ctx, sessionID, model, candidate.Usage)
-		if candidate.Kind != compaction.ProjectionProviderNative ||
+		if candidate.Kind != conversation.ProjectionProviderNative ||
 			candidate.ProviderStateKind == "" ||
 			len(candidate.ProviderState) == 0 ||
 			!json.Valid(candidate.ProviderState) {
@@ -171,7 +170,7 @@ func (e *Engine) generateCheckpointProjection(
 			)
 		}
 		return generatedCheckpointProjection{
-			kind:              compaction.ProjectionProviderNative,
+			kind:              conversation.ProjectionProviderNative,
 			providerRoute:     route,
 			providerStateKind: candidate.ProviderStateKind,
 			providerState:     append(json.RawMessage(nil), candidate.ProviderState...),
@@ -179,7 +178,7 @@ func (e *Engine) generateCheckpointProjection(
 	}
 
 	generationPlan := plan
-	appendSegment := compaction.CanAppendSegment(previous, plan)
+	appendSegment := conversation.CanAppendSegment(previous, plan)
 	if appendSegment {
 		generationPlan.PreviousSummary = ""
 	}
@@ -195,22 +194,22 @@ func (e *Engine) generateCheckpointProjection(
 		return generatedCheckpointProjection{}, err
 	}
 	if appendSegment {
-		segments := compaction.AppendSegment(previous, plan, generated)
+		segments := conversation.AppendSegment(previous, plan, generated)
 		return generatedCheckpointProjection{
-			kind:     compaction.ProjectionText,
-			summary:  compaction.RenderSegments(segments),
+			kind:     conversation.ProjectionText,
+			summary:  conversation.RenderSegments(segments),
 			segments: segments,
-			level:    compaction.CheckpointLevelSegmented,
+			level:    conversation.CheckpointLevelSegmented,
 		}, nil
 	}
-	level := compaction.CheckpointLevelSegmented
+	level := conversation.CheckpointLevelSegmented
 	if previous != nil {
-		level = compaction.CheckpointLevelSession
+		level = conversation.CheckpointLevelSession
 	}
 	return generatedCheckpointProjection{
-		kind:     compaction.ProjectionText,
+		kind:     conversation.ProjectionText,
 		summary:  generated,
-		segments: compaction.ConsolidatedSegment(plan, generated),
+		segments: conversation.ConsolidatedSegment(plan, generated),
 		level:    level,
 	}, nil
 }
@@ -218,7 +217,7 @@ func (e *Engine) generateCheckpointProjection(
 func (e *Engine) recordCompactionUsage(
 	ctx context.Context,
 	sessionID, model string,
-	usage *provider.Usage,
+	usage *modelapi.Usage,
 ) {
 	if usage == nil {
 		return
@@ -230,7 +229,7 @@ func (e *Engine) recordCompactionUsage(
 	e.emit(
 		context.WithoutCancel(ctx),
 		sessionID,
-		event.KindUsageUpdated,
+		conversation.KindUsageUpdated,
 		value,
 		true,
 	)
@@ -245,7 +244,7 @@ func (e *Engine) emitCompactionDiagnostic(
 	e.emit(
 		context.WithoutCancel(ctx),
 		sessionID,
-		event.KindCompactionDiagnostic,
+		conversation.KindCompactionDiagnostic,
 		diagnostic,
 		true,
 	)
@@ -254,15 +253,15 @@ func (e *Engine) emitCompactionDiagnostic(
 func (e *Engine) acceptedBoundaryForRoute(
 	ctx context.Context,
 	sessionID, route string,
-) (compaction.AcceptedBoundary, bool, error) {
+) (conversation.AcceptedBoundary, bool, error) {
 	cacheKey := acceptedBoundaryCacheKey(sessionID, route)
 	if value, ok := e.acceptedBoundaries.Load(cacheKey); ok {
-		boundary := value.(compaction.AcceptedBoundary)
+		boundary := value.(conversation.AcceptedBoundary)
 		return boundary, true, nil
 	}
 	boundary, ok, err := e.log.AcceptedBoundary(ctx, sessionID, route)
 	if err != nil || !ok {
-		return compaction.AcceptedBoundary{}, false, err
+		return conversation.AcceptedBoundary{}, false, err
 	}
 	e.acceptedBoundaries.Store(cacheKey, boundary)
 	return boundary, true, nil
@@ -271,14 +270,14 @@ func (e *Engine) acceptedBoundaryForRoute(
 func (e *Engine) recordAcceptedBoundary(
 	ctx context.Context,
 	sessionID, route string,
-	throughSeq event.Seq,
+	throughSeq conversation.Seq,
 	payloadUnits int64,
-	usage *provider.Usage,
+	usage *modelapi.Usage,
 ) {
 	if throughSeq == 0 {
 		return
 	}
-	boundary := compaction.AcceptedBoundary{
+	boundary := conversation.AcceptedBoundary{
 		SessionID:    sessionID,
 		Route:        route,
 		ThroughSeq:   throughSeq,
@@ -293,7 +292,7 @@ func (e *Engine) recordAcceptedBoundary(
 	e.emit(
 		context.WithoutCancel(ctx),
 		sessionID,
-		event.KindContextRequestAccepted,
+		conversation.KindContextRequestAccepted,
 		boundary,
 		true,
 	)

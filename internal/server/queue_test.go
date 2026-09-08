@@ -9,15 +9,14 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/queue"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+	model "github.com/freesoulcode/foya/internal/model"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -26,9 +25,9 @@ type idleProvider struct{}
 
 func (idleProvider) Name() string { return "idle" }
 
-func (idleProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
-	out := make(chan provider.StreamEvent, 1)
-	out <- provider.StreamEvent{Type: "done", FinishReason: "stop"}
+func (idleProvider) Stream(context.Context, model.Request) (<-chan model.StreamEvent, error) {
+	out := make(chan model.StreamEvent, 1)
+	out <- model.StreamEvent{Type: "done", FinishReason: "stop"}
 	close(out)
 	return out, nil
 }
@@ -37,8 +36,8 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 	t.Helper()
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log,
 		bus,
@@ -49,7 +48,7 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 		gateway,
 	)
 	dataDir := t.TempDir()
-	be := backend.New(
+	be := kernel.NewService(
 		sessions,
 		log,
 		bus,
@@ -75,7 +74,7 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 			"test-model": {ImageInput: true},
 		},
 	}})
-	sess, err := be.CreateSession(session.CreateOptions{
+	sess, err := be.CreateSession(conversation.CreateOptions{
 		ConnectionID: "test-connection",
 		Model:        "test-model",
 	})
@@ -110,16 +109,16 @@ func TestQueueRoutesEditReorderAndDelete(t *testing.T) {
 	handler, sessionID := newQueueTestServer(t)
 	base := "/sessions/" + sessionID + "/queue"
 
-	var first queue.Message
+	var first conversation.QueuedMessage
 	if code := requestJSON(t, handler, http.MethodPost, base, map[string]string{"message": "first"}, &first); code != http.StatusCreated {
 		t.Fatalf("first enqueue status = %d", code)
 	}
-	var second queue.Message
+	var second conversation.QueuedMessage
 	if code := requestJSON(t, handler, http.MethodPost, base, map[string]string{"message": "second"}, &second); code != http.StatusCreated {
 		t.Fatalf("second enqueue status = %d", code)
 	}
 
-	var updated queue.Message
+	var updated conversation.QueuedMessage
 	if code := requestJSON(
 		t,
 		handler,
@@ -134,7 +133,7 @@ func TestQueueRoutesEditReorderAndDelete(t *testing.T) {
 		t.Fatalf("updated item = %#v", updated)
 	}
 
-	var items []queue.Message
+	var items []conversation.QueuedMessage
 	if code := requestJSON(t, handler, http.MethodGet, base, nil, &items); code != http.StatusOK {
 		t.Fatalf("list status = %d", code)
 	}

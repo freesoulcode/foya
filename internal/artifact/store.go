@@ -19,7 +19,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/webp"
 )
@@ -43,13 +43,13 @@ var (
 )
 
 type metadata struct {
-	message.AttachmentRef
+	conversation.AttachmentRef
 	Committed bool `json:"committed,omitempty"`
 }
 
 type Store interface {
-	PutImage(ctx context.Context, sessionID, name string, src io.Reader) (message.AttachmentRef, error)
-	Read(ctx context.Context, sessionID, artifactID string) ([]byte, message.AttachmentRef, error)
+	PutImage(ctx context.Context, sessionID, name string, src io.Reader) (conversation.AttachmentRef, error)
+	Read(ctx context.Context, sessionID, artifactID string) ([]byte, conversation.AttachmentRef, error)
 	Commit(ctx context.Context, sessionID string, artifactIDs []string) error
 	Delete(ctx context.Context, sessionID, artifactID string) error
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -71,30 +71,30 @@ func (s *FileStore) PutImage(
 	ctx context.Context,
 	sessionID, name string,
 	src io.Reader,
-) (message.AttachmentRef, error) {
+) (conversation.AttachmentRef, error) {
 	if err := validateID(sessionID); err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(src, MaxImageBytes+1))
 	if err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	if int64(len(raw)) > MaxImageBytes {
-		return message.AttachmentRef{}, ErrImageTooLarge
+		return conversation.AttachmentRef{}, ErrImageTooLarge
 	}
 	normalized, mediaType, width, height, err := normalizeImage(raw)
 	if err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	id, err := randomID()
 	if err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	sum := sha256.Sum256(normalized)
-	ref := message.AttachmentRef{
+	ref := conversation.AttachmentRef{
 		ID:        id,
 		Name:      filepath.Base(strings.TrimSpace(name)),
 		Kind:      "image",
@@ -109,19 +109,19 @@ func (s *FileStore) PutImage(
 	}
 	dir := filepath.Join(s.root, sessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	if err := writeAtomic(filepath.Join(dir, id+".bin"), normalized, 0o600); err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	meta, err := json.Marshal(metadata{AttachmentRef: ref})
 	if err != nil {
 		_ = os.Remove(filepath.Join(dir, id+".bin"))
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	if err := writeAtomic(filepath.Join(dir, id+".json"), meta, 0o600); err != nil {
 		_ = os.Remove(filepath.Join(dir, id+".bin"))
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	return ref, nil
 }
@@ -129,36 +129,36 @@ func (s *FileStore) PutImage(
 func (s *FileStore) Read(
 	ctx context.Context,
 	sessionID, artifactID string,
-) ([]byte, message.AttachmentRef, error) {
+) ([]byte, conversation.AttachmentRef, error) {
 	if err := validateID(sessionID); err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	if err := validateID(artifactID); err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	dir := filepath.Join(s.root, sessionID)
 	meta, err := os.ReadFile(filepath.Join(dir, artifactID+".json"))
 	if err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	var record metadata
 	if err := json.Unmarshal(meta, &record); err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	ref := record.AttachmentRef
 	if ref.ID != artifactID {
-		return nil, message.AttachmentRef{}, ErrInvalidID
+		return nil, conversation.AttachmentRef{}, ErrInvalidID
 	}
 	data, err := os.ReadFile(filepath.Join(dir, artifactID+".bin"))
 	if err != nil {
-		return nil, message.AttachmentRef{}, err
+		return nil, conversation.AttachmentRef{}, err
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != ref.SHA256 {
-		return nil, message.AttachmentRef{}, errors.New("artifact checksum mismatch")
+		return nil, conversation.AttachmentRef{}, errors.New("artifact checksum mismatch")
 	}
 	return data, ref, nil
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -254,15 +254,15 @@ func TestSubmitSpecToolAndTaskProgress(t *testing.T) {
 	}
 	if len(items) != 2 ||
 		items[0].Content != "T001 First task" ||
-		items[0].Status != session.TaskStatusPending {
+		items[0].Status != conversation.TaskStatusPending {
 		t.Fatalf("spec task items = %#v", items)
 	}
-	record, changed, err := manager.SyncSpecTaskProgress("session-1", []session.Task{{
+	record, changed, err := manager.SyncSpecTaskProgress("session-1", []conversation.Task{{
 		Content: "T001 First task",
-		Status:  session.TaskStatusCompleted,
+		Status:  conversation.TaskStatusCompleted,
 	}, {
 		Content: "T002 Second task",
-		Status:  session.TaskStatusInProgress,
+		Status:  conversation.TaskStatusInProgress,
 	}})
 	if err != nil || changed {
 		t.Fatalf("unapproved spec progress = %#v, %v, %v", record, changed, err)
@@ -270,12 +270,12 @@ func TestSubmitSpecToolAndTaskProgress(t *testing.T) {
 	if _, err := manager.Approve(started.ID); err != nil {
 		t.Fatal(err)
 	}
-	record, changed, err = manager.SyncSpecTaskProgress("session-1", []session.Task{{
+	record, changed, err = manager.SyncSpecTaskProgress("session-1", []conversation.Task{{
 		Content: "T001 First task",
-		Status:  session.TaskStatusCompleted,
+		Status:  conversation.TaskStatusCompleted,
 	}, {
 		Content: "T002 Second task",
-		Status:  session.TaskStatusInProgress,
+		Status:  conversation.TaskStatusInProgress,
 	}})
 	if err != nil || !changed {
 		t.Fatalf("approved spec progress = %#v, %v, %v", record, changed, err)
@@ -288,12 +288,12 @@ func TestSubmitSpecToolAndTaskProgress(t *testing.T) {
 		!strings.Contains(string(data), "- [ ] T002 Second task") {
 		t.Fatalf("synchronized tasks = %q", data)
 	}
-	record, changed, err = manager.SyncSpecTaskProgress("session-1", []session.Task{{
+	record, changed, err = manager.SyncSpecTaskProgress("session-1", []conversation.Task{{
 		Content: "T001 First task",
-		Status:  session.TaskStatusCompleted,
+		Status:  conversation.TaskStatusCompleted,
 	}, {
 		Content: "T002 Second task",
-		Status:  session.TaskStatusCompleted,
+		Status:  conversation.TaskStatusCompleted,
 	}})
 	if err != nil || !changed || record.Status != StatusCompleted {
 		t.Fatalf("completed spec progress = %#v, %v, %v", record, changed, err)

@@ -6,6 +6,12 @@ permissions = ["allow-main-window-commands"]
 identifier = "allow-main-window-commands"
 description = "Allows the application commands used by the main window."
 commands.allow = [
+  "get_kernel_connection",
+  "list_ssh_hosts",
+  "test_ssh_host",
+  "deploy_ssh_kernel",
+  "test_kernel_connection",
+  "update_kernel_connection",
   "create_session",
   "fork_session",
   "update_session",

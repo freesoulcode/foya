@@ -1,0 +1,27 @@
+---
+import {ArrowLeft} from "@lucide/astro";
+import "../styles/home.css";
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="noindex" />
+    <title>页面未找到 · Foya</title>
+  </head>
+  <body class="not-found">
+    <main>
+      <p class="kicker">404 · NOT FOUND</p>
+      <h1>这里没有内容</h1>
+      <p>请求的页面不存在，或者文档地址已经发生变化。</p>
+      <a class="button button-primary" href={`${base}/`}>
+        <ArrowLeft size={17} />
+        返回首页
+      </a>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,377 @@
+---
+import {
+  ChevronDown,
+  Download,
+  Grid2x2,
+  Hand,
+  ImagePlus,
+  MousePointer2,
+  Redo2,
+  Sparkles,
+  Trash2,
+  Type,
+  Undo2,
+  ZoomIn,
+  ZoomOut,
+} from "@lucide/astro";
+
+const firstResult =
+  "https://copilot-cn.bytedance.net/api/ide/v1/text_to_image?prompt=" +
+  encodeURIComponent(
+    "Photorealistic studio product photograph of a sculptural table lamp, frosted white glass dome and brushed aluminum base, soft morning daylight, pale gray seamless background, centered three-quarter view, premium design catalog, no text",
+  ) +
+  "&image_size=square";
+const secondResult =
+  "https://copilot-cn.bytedance.net/api/ide/v1/text_to_image?prompt=" +
+  encodeURIComponent(
+    "Photorealistic studio product photograph of the same sculptural table lamp, cobalt blue brushed metal shade and chrome base, soft morning daylight, pale gray seamless background, centered three-quarter view, premium design catalog, no text",
+  ) +
+  "&image_size=square";
+---
+
+<section
+  data-product-panel="canvas"
+  class="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-[#090a0c] text-[#f2f3f5]"
+  aria-label="节点式创作工作台"
+  hidden
+>
+  <header
+    class="flex h-11 shrink-0 items-center justify-between border-b border-white/10 bg-[#0d0e11]/95 px-4"
+  >
+    <span class="truncate text-xs font-semibold">品牌视觉探索</span>
+    <span class="flex items-center gap-1.5 text-[10px] text-[#858a94]">
+      <i class="size-1.5 rounded-full bg-emerald-500"></i>
+      已自动保存
+    </span>
+  </header>
+
+  <div class="canvas-mock relative min-h-0 flex-1 overflow-hidden">
+    <div class="canvas-mock-world absolute">
+      <svg
+        class="pointer-events-none absolute inset-0 overflow-visible"
+        width="1080"
+        height="520"
+        viewBox="0 0 1080 520"
+        fill="none"
+        aria-hidden="true"
+      >
+        <path d="M190 282 C205 282 205 280 220 280" />
+        <path d="M420 280 C435 280 435 275 450 275" />
+        <path d="M620 275 C635 275 635 282 650 282" />
+        <path d="M630 72 C680 72 600 235 650 245" />
+        <path d="M850 282 C865 282 865 265 880 265" />
+      </svg>
+
+      <article class="canvas-node left-[30px] top-[230px] h-[104px] w-[160px]">
+        <header>
+          <Type size={13} />
+          <span>提示词</span>
+        </header>
+        <p>极简玻璃台灯，柔和晨光，产品摄影</p>
+        <i class="canvas-port -right-[7px]"></i>
+      </article>
+
+      <article class="canvas-node left-[220px] top-[174px] h-[216px] w-[200px]">
+        <header>
+          <Sparkles size={13} />
+          <span>生成</span>
+          <small>success</small>
+        </header>
+        <div class="space-y-2 p-2.5">
+          <div class="canvas-control">
+            图片
+            <ChevronDown size={12} />
+          </div>
+          <div class="flex gap-2 text-[9px] text-[#878b93]">
+            <span>提示词 1</span>
+            <span>参考图 0</span>
+          </div>
+          <div class="canvas-textarea">补充描述（可选）</div>
+          <div class="canvas-control">
+            1:1
+            <ChevronDown size={12} />
+          </div>
+          <div class="grid grid-cols-[1fr_auto] gap-1.5">
+            <div class="canvas-control">
+              自动质量
+              <ChevronDown size={12} />
+            </div>
+            <button class="canvas-generate" type="button" tabindex="-1">
+              <Sparkles size={12} />
+              生成图片
+            </button>
+          </div>
+        </div>
+        <i class="canvas-port -left-[7px]"></i>
+        <i class="canvas-port -right-[7px]"></i>
+      </article>
+
+      <article class="canvas-node left-[450px] top-[146px] h-[258px] w-[170px]">
+        <header>
+          <ImagePlus size={13} />
+          <span>生成结果</span>
+          <Download size={12} />
+        </header>
+        <img
+          src={firstResult}
+          alt="白色玻璃台灯的生成结果"
+          width="340"
+          height="340"
+          loading="eager"
+        />
+        <i class="canvas-port -left-[7px]"></i>
+        <i class="canvas-port -right-[7px]"></i>
+      </article>
+
+      <article class="canvas-node left-[450px] top-[20px] h-[104px] w-[180px]">
+        <header>
+          <Type size={13} />
+          <span>提示词</span>
+        </header>
+        <p>换成钴蓝色金属外壳，保留构图与光线</p>
+        <i class="canvas-port -right-[7px]"></i>
+      </article>
+
+      <article class="canvas-node left-[650px] top-[174px] h-[216px] w-[200px]">
+        <header>
+          <Sparkles size={13} />
+          <span>生成</span>
+          <small>success</small>
+        </header>
+        <div class="space-y-2 p-2.5">
+          <div class="canvas-control">
+            图片
+            <ChevronDown size={12} />
+          </div>
+          <div class="flex gap-2 text-[9px] text-[#878b93]">
+            <span>提示词 1</span>
+            <span>参考图 1</span>
+          </div>
+          <div class="canvas-textarea">补充描述（可选）</div>
+          <div class="canvas-control">
+            1:1
+            <ChevronDown size={12} />
+          </div>
+          <div class="grid grid-cols-[1fr_auto] gap-1.5">
+            <div class="canvas-control">
+              自动质量
+              <ChevronDown size={12} />
+            </div>
+            <button class="canvas-generate" type="button" tabindex="-1">
+              <Sparkles size={12} />
+              生成图片
+            </button>
+          </div>
+        </div>
+        <i class="canvas-port -left-[7px]"></i>
+        <i class="canvas-port -right-[7px]"></i>
+      </article>
+
+      <article class="canvas-node left-[880px] top-[136px] h-[278px] w-[176px]">
+        <header>
+          <ImagePlus size={13} />
+          <span>生成结果</span>
+          <Download size={12} />
+        </header>
+        <img
+          src={secondResult}
+          alt="钴蓝色金属台灯的迭代生成结果"
+          width="352"
+          height="352"
+          loading="eager"
+        />
+        <i class="canvas-port -left-[7px]"></i>
+      </article>
+    </div>
+
+    <div
+      class="absolute bottom-4 left-1/2 flex h-10 -translate-x-1/2 items-center gap-0.5 rounded-lg border border-white/12 bg-[#17191d]/95 p-0.5 text-[#a0a5af] shadow-[0_14px_36px_rgb(0_0_0/45%)]"
+      aria-label="画布工具栏"
+    >
+      <span class="canvas-tool bg-white text-[#111216]"><MousePointer2 size={15} /></span>
+      <span class="canvas-tool"><Hand size={15} /></span>
+      <i></i>
+      <span class="canvas-tool"><Type size={15} /></span>
+      <span class="canvas-tool"><ImagePlus size={15} /></span>
+      <span class="canvas-tool"><Sparkles size={15} /></span>
+      <span class="canvas-tool"><Grid2x2 size={15} /></span>
+      <i></i>
+      <span class="canvas-tool"><Undo2 size={15} /></span>
+      <span class="canvas-tool"><Redo2 size={15} /></span>
+      <span class="canvas-tool"><Trash2 size={15} /></span>
+      <i></i>
+      <span class="canvas-tool"><ZoomOut size={15} /></span>
+      <span class="w-10 text-center text-[10px] tabular-nums">68%</span>
+      <span class="canvas-tool"><ZoomIn size={15} /></span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .canvas-mock {
+    container-type: inline-size;
+    background-color: #090a0c;
+    background-image: radial-gradient(circle, rgb(255 255 255 / 12%) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+
+  .canvas-mock-world {
+    left: 50%;
+    top: 47%;
+    width: 1080px;
+    height: 520px;
+    transform: translate(-50%, -50%) scale(0.94);
+    transform-origin: center;
+  }
+
+  .canvas-mock-world path {
+    stroke: #666c77;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+  }
+
+  .canvas-node {
+    position: absolute;
+    display: flex;
+    overflow: visible;
+    flex-direction: column;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 6px;
+    background: #17191d;
+    box-shadow: 0 10px 26px rgb(0 0 0 / 34%);
+  }
+
+  .canvas-node > header {
+    display: flex;
+    height: 30px;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid rgb(255 255 255 / 10%);
+    padding: 0 8px;
+    color: #8e949e;
+  }
+
+  .canvas-node > header span {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: #f1f2f4;
+    font-size: 10px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .canvas-node > header small {
+    color: #737984;
+    font-family: var(--font-mono);
+    font-size: 8px;
+  }
+
+  .canvas-node > p {
+    margin: 0;
+    padding: 12px 10px;
+    color: #d4d7dd;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .canvas-node > img {
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    border-radius: 0 0 5px 5px;
+    object-fit: cover;
+  }
+
+  .canvas-control {
+    display: flex;
+    height: 26px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 4px;
+    background: #101216;
+    padding: 0 7px;
+    color: #c5c9d1;
+    font-size: 9px;
+  }
+
+  .canvas-textarea {
+    height: 42px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 4px;
+    background: #101216;
+    padding: 7px;
+    color: #777d88;
+    font-size: 9px;
+  }
+
+  .canvas-generate {
+    display: flex;
+    height: 26px;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    border-radius: 4px;
+    background: #f1f2f4;
+    padding: 0 9px;
+    color: #111216;
+    font-size: 9px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .canvas-port {
+    position: absolute;
+    top: 50%;
+    width: 13px;
+    height: 13px;
+    transform: translateY(-50%);
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 999px;
+    background: #17191d;
+  }
+
+  .canvas-tool {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border-radius: 6px;
+  }
+
+  .canvas-tool + i,
+  .canvas-mock [aria-label="画布工具栏"] > i {
+    width: 1px;
+    height: 20px;
+    margin: 0 2px;
+    background: rgb(255 255 255 / 12%);
+  }
+
+  @container (max-width: 1000px) {
+    .canvas-mock-world {
+      transform: translate(-50%, -50%) scale(0.78);
+    }
+  }
+
+  @container (max-width: 760px) {
+    .canvas-mock-world {
+      transform: translate(-50%, -50%) scale(0.62);
+    }
+  }
+
+  @container (max-width: 560px) {
+    .canvas-mock-world {
+      left: 48%;
+      transform: translate(-50%, -50%) scale(0.42);
+    }
+
+    .canvas-mock [aria-label="画布工具栏"] {
+      bottom: 12px;
+      transform: translateX(-50%) scale(0.68);
+    }
+  }
+</style>

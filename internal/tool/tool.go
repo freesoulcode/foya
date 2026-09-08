@@ -7,8 +7,8 @@ package tool
 import (
 	"context"
 
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 // Exposure controls tool visibility to the model.
@@ -34,7 +34,7 @@ type ContentPart struct {
 	Name       string
 	MediaType  string
 	Data       []byte
-	Attachment *message.AttachmentRef
+	Attachment *conversation.AttachmentRef
 }
 
 // Result is the outcome of a tool execution.
@@ -42,7 +42,7 @@ type Result struct {
 	Content    []ContentPart
 	IsError    bool // Errors are returned to the model for self-correction.
 	Terminate  bool // Whether to end the current turn batch early.
-	FileChange *message.FileChange
+	FileChange *conversation.FileChange
 	// Diff is a unified file diff for UI rendering and is not sent to the model.
 	Diff string
 }
@@ -70,7 +70,7 @@ type Registry interface {
 	Unregister(name string)
 	Get(name string) (Tool, bool)
 	List() []Tool
-	Specs() []provider.ToolDef // Tool definitions sent to the model.
-	SpecsFor(activeDeferred map[string]bool) []provider.ToolDef
+	Specs() []model.ToolDef // Tool definitions sent to the model.
+	SpecsFor(activeDeferred map[string]bool) []model.ToolDef
 	SearchDeferred(query string, limit int) []Tool
 }

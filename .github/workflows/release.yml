@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-remote-kernels:
+    name: Remote Linux kernels
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12
+
+      - name: Build compressed remote kernels
+        run: node apps/desktop/scripts/build-remote-kernels.mjs
+
+      - name: Prepare remote kernel assets
+        run: |
+          mkdir -p release-assets
+          cp apps/desktop/src-tauri/binaries/remote/foya-linux-*.gz release-assets/
+          cd release-assets
+          for asset in foya-linux-*.gz; do
+            sha256sum "${asset}" > "${asset}.sha256"
+          done
+
+      - name: Upload remote kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: foya-remote-kernels
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            goarch: arm64
+            target: aarch64-apple-darwin
+          - arch: x64
+            runner: macos-15-intel
+            goarch: amd64
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - name: Validate release tag
+        run: |
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${version}" || {
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app version v${version}"
+            exit 1
+          }
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build kernel sidecar
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p apps/desktop/src-tauri/binaries
+          go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "apps/desktop/src-tauri/binaries/foya-${{ matrix.target }}" \
+            ./cmd/foya
+
+      - name: Build unsigned DMG
+        working-directory: apps/desktop
+        run: pnpm tauri build --ci --no-sign --target "${{ matrix.target }}" --bundles dmg
+
+      - name: Prepare release assets
+        env:
+          RELEASE_ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dmg="$(find "apps/desktop/src-tauri/target/${TARGET}/release/bundle/dmg" -name '*.dmg' -print -quit)"
+          test -n "${dmg}" || {
+            echo "::error::DMG was not generated"
+            exit 1
+          }
+          mkdir -p release-assets
+          asset="Foya_${version}_${RELEASE_ARCH}.dmg"
+          cp "${dmg}" "release-assets/${asset}"
+          cd release-assets
+          shasum -a 256 "${asset}" > "${asset}.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: foya-macos-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: [build-macos, build-remote-kernels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: foya-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes="Unsigned build. macOS may block the first launch; Control-click Foya.app and choose Open. Verify downloads with the matching .sha256 file."
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber
+          else
+            release_flags=()
+            version="${GITHUB_REF_NAME#v}"
+            version_without_metadata="${version%%+*}"
+            if [[ "${version_without_metadata}" == *-* ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "${GITHUB_REF_NAME}" release-assets/* \
+              --title "Foya ${GITHUB_REF_NAME}" \
+              --notes "${notes}" \
+              "${release_flags[@]}"
+          fi

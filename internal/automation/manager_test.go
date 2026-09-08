@@ -6,10 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 func TestManagerCreateUpdateAndPersist(t *testing.T) {
@@ -25,7 +23,7 @@ func TestManagerCreateUpdateAndPersist(t *testing.T) {
 		Cron:         "0 9 * * 1-5",
 		Timezone:     "UTC",
 		Enabled:      true,
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +38,7 @@ func TestManagerCreateUpdateAndPersist(t *testing.T) {
 		Cron:         task.Cron,
 		Timezone:     task.Timezone,
 		Enabled:      false,
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +60,7 @@ func TestManagerRunNowCreatesSessionAndCompletes(t *testing.T) {
 		Prompt:       "Do the thing",
 		Cron:         "0 9 * * *",
 		Timezone:     "UTC",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +97,7 @@ func TestManagerRejectsInvalidCron(t *testing.T) {
 		Prompt:       "Run",
 		Cron:         "not a cron",
 		Timezone:     "UTC",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	}); err == nil {
 		t.Fatal("invalid cron was accepted")
 	}
@@ -107,30 +105,30 @@ func TestManagerRejectsInvalidCron(t *testing.T) {
 
 type fakeRuntime struct {
 	mu          sync.Mutex
-	subscribers map[string]chan event.Event
-	lastInput   message.UserInput
+	subscribers map[string]chan conversation.Event
+	lastInput   conversation.UserInput
 }
 
 func newFakeRuntime() *fakeRuntime {
-	return &fakeRuntime{subscribers: make(map[string]chan event.Event)}
+	return &fakeRuntime{subscribers: make(map[string]chan conversation.Event)}
 }
 
-func (r *fakeRuntime) CreateSession(session.CreateOptions) (*session.Session, error) {
-	return &session.Session{ID: "session-1"}, nil
+func (r *fakeRuntime) CreateSession(conversation.CreateOptions) (*conversation.Session, error) {
+	return &conversation.Session{ID: "session-1"}, nil
 }
 
 func (r *fakeRuntime) RenameSession(
 	context.Context,
 	string,
 	string,
-) (*session.Session, error) {
-	return &session.Session{ID: "session-1"}, nil
+) (*conversation.Session, error) {
+	return &conversation.Session{ID: "session-1"}, nil
 }
 
-func (r *fakeRuntime) Subscribe(_ context.Context, sessionID string) <-chan event.Event {
+func (r *fakeRuntime) Subscribe(_ context.Context, sessionID string) <-chan conversation.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	events := make(chan event.Event, 2)
+	events := make(chan conversation.Event, 2)
 	r.subscribers[sessionID] = events
 	return events
 }
@@ -138,13 +136,13 @@ func (r *fakeRuntime) Subscribe(_ context.Context, sessionID string) <-chan even
 func (r *fakeRuntime) SubmitChatInput(
 	_ context.Context,
 	sessionID string,
-	input message.UserInput,
+	input conversation.UserInput,
 ) error {
 	r.mu.Lock()
 	r.lastInput = input
 	events := r.subscribers[sessionID]
 	r.mu.Unlock()
-	events <- event.Event{Kind: event.KindTurnComplete}
+	events <- conversation.Event{Kind: conversation.KindTurnComplete}
 	return nil
 }
 

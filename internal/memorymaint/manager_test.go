@@ -8,11 +8,9 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/contextdata"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 type testCompleter struct {
@@ -21,7 +19,7 @@ type testCompleter struct {
 	reply string
 }
 
-func (c *testCompleter) Complete(context.Context, provider.Request) (string, error) {
+func (c *testCompleter) Complete(context.Context, model.Request) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
@@ -42,19 +40,19 @@ func TestRunExtractsStableRootSessionOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := sessions.Create(session.CreateOptions{ProjectID: "project-1", Model: "test"})
+	root, err := sessions.Create(conversation.CreateOptions{ProjectID: "project-1", Model: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
-	appendMessage(t, log, root.ID, old, message.Message{
-		Role: message.RoleUser, Content: "Remember that this project uses Go modules.",
+	appendMessage(t, log, root.ID, old, conversation.Message{
+		Role: conversation.RoleUser, Content: "Remember that this project uses Go modules.",
 	})
-	appendMessage(t, log, root.ID, old.Add(time.Second), message.Message{
-		Role: message.RoleAssistant, Content: "Confirmed the module configuration.",
+	appendMessage(t, log, root.ID, old.Add(time.Second), conversation.Message{
+		Role: conversation.RoleAssistant, Content: "Confirmed the module configuration.",
 	})
 	completer := &testCompleter{reply: `{"memories":["The project uses Go modules."]}`}
-	manager, err := New(dataDir, sessions, log, store, func(string) (provider.Completer, string, string, bool) {
+	manager, err := New(dataDir, sessions, log, store, func(string) (model.Completer, string, string, bool) {
 		return completer, "test", "", true
 	})
 	if err != nil {
@@ -87,7 +85,7 @@ func TestRunThrottlesConsecutiveRootSessionsPerProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	completer := &testCompleter{reply: `{"memories":["Use focused tests."]}`}
-	manager, err := New(dataDir, sessions, log, store, func(string) (provider.Completer, string, string, bool) {
+	manager, err := New(dataDir, sessions, log, store, func(string) (model.Completer, string, string, bool) {
 		return completer, "test", "", true
 	})
 	if err != nil {
@@ -97,15 +95,15 @@ func TestRunThrottlesConsecutiveRootSessionsPerProject(t *testing.T) {
 	manager.settings.MinInterval = time.Hour
 
 	for i := 0; i < 2; i++ {
-		item, err := sessions.Create(session.CreateOptions{ProjectID: "project-1", Model: "test"})
+		item, err := sessions.Create(conversation.CreateOptions{ProjectID: "project-1", Model: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), message.Message{
-			Role: message.RoleUser, Content: "Please remember this project preference.",
+		appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), conversation.Message{
+			Role: conversation.RoleUser, Content: "Please remember this project preference.",
 		})
-		appendMessage(t, log, item.ID, time.Now().Add(-time.Hour+time.Second), message.Message{
-			Role: message.RoleAssistant, Content: "I will keep that preference.",
+		appendMessage(t, log, item.ID, time.Now().Add(-time.Hour+time.Second), conversation.Message{
+			Role: conversation.RoleAssistant, Content: "I will keep that preference.",
 		})
 	}
 	if err := manager.Run(context.Background()); err != nil {
@@ -124,18 +122,18 @@ func TestRunSkipsActiveSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item, err := sessions.Create(session.CreateOptions{ProjectID: "project-1", Model: "test"})
+	item, err := sessions.Create(conversation.CreateOptions{ProjectID: "project-1", Model: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.SetPhase(item.ID, session.PhaseTurn); err != nil {
+	if _, err := sessions.SetPhase(item.ID, conversation.PhaseTurn); err != nil {
 		t.Fatal(err)
 	}
-	appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), message.Message{
-		Role: message.RoleUser, Content: "Remember this project preference.",
+	appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), conversation.Message{
+		Role: conversation.RoleUser, Content: "Remember this project preference.",
 	})
 	completer := &testCompleter{reply: `{"memories":["Use focused tests."]}`}
-	manager, err := New(dataDir, sessions, log, store, func(string) (provider.Completer, string, string, bool) {
+	manager, err := New(dataDir, sessions, log, store, func(string) (model.Completer, string, string, bool) {
 		return completer, "test", "", true
 	})
 	if err != nil {
@@ -161,15 +159,15 @@ func TestRunSkipsExtractionWhenMemoryIsDisabled(t *testing.T) {
 	if err := store.UpdateMemorySettings(contextdata.MemorySettings{Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	item, err := sessions.Create(session.CreateOptions{Model: "test"})
+	item, err := sessions.Create(conversation.CreateOptions{Model: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), message.Message{
-		Role: message.RoleUser, Content: "Remember this preference.",
+	appendMessage(t, log, item.ID, time.Now().Add(-time.Hour), conversation.Message{
+		Role: conversation.RoleUser, Content: "Remember this preference.",
 	})
 	completer := &testCompleter{reply: `{"memories":["Use focused tests."]}`}
-	manager, err := New(dataDir, sessions, log, store, func(string) (provider.Completer, string, string, bool) {
+	manager, err := New(dataDir, sessions, log, store, func(string) (model.Completer, string, string, bool) {
 		return completer, "test", "", true
 	})
 	if err != nil {
@@ -186,14 +184,14 @@ func TestRunSkipsExtractionWhenMemoryIsDisabled(t *testing.T) {
 
 func appendMessage(
 	t *testing.T,
-	log state.Store,
+	log conversation.Store,
 	sessionID string,
 	at time.Time,
-	item message.Message,
+	item conversation.Message,
 ) {
 	t.Helper()
-	if _, err := log.Append(context.Background(), event.Event{
-		Kind: event.KindMessageEnd, Session: sessionID, Time: at, Payload: item,
+	if _, err := log.Append(context.Background(), conversation.Event{
+		Kind: conversation.KindMessageEnd, Session: sessionID, Time: at, Payload: item,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
 func executionProfile(ctx context.Context) sandbox.Profile {
-	if approval.ModeFromContext(ctx) == approval.ModeFullAccess {
+	if interaction.ModeFromContext(ctx) == interaction.ModeFullAccess {
 		return sandbox.Profile{FileSystem: sandbox.FSFull, Network: true}
 	}
 	return sandbox.WorkspaceWriteProfile(CWDFromContext(ctx))

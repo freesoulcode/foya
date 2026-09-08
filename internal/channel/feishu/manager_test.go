@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
@@ -34,7 +34,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 		Enabled:      true,
 		AppID:        "cli_test",
 		AppSecret:    "secret",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 		AllowedUsers: []string{" ou_1 ", "ou_1"},
 	})
 	if err != nil {
@@ -64,7 +64,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 		Locale:       "en-US",
 		Enabled:      true,
 		AppID:        "cli_updated",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 		AllowedUsers: []string{"ou_1"},
 	})
 	if err != nil {
@@ -114,7 +114,7 @@ func TestManagerRejectsIncompleteEnabledSettings(t *testing.T) {
 		Enabled:      true,
 		AppID:        "cli_test",
 		AppSecret:    "secret",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	}); err == nil {
 		t.Fatal("enabled bot accepted an empty access policy")
 	}

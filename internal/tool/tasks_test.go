@@ -6,18 +6,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 func TestReadTasksToolReturnsCurrentTasks(t *testing.T) {
 	manager := newTestSessionManager(t)
-	created, err := manager.Create(session.CreateOptions{Model: "model"})
+	created, err := manager.Create(conversation.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.SetTasks(created.ID, []session.Task{
-		{Content: "Read code", Status: session.TaskStatusCompleted},
-		{Content: "Write tests", Status: session.TaskStatusInProgress},
+	if _, err := manager.SetTasks(created.ID, []conversation.Task{
+		{Content: "Read code", Status: conversation.TaskStatusCompleted},
+		{Content: "Write tests", Status: conversation.TaskStatusInProgress},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestReadTasksToolReturnsCurrentTasks(t *testing.T) {
 
 func TestReadTasksToolReturnsEmptyList(t *testing.T) {
 	manager := newTestSessionManager(t)
-	created, err := manager.Create(session.CreateOptions{Model: "model"})
+	created, err := manager.Create(conversation.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,17 +73,17 @@ func TestReadTasksToolRequiresSessionID(t *testing.T) {
 
 func TestUpdateTasksToolPersistsAndSummarizes(t *testing.T) {
 	manager := newTestSessionManager(t)
-	created, err := manager.Create(session.CreateOptions{Model: "model"})
+	created, err := manager.Create(conversation.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.SetTasks(created.ID, []session.Task{
-		{Content: "Read code", Status: session.TaskStatusInProgress},
+	if _, err := manager.SetTasks(created.ID, []conversation.Task{
+		{Content: "Read code", Status: conversation.TaskStatusInProgress},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	notifications := 0
-	tool := NewUpdateTasksTool(manager, func(context.Context, *session.Session) {
+	tool := NewUpdateTasksTool(manager, func(context.Context, *conversation.Session) {
 		notifications++
 	})
 	result, err := tool.Run(
@@ -103,7 +103,7 @@ func TestUpdateTasksToolPersistsAndSummarizes(t *testing.T) {
 	if !ok {
 		t.Fatal("session missing")
 	}
-	if len(updated.Tasks) != 2 || updated.Tasks[0].Status != session.TaskStatusCompleted {
+	if len(updated.Tasks) != 2 || updated.Tasks[0].Status != conversation.TaskStatusCompleted {
 		t.Fatalf("tasks = %#v", updated.Tasks)
 	}
 	output := result.Content[0].Text
@@ -116,7 +116,7 @@ func TestUpdateTasksToolPersistsAndSummarizes(t *testing.T) {
 
 func TestUpdateTasksToolRejectsMultipleInProgress(t *testing.T) {
 	manager := newTestSessionManager(t)
-	created, err := manager.Create(session.CreateOptions{Model: "model"})
+	created, err := manager.Create(conversation.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestUpdateTasksToolRejectsMultipleInProgress(t *testing.T) {
 
 func TestUpdateTasksToolRejectsInvalidStatus(t *testing.T) {
 	manager := newTestSessionManager(t)
-	created, err := manager.Create(session.CreateOptions{Model: "model"})
+	created, err := manager.Create(conversation.CreateOptions{Model: "model"})
 	if err != nil {
 		t.Fatal(err)
 	}

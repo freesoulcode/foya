@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/protocol"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+	model "github.com/freesoulcode/foya/internal/model"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -20,13 +19,13 @@ import (
 func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	prov := idleProvider{}
 	engine := agent.NewEngine(log, bus, sessions, prov, "fallback", tool.NewRegistry(), gateway)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions, log, bus, engine, gateway, terminal.NewManager(),
-		func(connection config.Provider) (provider.Provider, string) {
+		func(connection config.Provider) (model.Provider, string) {
 			return prov, connection.Model
 		},
 		config.Provider{}, t.TempDir(),
@@ -60,7 +59,7 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	}, &connection); code != http.StatusCreated {
 		t.Fatalf("create connection status = %d", code)
 	}
-	if connection.APIKey != "secret" ||
+	if connection.APIKey != "" ||
 		!connection.HasAPIKey ||
 		connection.ID == "" ||
 		!connection.ModelSettings["deepseek-chat"].ImageInput ||
@@ -75,11 +74,12 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 	if code := requestJSON(t, handler, http.MethodGet, "/connections", nil, &listed); code != http.StatusOK {
 		t.Fatalf("list connection status = %d", code)
 	}
-	if len(listed) != 1 || listed[0].ID != connection.ID || listed[0].APIKey != "secret" {
+	if len(listed) != 1 || listed[0].ID != connection.ID ||
+		listed[0].APIKey != "" || !listed[0].HasAPIKey {
 		t.Fatalf("listed connections = %#v", listed)
 	}
 
-	var created session.Session
+	var created conversation.Session
 	if code := requestJSON(t, handler, http.MethodPost, "/sessions", map[string]string{
 		"connection_id": connection.ID,
 		"model":         "deepseek-chat",
@@ -110,9 +110,9 @@ func TestConnectionRoutesRedactKeysAndBindSession(t *testing.T) {
 }
 
 type connectionResponse struct {
-	ID            string                            `json:"id"`
-	Name          string                            `json:"name"`
-	APIKey        string                            `json:"api_key"`
-	HasAPIKey     bool                              `json:"has_api_key"`
-	ModelSettings map[string]protocol.ModelSettings `json:"model_settings"`
+	ID            string                   `json:"id"`
+	Name          string                   `json:"name"`
+	APIKey        string                   `json:"api_key"`
+	HasAPIKey     bool                     `json:"has_api_key"`
+	ModelSettings map[string]ModelSettings `json:"model_settings"`
 }

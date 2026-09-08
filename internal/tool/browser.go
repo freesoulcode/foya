@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/browseruse"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 type browserTools struct {
 	controller *browseruse.Controller
-	approval   approval.Gateway
+	approval   interaction.Gateway
 }
 
 type browserNavigateParams struct {
@@ -60,7 +60,7 @@ type browserScreenshotParams struct {
 	FullPage bool `json:"full_page,omitempty"`
 }
 
-func BrowserTools(controller *browseruse.Controller, gateway approval.Gateway) []Tool {
+func BrowserTools(controller *browseruse.Controller, gateway interaction.Gateway) []Tool {
 	base := &browserTools{controller: controller, approval: gateway}
 	return []Tool{
 		browserNavigateTool{base},
@@ -404,7 +404,7 @@ func (t *browserTools) approve(
 		detail = "Browser access: " + request.URL
 		resource = request.URL
 	}
-	decision, err := t.approval.Request(ctx, approval.Request{
+	decision, err := t.approval.Request(ctx, interaction.Request{
 		ToolName: toolName,
 		Action:   action,
 		Detail:   detail,
@@ -414,7 +414,7 @@ func (t *browserTools) approve(
 	if err != nil {
 		return fmt.Errorf("browser approval interrupted: %w", err)
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errors.New("user denied browser action")
 	}
 	return nil

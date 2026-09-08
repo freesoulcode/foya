@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	foyatool "github.com/freesoulcode/foya/internal/tool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -47,7 +47,7 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 			return mcpError("invalid MCP tool arguments: " + err.Error()), nil
 		}
 	}
-	decision, err := t.manager.gateway.Request(ctx, approval.Request{
+	decision, err := t.manager.gateway.Request(ctx, interaction.Request{
 		ToolName: t.name, Action: "execute",
 		Detail:   fmt.Sprintf("Call MCP tool %s/%s", t.serverID, t.remoteName),
 		Resource: t.remoteName,
@@ -56,7 +56,7 @@ func (t *remoteTool) Run(ctx context.Context, call foyatool.Call) (foyatool.Resu
 	if err != nil {
 		return mcpError("MCP approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return mcpError("user denied MCP tool execution"), nil
 	}
 	result, err := t.manager.Call(ctx, t.serverID, t.remoteName, arguments)

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -20,12 +20,12 @@ type WriteParams struct {
 }
 
 type writeTool struct {
-	gw     approval.Gateway
+	gw     interaction.Gateway
 	runner sandbox.Runner
 }
 
 // NewWriteTool creates a tool that replaces a complete file.
-func NewWriteTool(gw approval.Gateway, runner sandbox.Runner) Tool {
+func NewWriteTool(gw interaction.Gateway, runner sandbox.Runner) Tool {
 	return &writeTool{gw: gw, runner: runner}
 }
 
@@ -56,7 +56,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 
 	path := absoluteToolPath(ctx, params.Path)
-	decision, err := t.gw.Request(ctx, approval.Request{
+	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "write",
 		Action:   "write",
 		Detail:   fmt.Sprintf("Write file: %s", path),
@@ -66,7 +66,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("Approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("User denied file write"), nil
 	}
 
@@ -93,7 +93,7 @@ func (t *writeTool) Run(ctx context.Context, call Call) (Result, error) {
 		afterMode = 0o644
 	}
 
-	var change *message.FileChange
+	var change *conversation.FileChange
 	if !beforeExists || string(oldData) != params.Content {
 		change = trackedFileChange(
 			path,

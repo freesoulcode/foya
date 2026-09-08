@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -22,7 +22,7 @@ type BashParams struct {
 
 // bashTool executes shell commands.
 type bashTool struct {
-	gw         approval.Gateway
+	gw         interaction.Gateway
 	background BackgroundCommandManager
 	runner     sandbox.Runner
 	shell      string
@@ -30,7 +30,7 @@ type bashTool struct {
 }
 
 // NewBashTool creates a shell command tool.
-func NewBashTool(gw approval.Gateway, runner sandbox.Runner) Tool {
+func NewBashTool(gw interaction.Gateway, runner sandbox.Runner) Tool {
 	var background BackgroundCommandManager
 	if _, ok := runner.(sandbox.ManagedRunner); ok {
 		background = NewBackgroundCommandManager(runner)
@@ -39,7 +39,7 @@ func NewBashTool(gw approval.Gateway, runner sandbox.Runner) Tool {
 }
 
 func NewBashToolWithManager(
-	gw approval.Gateway,
+	gw interaction.Gateway,
 	runner sandbox.Runner,
 	background BackgroundCommandManager,
 ) Tool {
@@ -87,7 +87,7 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 	if strings.TrimSpace(params.Command) == "" {
 		return errResult("command is empty"), nil
 	}
-	if approval.ModeFromContext(ctx) != approval.ModeFullAccess &&
+	if interaction.ModeFromContext(ctx) != interaction.ModeFullAccess &&
 		containsPermanentDeletion(params.Command) {
 		return errResult("permanent shell deletion is disabled; use the delete tool to move the path to the system Trash or Recycle Bin"), nil
 	}
@@ -96,7 +96,7 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 
 	workDir := CWDFromContext(ctx)
-	decision, err := t.gw.Request(ctx, approval.Request{
+	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "bash",
 		Action:   "execute",
 		Detail:   params.Command,
@@ -106,7 +106,7 @@ func (t *bashTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("Approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("User denied command execution"), nil
 	}
 

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/broker"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/testkit"
 )
 
@@ -15,7 +15,7 @@ func newTestController(t *testing.T) *Controller {
 	t.Helper()
 	controller, err := NewController(
 		t.TempDir(),
-		broker.New[event.Event](),
+		broker.New[conversation.Event](),
 		testkit.NewLog(),
 	)
 	if err != nil {
@@ -61,7 +61,7 @@ func TestWebViewActionPublishesAndResolves(t *testing.T) {
 
 	select {
 	case ev := <-events:
-		if ev.Kind != event.KindBrowserActionRequested {
+		if ev.Kind != conversation.KindBrowserActionRequested {
 			t.Fatalf("event kind = %q", ev.Kind)
 		}
 		request, ok := ev.Payload.(ActionRequest)
@@ -91,7 +91,7 @@ func TestWebViewActionPublishesAndResolves(t *testing.T) {
 
 	select {
 	case ev := <-events:
-		if ev.Kind != event.KindBrowserActionResolved {
+		if ev.Kind != conversation.KindBrowserActionResolved {
 			t.Fatalf("resolved event kind = %q", ev.Kind)
 		}
 	case <-ctx.Done():

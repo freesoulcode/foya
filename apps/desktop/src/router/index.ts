@@ -64,6 +64,12 @@ export const router = createRouter({
           children: [
             { path: "", redirect: { name: "settings-connections" } },
             {
+              path: "kernel",
+              name: "settings-kernel",
+              component: () => import("@/views/settings/KernelView.vue"),
+              meta: { settingsSection: "kernel" },
+            },
+            {
               path: "connections",
               name: "settings-connections",
               component: () => import("@/views/settings/ConnectionsView.vue"),

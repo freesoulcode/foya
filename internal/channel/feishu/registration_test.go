@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	larkregistration "github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 )
 
@@ -65,7 +65,7 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 	started, err := manager.StartRegistration(RegistrationInput{
 		Name:         "扫码 Bot",
 		Locale:       "en-US",
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	})
 	if err != nil {
 		t.Fatal(err)

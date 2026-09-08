@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+
 	"github.com/freesoulcode/foya/internal/storage"
 )
 
@@ -27,17 +27,17 @@ func OpenDatabase(t testing.TB) *storage.Database {
 }
 
 // NewLog returns a lightweight event log for tests that only need Append/Read.
-func NewLog() state.Log {
-	return &log{events: make(map[string][]event.Event)}
+func NewLog() conversation.Log {
+	return &log{events: make(map[string][]conversation.Event)}
 }
 
 type log struct {
 	mu     sync.Mutex
-	seq    event.Seq
-	events map[string][]event.Event
+	seq    conversation.Seq
+	events map[string][]conversation.Event
 }
 
-func (l *log) Append(ctx context.Context, ev event.Event) (event.Seq, error) {
+func (l *log) Append(ctx context.Context, ev conversation.Event) (conversation.Seq, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
@@ -46,10 +46,10 @@ func (l *log) Append(ctx context.Context, ev event.Event) (event.Seq, error) {
 	return ev.Seq, nil
 }
 
-func (l *log) Read(ctx context.Context, session string, after event.Seq) ([]event.Event, error) {
+func (l *log) Read(ctx context.Context, session string, after conversation.Seq) ([]conversation.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var out []event.Event
+	var out []conversation.Event
 	for _, ev := range l.events[session] {
 		if ev.Seq > after {
 			out = append(out, ev)

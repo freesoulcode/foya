@@ -13,8 +13,7 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/broker"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 var ErrNotFound = errors.New("browser action not found")
@@ -63,8 +62,8 @@ type pendingAction struct {
 
 type Controller struct {
 	dataDir string
-	bus     *broker.Broker[event.Event]
-	log     state.Log
+	bus     *broker.Broker[conversation.Event]
+	log     conversation.Log
 
 	mu      sync.Mutex
 	pending map[string]pendingAction
@@ -72,8 +71,8 @@ type Controller struct {
 
 func NewController(
 	dataDir string,
-	bus *broker.Broker[event.Event],
-	log state.Log,
+	bus *broker.Broker[conversation.Event],
+	log conversation.Log,
 ) (*Controller, error) {
 	controller := &Controller{
 		dataDir: dataDir,
@@ -109,8 +108,8 @@ func (c *Controller) executeWebView(
 	c.pending[request.ID] = waiter
 	c.mu.Unlock()
 
-	ev := event.Event{
-		Kind:    event.KindBrowserActionRequested,
+	ev := conversation.Event{
+		Kind:    conversation.KindBrowserActionRequested,
 		Session: request.SessionID,
 		Time:    time.Now(),
 		Payload: request,
@@ -186,8 +185,8 @@ func (c *Controller) publishResolved(
 	request ActionRequest,
 	status string,
 ) {
-	ev := event.Event{
-		Kind:    event.KindBrowserActionResolved,
+	ev := conversation.Event{
+		Kind:    conversation.KindBrowserActionResolved,
 		Session: request.SessionID,
 		Time:    time.Now(),
 		Payload: map[string]string{"id": request.ID, "status": status},

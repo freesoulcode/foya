@@ -6,20 +6,20 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/question"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 type askUserTool struct {
-	gateway question.Gateway
+	gateway interaction.QuestionGateway
 }
 
 type askUserParams struct {
-	Questions []question.Question `json:"questions"`
+	Questions []interaction.Question `json:"questions"`
 }
 
 // NewAskUserTool lets the agent collect a complete batch of user decisions
 // without ending the current turn.
-func NewAskUserTool(gateway question.Gateway) Tool {
+func NewAskUserTool(gateway interaction.QuestionGateway) Tool {
 	return &askUserTool{gateway: gateway}
 }
 
@@ -78,20 +78,20 @@ func (t *askUserTool) Run(ctx context.Context, call Call) (Result, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return errResult("ask_user requires a session"), nil
 	}
-	answers, err := t.gateway.Ask(ctx, question.Batch{
+	answers, err := t.gateway.Ask(ctx, interaction.Batch{
 		SessionID:  sessionID,
 		RunID:      RunIDFromContext(ctx),
 		ToolCallID: call.ID,
 		Questions:  params.Questions,
 	})
 	if err != nil {
-		if errors.Is(err, question.ErrCancelled) || errors.Is(err, context.Canceled) {
+		if errors.Is(err, interaction.ErrCancelled) || errors.Is(err, context.Canceled) {
 			return errResult("user question batch was cancelled"), nil
 		}
 		return errResult("ask_user failed: " + err.Error()), nil
 	}
 	data, err := json.Marshal(struct {
-		Answers []question.Answer `json:"answers"`
+		Answers []interaction.Answer `json:"answers"`
 	}{Answers: answers})
 	if err != nil {
 		return errResult("encode answers: " + err.Error()), nil

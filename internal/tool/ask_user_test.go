@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/broker"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/question"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 func TestAskUserToolReturnsCompleteAnswers(t *testing.T) {
-	bus := broker.New[event.Event]()
-	gateway := question.NewGateway(bus, testkit.NewLog())
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewQuestionGateway(bus, testkit.NewLog())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := bus.Subscribe(ctx, "session:session-1")
@@ -28,21 +28,21 @@ func TestAskUserToolReturnsCompleteAnswers(t *testing.T) {
 		resultCh <- result
 	}()
 
-	var batch question.Batch
+	var batch interaction.Batch
 	select {
 	case ev := <-events:
-		if ev.Kind != event.KindQuestionRequested {
+		if ev.Kind != conversation.KindQuestionRequested {
 			t.Fatalf("event kind = %s", ev.Kind)
 		}
 		var ok bool
-		batch, ok = ev.Payload.(question.Batch)
+		batch, ok = ev.Payload.(interaction.Batch)
 		if !ok {
 			t.Fatalf("payload = %T", ev.Payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for question request")
 	}
-	if err := gateway.Answer("session-1", batch.ID, []question.Answer{{QuestionID: "choice", Value: "A"}}); err != nil {
+	if err := gateway.Answer("session-1", batch.ID, []interaction.Answer{{QuestionID: "choice", Value: "A"}}); err != nil {
 		t.Fatal(err)
 	}
 	result := <-resultCh

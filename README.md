@@ -1,103 +1,235 @@
-# Foya
+<div align="center">
+  <img src="./apps/site/public/foya-icon.png" width="96" height="96" alt="Foya logo">
+  <h1>Foya</h1>
+  <p><strong>An open-source, local-first personal agent system with bring-your-own-model support</strong></p>
+  <p>Connect your own models, work with local projects, review changes, and run long-lived tasks.</p>
 
-一个开源、非商业、BYOK(用户自带 API Key)的个人 agent 系统。
+  <p>
+    <a href="https://github.com/freesoulcode/foya/actions/workflows/ci.yml"><img src="https://github.com/freesoulcode/foya/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <img src="https://img.shields.io/badge/status-early_development-D97706" alt="Status: Early Development">
+    <img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go 1.26+">
+    <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri 2">
+    <img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3">
+    <img src="https://img.shields.io/badge/license-Apache--2.0-2F80ED" alt="License: Apache-2.0">
+  </p>
 
-核心是一个 Go 编写的**独立常驻内核**(个人 agent 后端),Tauri 桌面端与 CLI 是它的客户端;
-用户可从多设备、多客户端、多会话连接同一内核。内核持有全部会话状态(日志即真相),
-客户端无状态、从事件流投影。
+  <p>
+    <a href="./README.zh-CN.md">简体中文</a>
+    &middot;
+    <a href="https://github.com/freesoulcode/foya/releases">Releases</a>
+    &middot;
+    <a href="https://freesoulcode.github.io/foya/docs/">Documentation</a>
+    &middot;
+    <a href="https://freesoulcode.github.io/foya/docs/quick-start/">Quick Start</a>
+    &middot;
+    <a href="./CONTRIBUTING.md">Contributing</a>
+    &middot;
+    <a href="https://github.com/freesoulcode/foya/issues">Issues</a>
+  </p>
+</div>
 
-## 文档
+Foya is built around an independent Go kernel. The desktop app, CLI,
+automations, and messaging channels share the same agent runtime, session
+state, and permission system. Data is stored locally by default, and model
+providers are selected and configured by the user.
 
-- [架构](./docs/架构.md) — 宏观四层分层
-- [节点抽象设计](./docs/节点抽象设计.md) — 内核核心节点接口
-- [前端架构](./docs/前端架构.md) — Vue 前端分层
-- [自定义智能体](./docs/自定义智能体.md) — 用户级/项目级 Agent 定义与派工
+> [!IMPORTANT]
+> Foya is in early development. APIs, configuration, and storage formats may
+> change. Building from source is currently recommended. The desktop app
+> primarily targets macOS and Linux; Windows support is still being improved.
 
-## 目录结构
+## Features
 
-```
-cmd/foya/          入口:内核 daemon + exec 子命令
-internal/
-  kernel/          内核组合根 (App)
-  agent/           回合引擎 AgentLoop、Turn
-  agentdef/        用户级/项目级 Agent 定义发现
-  subagent/        Child Session、并发调度与结果回传
-  broker/          事件总线 Broker[T](两级投递)
-  event/           Event 类型与单调序号
-  session/         会话与多会话管理
-  state/           日志即真相:Event Log + 投影
-  tool/            工具接口、注册表、路由
-  skill/           内置、全局和项目级 Skills 发现与启停
-  mcpclient/       MCP tools/resources/prompts 与传输适配
-  channel/         外部消息渠道公共契约与平台适配器
-  automation/      定时任务持久化、cron 调度与执行状态
-  websearch/       原生搜索、Google CSE 与 DuckDuckGo 路由
-  approval/        审批网关与策略
-  sandbox/         工具执行隔离
-  provider/        LLM provider 抽象与 OpenAI 兼容实现
-  credential/      凭证存储(keychain / 加密文件降级)
-  backend/         传输无关业务层:多连接、多会话、事件扇出
-  server/          REST + SSE
-  protocol/        线格式类型(Submission / Event DTO)
-  config/          配置
-```
+- **Local first:** Sessions, project configuration, event logs, and artifacts
+  are stored on the local machine by default.
+- **Bring your own model:** Connect OpenAI-compatible endpoints and select
+  different connections and models per session.
+- **Agent runtime:** Tool calls, message queues, cancellation, context
+  compaction, and concurrent child agents.
+- **Reviewable file changes:** Inspect, keep, or revert changes while detecting
+  external conflicts.
+- **Permission controls:** Manual approval, automatic approval, full access,
+  and platform sandboxing.
+- **Extensible:** Skills, MCP, rules, memory, hooks, plugins, and custom
+  commands.
+- **Multiple entry points:** Tauri desktop app, CLI, Feishu bot, and scheduled
+  automations.
+- **Remote kernels:** One-click SSH deployment and tunnels, plus authenticated
+  HTTPS deployment for a single-tenant server.
+- **Multimodal workflows:** Image input, artifacts, and a visual image/video
+  generation canvas.
+- **Observability:** OpenTelemetry traces, metrics, and OTLP export.
 
-## 开发
+## Quick Start
 
-```
-make build   # 编译内核二进制到 bin/foya
-make run     # 启动内核
-make test    # 运行测试
-```
+### Requirements
 
-## 飞书 Bot
+Running the kernel or CLI requires Go 1.26 or later.
 
-`foya bot` 通过飞书长连接接收消息，无需公网回调地址。它会同时启动
-Foya 内核和本地 HTTP/socket 服务，因此桌面端可以连接同一个内核；不要再
-单独启动第二个 `foya` 进程。
+Desktop development also requires:
 
-1. 在飞书开发者后台创建企业自建应用并开启机器人能力。
-2. 开通应用身份权限：
-   `im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、
-   `im:message:send_as_bot`、`im:message.reactions:write_only`；需要处理图片时
-   再开通 `im:resource`。
-3. 在桌面端“设置 → 消息渠道 → 飞书”填写凭证、模型和访问白名单，启用后保存。
-   也可以用 CLI 启动：
+- Node.js 22.12+
+- pnpm 10
+- A Rust toolchain
+- The [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for
+  your platform
+
+### Run the Desktop App
 
 ```bash
-export FOYA_FEISHU_APP_ID=cli_xxx
-export FOYA_FEISHU_APP_SECRET=xxx
-export FOYA_FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
-export FOYA_FEISHU_ALLOWED_CHATS=oc_xxx
+git clone https://github.com/freesoulcode/foya.git
+cd foya
 
-make build
-./bin/foya bot
+make fe-install
+make desktop-dev
 ```
 
-4. 保持进程运行，在“事件与回调”中选择长连接，订阅
-   `im.message.receive_v1`，然后发布应用。
+After the app starts, open **Settings > Model Connections** and add a base URL,
+API key, and model. You can then create a project-backed or standalone chat.
 
-也可以重复传入 `--allow-user`、`--allow-chat`。只有明确用于隔离测试的应用才
-应使用 `--allow-all`，因为 Foya Agent 可以读取本机文件并执行工具。群聊默认
-只响应 @bot 的消息；发送 `/new` 可开启新会话，发送 `/stop` 可中止当前任务。
-文本和图片消息会进入 Foya，回复以完整 Markdown 富文本发送，长回复自动拆分。
+### Use the CLI
 
-模型默认使用桌面端中配置的默认语言模型，也可以通过
-`--connection`、`--model`、`--project` 指定。Bot 默认采用 `auto` 审批；
-如需完全放开工具权限，必须显式传入 `--approval full_access`。
+When no model connection exists yet, import an OpenAI-compatible connection
+through environment variables:
 
-## 已实现
+```bash
+export FOYA_PROVIDER_BASE_URL="https://your-provider.example/v1"
+export FOYA_PROVIDER_API_KEY="your-api-key"
+export FOYA_PROVIDER_MODEL="your-model"
 
-- Go 常驻内核、本地 Unix socket、REST + SSE。
-- 飞书 Bot 长连接、访问白名单、会话续接、Markdown 回复与图片输入。
-- 自动化定时任务、周期调度、立即运行与独立会话留档。
-- 多会话 Agent Loop、并发子 Agent、工具调用、审批、取消、队列与上下文压缩。
-- OpenAI 兼容模型连接和 BYOK 配置。
-- `bash`、`read`、`write`、`edit`、Skills、Web Search 与 WebFetch。
-- MCP stdio、Streamable HTTP、legacy SSE，以及 tools/resources/prompts。
-- `foya exec` 和 Agents、Skills、MCP、Web Search 管理命令。
-- Tauri + Vue 桌面端及对应设置界面。
-- 图片 Artifact、用户图片输入、工具图片回灌与 OpenAI 多模态请求。
-- 创作画布中的 OpenAI 兼容图片与视频生成，支持文字提示和参考图。
+make build
+./bin/foya exec "Analyze this project and explain its main modules"
+```
 
-完整 MCP OAuth、客户端归属 MCP 和更多富媒体类型仍在开发中。
+Common commands:
+
+| Command | Purpose |
+| --- | --- |
+| `foya` | Start the persistent kernel |
+| `foya exec <prompt>` | Run a one-shot headless task |
+| `foya projects ...` | Manage projects |
+| `foya agents` | List available agents |
+| `foya skills ...` | List or toggle skills |
+| `foya rules ...` | Manage rules |
+| `foya memory ...` | Manage memory |
+| `foya mcp ...` | Manage MCP servers |
+| `foya web-search ...` | Configure and test web search |
+| `foya bot` | Start the kernel with the Feishu long connection |
+
+See the [CLI documentation](https://freesoulcode.github.io/foya/docs/cli/) for complete
+usage.
+
+## How It Works
+
+```mermaid
+flowchart LR
+    CLIENTS["Desktop / CLI / Feishu / Automations"] --> ADAPTERS["Transport Adapters"]
+    ADAPTERS --> SERVICE["Kernel Service"]
+    SERVICE --> RUNTIME["Agent Runtime"]
+    RUNTIME --> MODEL["Model SPI"]
+    RUNTIME --> TOOLS["Tools / Skills / MCP"]
+    RUNTIME --> CONTROL["Interaction / Sandbox"]
+    SERVICE --> STATE["Conversation / SQLite / Artifacts"]
+```
+
+The kernel owns session state and uses the event log as its source of truth.
+Clients submit input and project state instead of maintaining separate agent
+implementations. The same session can therefore be observed and continued
+through different entry points.
+
+See the [architecture documentation](https://freesoulcode.github.io/foya/docs/technical/architecture/)
+for more details.
+
+## Repository Layout
+
+```text
+.
+|-- cmd/foya/          # Kernel, CLI, and bot entry points
+|-- internal/          # Agent runtime, tools, storage, and integrations
+|-- apps/desktop/      # Tauri 2 and Vue 3 desktop app
+|-- apps/site/         # Astro and Starlight website and documentation
+|-- Makefile           # Development, test, and build commands
+`-- go.mod
+```
+
+Key kernel packages:
+
+| Directory | Responsibility |
+| --- | --- |
+| `internal/kernel` | Composition root and transport-neutral application service |
+| `internal/server` | REST, SSE, authentication, and wire formats |
+| `internal/conversation` | Sessions, messages, events, queues, projections, and compaction |
+| `internal/model` | Model SPI and OpenAI-compatible adapter |
+| `internal/agent` | Agent loop, prompts, title generation, and tool execution |
+| `internal/interaction` | Approval and structured user questions |
+| `internal/subagent` | Agent definitions, child sessions, scheduling, and budgets |
+| `internal/workflow` | Custom commands and Plan, Spec, and Goal workflows |
+| `internal/tool` | Tool interfaces, registry, and built-in tools |
+| `internal/mcpclient`, `internal/skill` | MCP and skills |
+| `internal/canvas`, `internal/artifact` | Creative canvases and generated assets |
+| `internal/channel`, `internal/automation` | Messaging and scheduled tasks |
+| `internal/storage`, `internal/telemetry` | SQLite, locking, traces, and metrics |
+
+## Development
+
+```bash
+make help           # List available commands
+make test           # Run Go tests
+make vet            # Run Go static analysis
+make build          # Build bin/foya
+make desktop-dev    # Start the desktop development environment
+make desktop-build  # Build desktop installers
+make site-install   # Install website dependencies
+make site-dev       # Start the documentation development server
+make site-check     # Check documentation, links, and Astro pages
+make site-build     # Build the static website
+```
+
+Documentation source files live in
+[`apps/site/src/content/docs`](./apps/site/src/content/docs). Update the
+relevant documentation when changing behavior or configuration.
+
+## Project Status
+
+Implemented:
+
+- Persistent Go kernel, local Unix socket, REST, and SSE.
+- Managed SSH deployment and tunnels, plus authenticated single-tenant HTTPS
+  deployment.
+- Multi-session agent loop, concurrent child agents, approvals, cancellation,
+  queues, and context compaction.
+- `bash`, `read`, `write`, `edit`, `delete`, web search, web fetch, and browser
+  tools.
+- MCP stdio, Streamable HTTP, legacy SSE, tools, resources, and prompts.
+- Feishu long connection, source allowlists, session continuation, Markdown
+  replies, and image input.
+- Scheduled automations, isolated session history, image artifacts, and the
+  visual media generation canvas.
+
+In progress:
+
+- Complete MCP OAuth and client-owned MCP.
+- Windows desktop commands and restricted execution.
+- Multi-tenant deployment and unified system keychain credential storage.
+- More media types, signed builds, and additional platform installers.
+
+## Security
+
+Foya can read files, run commands, and access networks. Start with the `manual`
+approval mode, enable `full_access` only in isolated and recoverable
+environments, and connect only trusted MCP servers, skills, plugins, and hooks.
+Do not use `--allow-all` with a public Feishu app.
+
+See the [security model](https://freesoulcode.github.io/foya/docs/technical/security/) for
+trust boundaries and known limitations. Report vulnerabilities privately
+according to the [security policy](./SECURITY.md).
+
+## Contributing
+
+Issues and focused pull requests are welcome. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the development commands and submission
+guidelines.
+
+## License
+
+Foya is licensed under the [Apache License 2.0](./LICENSE).

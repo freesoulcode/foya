@@ -36,6 +36,7 @@ const emit = defineEmits<{
 const name = ref("");
 const path = ref("");
 const pickerError = ref("");
+const remoteKernel = ref(false);
 
 watch(
   () => props.open,
@@ -44,6 +45,14 @@ watch(
       name.value = "";
       path.value = "";
       pickerError.value = "";
+      void api.getKernelConnection().then(
+        (connection) => {
+          remoteKernel.value = connection.mode === "remote" || connection.mode === "ssh";
+        },
+        () => {
+          remoteKernel.value = false;
+        }
+      );
     }
   }
 );
@@ -102,11 +111,13 @@ function submit() {
               id="project-create-path"
               :model-value="path"
               class="font-mono text-xs"
-              :placeholder="$t('Select folder')"
-              readonly
+              :placeholder="remoteKernel ? $t('Enter server path') : $t('Select folder')"
+              :readonly="!remoteKernel"
               :disabled="busy"
+              @update:model-value="path = String($event)"
             />
             <Button
+              v-if="!remoteKernel"
               type="button"
               variant="outline"
               class="shrink-0"

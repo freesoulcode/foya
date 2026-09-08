@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 func TestSessionReasoningEffortRoutes(t *testing.T) {
 	handler, sessionID := newQueueTestServer(t)
 
-	var updated session.Session
+	var updated conversation.Session
 	if code := requestJSON(
 		t,
 		handler,
@@ -21,8 +21,8 @@ func TestSessionReasoningEffortRoutes(t *testing.T) {
 	); code != http.StatusOK {
 		t.Fatalf("update status = %d", code)
 	}
-	if updated.ReasoningEffort != session.ReasoningEffortHigh {
-		t.Fatalf("reasoning effort = %q, want %q", updated.ReasoningEffort, session.ReasoningEffortHigh)
+	if updated.ReasoningEffort != conversation.ReasoningEffortHigh {
+		t.Fatalf("reasoning effort = %q, want %q", updated.ReasoningEffort, conversation.ReasoningEffortHigh)
 	}
 
 	if code := requestJSON(

@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -25,13 +25,13 @@ type EditParams struct {
 }
 
 type editTool struct {
-	gw     approval.Gateway
+	gw     interaction.Gateway
 	runner sandbox.Runner
 }
 
 // NewEditTool creates a tool for exact replacements in existing files.
 // Each old_text must match exactly once or the edit is rejected.
-func NewEditTool(gw approval.Gateway, runner sandbox.Runner) Tool {
+func NewEditTool(gw interaction.Gateway, runner sandbox.Runner) Tool {
 	return &editTool{gw: gw, runner: runner}
 }
 
@@ -76,7 +76,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 
 	path := absoluteToolPath(ctx, params.Path)
-	decision, err := t.gw.Request(ctx, approval.Request{
+	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "edit",
 		Action:   "write",
 		Detail:   fmt.Sprintf("Edit file: %s (%d replacements)", path, len(params.Edits)),
@@ -86,7 +86,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("Approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("User denied file edit"), nil
 	}
 
@@ -121,7 +121,7 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult(fmt.Sprintf("Write failed: %v", err)), nil
 	}
 
-	var change *message.FileChange
+	var change *conversation.FileChange
 	if original != content {
 		change = trackedFileChange(path, data, true, info.Mode(), []byte(content), info.Mode())
 	}

@@ -12,6 +12,45 @@ function invoke<T>(
   );
 }
 
+export interface KernelConnection {
+  mode: "local" | "ssh" | "remote";
+  url: string;
+  has_token: boolean;
+  ssh?: SshConnection;
+}
+
+export interface KernelConnectionInput {
+  mode: "local" | "remote";
+  url: string;
+  token?: string;
+}
+
+export interface SshConnection {
+  name: string;
+  target: string;
+  port: number;
+  remote_port: number;
+}
+
+export interface SshHostInput {
+  name?: string;
+  target: string;
+  port: number;
+}
+
+export interface SshHostProbe {
+  os: string;
+  architecture: string;
+  sandbox_available: boolean;
+}
+
+export interface SshConfigHost {
+  alias: string;
+  hostname: string;
+  user: string;
+  port: number;
+}
+
 // Session metadata aligned with the public subset of Go session.Session.
 export type TaskStatus = "pending" | "in_progress" | "completed";
 
@@ -992,6 +1031,30 @@ function parseMcpConfig(raw: string): McpConfig {
 }
 
 export const api = {
+  getKernelConnection: () =>
+    invoke<string>("get_kernel_connection").then(
+      (result) => JSON.parse(result) as KernelConnection
+    ),
+
+  listSshHosts: () =>
+    invoke<string>("list_ssh_hosts").then(
+      (result) => (JSON.parse(result) as SshConfigHost[]) ?? []
+    ),
+
+  testSshHost: (input: SshHostInput) =>
+    invoke<string>("test_ssh_host", { input }).then(
+      (result) => JSON.parse(result) as SshHostProbe
+    ),
+
+  deploySshKernel: (input: SshHostInput) =>
+    invoke("deploy_ssh_kernel", { input }),
+
+  testKernelConnection: (input: KernelConnectionInput) =>
+    invoke("test_kernel_connection", { input }),
+
+  updateKernelConnection: (input: KernelConnectionInput) =>
+    invoke("update_kernel_connection", { input }),
+
   createSession: (opts?: CreateSessionOptions) =>
     invoke<string>("create_session", { options: opts ?? null }).then(
       (r) => JSON.parse(r) as Session

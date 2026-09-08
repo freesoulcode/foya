@@ -1,0 +1,64 @@
+name: foya
+
+services:
+  kernel:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command:
+      - --listen
+      - 0.0.0.0:8787
+      - --data-dir
+      - /var/lib/foya
+      - --auth-token-hash-file
+      - /run/secrets/foya_auth_token_sha256
+      - --allow-plaintext
+    restart: unless-stopped
+    read_only: true
+    init: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /run:size=16m,mode=0755
+    volumes:
+      - foya-data:/var/lib/foya
+      - foya-home:/home/foya
+      - ${FOYA_WORKSPACE:-./workspace}:/workspace
+    secrets:
+      - foya_auth_token_sha256
+    networks:
+      - backend
+
+  caddy:
+    image: caddy:2.10-alpine
+    depends_on:
+      kernel:
+        condition: service_healthy
+    environment:
+      FOYA_DOMAIN: ${FOYA_DOMAIN:?set FOYA_DOMAIN in deploy/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+      - backend
+
+secrets:
+  foya_auth_token_sha256:
+    file: ./secrets/foya_auth_token.sha256
+
+volumes:
+  foya-data:
+  foya-home:
+  caddy-data:
+  caddy-config:
+
+networks:
+  edge:
+  backend:
+    internal: true

@@ -9,17 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/agentdef"
 	"github.com/freesoulcode/foya/internal/broker"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 type recordingRunner struct {
-	log  state.Store
+	log  conversation.Store
 	task chan string
 }
 
@@ -27,24 +24,24 @@ func (r recordingRunner) RunTurn(ctx context.Context, sessionID, task string) er
 	if r.task != nil {
 		r.task <- task
 	}
-	_, err := r.log.Append(ctx, event.Event{
-		Kind: event.KindMessageEnd, Session: sessionID,
-		Payload: message.Message{Role: message.RoleAssistant, Content: "done: " + task},
+	_, err := r.log.Append(ctx, conversation.Event{
+		Kind: conversation.KindMessageEnd, Session: sessionID,
+		Payload: conversation.Message{Role: conversation.RoleAssistant, Content: "done: " + task},
 	})
 	return err
 }
 
 func TestStartReturnsImmediatelyAndWaitsForCompletion(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
 	}
 	manager := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](), nil,
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](), nil,
 		Limits{MaxGlobalConcurrency: 1, MaxPerRoot: 1},
 	)
 	snapshot, err := manager.Start(context.Background(), SpawnRequest{
@@ -76,22 +73,22 @@ func TestStartReturnsImmediatelyAndWaitsForCompletion(t *testing.T) {
 }
 
 func TestContextSelectionBuildsExplicitTaskPackage(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
-	_, _ = log.Append(context.Background(), event.Event{
-		Kind: event.KindMessageEnd, Session: parent.ID,
-		Payload: message.Message{Role: message.RoleUser, Content: "first fact"},
+	_, _ = log.Append(context.Background(), conversation.Event{
+		Kind: conversation.KindMessageEnd, Session: parent.ID,
+		Payload: conversation.Message{Role: conversation.RoleUser, Content: "first fact"},
 	})
-	secondSeq, _ := log.Append(context.Background(), event.Event{
-		Kind: event.KindMessageEnd, Session: parent.ID,
-		Payload: message.Message{Role: message.RoleAssistant, Content: "selected evidence"},
+	secondSeq, _ := log.Append(context.Background(), conversation.Event{
+		Kind: conversation.KindMessageEnd, Session: parent.ID,
+		Payload: conversation.Message{Role: conversation.RoleAssistant, Content: "selected evidence"},
 	})
 	tasks := make(chan string, 1)
 	manager := NewManager(
 		definitions, sessions, recordingRunner{log: log, task: tasks}, log, log,
-		broker.New[event.Event](), nil, Limits{},
+		broker.New[conversation.Event](), nil, Limits{},
 	)
 	_, err := manager.Spawn(context.Background(), SpawnRequest{
 		ParentSessionID: parent.ID, Task: "analyze",
@@ -110,16 +107,16 @@ func TestContextSelectionBuildsExplicitTaskPackage(t *testing.T) {
 
 func TestPersistenceMarksRunningAgentInterrupted(t *testing.T) {
 	dataDir := t.TempDir()
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
 	}
 	manager := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](), nil, Limits{},
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](), nil, Limits{},
 	)
 	if err := manager.EnablePersistence(dataDir); err != nil {
 		t.Fatal(err)
@@ -133,7 +130,7 @@ func TestPersistenceMarksRunningAgentInterrupted(t *testing.T) {
 	<-runner.started
 
 	restored := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](), nil, Limits{},
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](), nil, Limits{},
 	)
 	if err := restored.EnablePersistence(dataDir); err != nil {
 		t.Fatal(err)
@@ -149,16 +146,16 @@ func TestPersistenceMarksRunningAgentInterrupted(t *testing.T) {
 }
 
 func TestTreeTokenBudgetCancelsActiveRun(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 1),
 		release: make(chan struct{}, 1),
 	}
 	manager := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](), nil,
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](), nil,
 		Limits{MaxTreeTokens: 10},
 	)
 	snapshot, err := manager.Start(context.Background(), SpawnRequest{
@@ -169,7 +166,7 @@ func TestTreeTokenBudgetCancelsActiveRun(t *testing.T) {
 	}
 	<-runner.started
 	running, _ := manager.Read(snapshot.ID)
-	manager.ObserveUsage(running.ChildSessionID, provider.Usage{TotalTokens: 11})
+	manager.ObserveUsage(running.ChildSessionID, model.Usage{TotalTokens: 11})
 	items, err := manager.Wait(context.Background(), []string{snapshot.ID}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -194,9 +191,9 @@ max_turns: 7
 ---
 Return evidence-backed findings.
 `)
-	definitions := agentdef.NewManager(home, agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager(home, BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, err := sessions.Create(session.CreateOptions{
+	parent, err := sessions.Create(conversation.CreateOptions{
 		ConnectionID: "connection-1", Model: "parent-model",
 		ProjectID: "project-1", ApprovalMode: "manual",
 	})
@@ -204,7 +201,7 @@ Return evidence-backed findings.
 		t.Fatal(err)
 	}
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
+	bus := broker.New[conversation.Event]()
 	manager := NewManager(
 		definitions, sessions, recordingRunner{log: log}, log, log, bus,
 		func(string) (string, bool) { return "", false },
@@ -244,9 +241,9 @@ Return evidence-backed findings.
 }
 
 func TestLifecycleCallbacksCanRejectSubagentCompletion(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	manager := NewManager(
 		definitions,
@@ -254,7 +251,7 @@ func TestLifecycleCallbacksCanRejectSubagentCompletion(t *testing.T) {
 		recordingRunner{log: log},
 		log,
 		log,
-		broker.New[event.Event](),
+		broker.New[conversation.Event](),
 		nil,
 		Limits{},
 	)
@@ -313,16 +310,16 @@ func (r *blockingRunner) RunTurn(ctx context.Context, _, _ string) error {
 }
 
 func TestManagerEnforcesConcurrencyLimit(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 3),
 		release: make(chan struct{}, 3),
 	}
 	manager := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](),
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](),
 		nil, Limits{MaxGlobalConcurrency: 2, MaxPerRoot: 2},
 	)
 	done := make(chan struct{}, 3)
@@ -367,16 +364,16 @@ func TestManagerEnforcesConcurrencyLimit(t *testing.T) {
 }
 
 func TestManagerAppliesConcurrencyIncreaseAtRuntime(t *testing.T) {
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := NewDefinitionManager("", BuiltinDefinitions())
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
 	runner := &blockingRunner{
 		started: make(chan struct{}, 2),
 		release: make(chan struct{}, 2),
 	}
 	manager := NewManager(
-		definitions, sessions, runner, log, log, broker.New[event.Event](), nil,
+		definitions, sessions, runner, log, log, broker.New[conversation.Event](), nil,
 		Limits{MaxGlobalConcurrency: 1, MaxPerRoot: 1},
 	)
 	for i := 0; i < 2; i++ {

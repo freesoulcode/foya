@@ -4,9 +4,16 @@ mod commands;
 #[cfg(unix)]
 mod kernel;
 mod project_files;
+#[cfg(unix)]
+mod ssh_connection;
 
 use browser::*;
 use commands::*;
+#[cfg(unix)]
+use kernel::{
+    deploy_ssh_kernel, get_kernel_connection, list_ssh_hosts, test_kernel_connection,
+    test_ssh_host, update_kernel_connection,
+};
 use project_files::*;
 use std::sync::{Arc, Mutex};
 
@@ -33,51 +40,60 @@ pub fn run() {
                 }
             }
 
-            // Start the bundled Go kernel sidecar during application setup.
-            // Tauri resolves the binary for the current platform automatically.
-            let mut sidecar = app
-                .shell()
-                .sidecar("foya")?
-                .env("FOYA_PARENT_PID", std::process::id().to_string());
-            // Forward BYOK provider configuration to the kernel sidecar.
-            // The bootstrap path reads environment variables exported before startup;
-            // settings now persist configuration while secrets use the OS keychain.
-            for key in [
-                "FOYA_PROVIDER_BASE_URL",
-                "FOYA_PROVIDER_API_KEY",
-                "FOYA_PROVIDER_MODEL",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    sidecar = sidecar.env(key, val);
-                }
-            }
-            let (mut rx, child) = sidecar.spawn()?;
-            *setup_child.lock().expect("sidecar child lock poisoned") = Some(child);
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            println!("[foya-kernel] {}", String::from_utf8_lossy(&line));
-                        }
-                        CommandEvent::Stderr(line) => {
-                            eprintln!("[foya-kernel] {}", String::from_utf8_lossy(&line));
-                        }
-                        CommandEvent::Error(error) => {
-                            eprintln!("[foya-kernel] process error: {error}");
-                        }
-                        CommandEvent::Terminated(status) => {
-                            eprintln!(
-                                "[foya-kernel] exited: code={:?} signal={:?}",
-                                status.code, status.signal
-                            );
-                        }
-                        _ => {}
+            #[cfg(unix)]
+            let use_local_kernel = kernel::initialize(app.handle())?;
+            #[cfg(not(unix))]
+            let use_local_kernel = true;
+
+            if use_local_kernel {
+                // Start the bundled Go kernel only when local mode is selected.
+                let mut sidecar = app
+                    .shell()
+                    .sidecar("foya")?
+                    .env("FOYA_PARENT_PID", std::process::id().to_string());
+                for key in [
+                    "FOYA_PROVIDER_BASE_URL",
+                    "FOYA_PROVIDER_API_KEY",
+                    "FOYA_PROVIDER_MODEL",
+                ] {
+                    if let Ok(val) = std::env::var(key) {
+                        sidecar = sidecar.env(key, val);
                     }
                 }
-            });
+                let (mut rx, child) = sidecar.spawn()?;
+                *setup_child.lock().expect("sidecar child lock poisoned") = Some(child);
+                tauri::async_runtime::spawn(async move {
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            CommandEvent::Stdout(line) => {
+                                println!("[foya-kernel] {}", String::from_utf8_lossy(&line));
+                            }
+                            CommandEvent::Stderr(line) => {
+                                eprintln!("[foya-kernel] {}", String::from_utf8_lossy(&line));
+                            }
+                            CommandEvent::Error(error) => {
+                                eprintln!("[foya-kernel] process error: {error}");
+                            }
+                            CommandEvent::Terminated(status) => {
+                                eprintln!(
+                                    "[foya-kernel] exited: code={:?} signal={:?}",
+                                    status.code, status.signal
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_kernel_connection,
+            list_ssh_hosts,
+            test_ssh_host,
+            deploy_ssh_kernel,
+            test_kernel_connection,
+            update_kernel_connection,
             create_session,
             fork_session,
             update_session,
@@ -230,6 +246,8 @@ pub fn run() {
 
     app.run(move |_app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            #[cfg(unix)]
+            ssh_connection::shutdown();
             if let Some(child) = sidecar_child
                 .lock()
                 .expect("sidecar child lock poisoned")

@@ -266,6 +266,21 @@ const NATIVE_ERROR_PREFIXES = [
   "Unable to rename",
   "Unable to delete file",
   "Unable to delete folder",
+  "SSH host is required",
+  "SSH host contains unsupported characters",
+  "SSH port must be between 1 and 65535",
+  "Failed to run SSH",
+  "Failed to start SSH tunnel",
+  "Remote kernel did not become ready",
+  "Remote server requires Bubblewrap",
+  "Remote kernel requires Linux",
+  "Unsupported remote Linux architecture",
+  "Remote kernel resource is missing",
+  "Invalid remote kernel resource",
+  "Unable to resolve remote kernel cache",
+  "Unable to download remote kernel",
+  "Invalid downloaded remote kernel",
+  "Unable to cache remote kernel",
 ] as const;
 
 function errorPayload(raw: string): { code?: string; message?: string } | null {

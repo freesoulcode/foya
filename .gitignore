@@ -23,11 +23,14 @@
 node_modules/
 /apps/desktop/dist/
 /apps/desktop/src-tauri/target/
+/apps/site/.astro/
+/apps/site/dist/
 
 # 环境与密钥
 .env
 .env.*
 *.key
+/deploy/secrets/
 
 # 编辑器/系统
 .DS_Store

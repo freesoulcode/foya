@@ -6,22 +6,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 type historyResultReader struct {
 	session string
-	event   event.Event
+	event   conversation.Event
 }
 
 func (r historyResultReader) ActiveMessageEvent(
 	_ context.Context,
 	session string,
-	seq event.Seq,
-) (event.Event, bool, error) {
+	seq conversation.Seq,
+) (conversation.Event, bool, error) {
 	if session != r.session || seq != r.event.Seq {
-		return event.Event{}, false, nil
+		return conversation.Event{}, false, nil
 	}
 	return r.event, true, nil
 }
@@ -30,12 +29,12 @@ func TestHistoryReadToolResultPagesCanonicalOutput(t *testing.T) {
 	content := "0123456789"
 	reader := historyResultReader{
 		session: "session-1",
-		event: event.Event{
+		event: conversation.Event{
 			Seq:     42,
-			Kind:    event.KindMessageEnd,
+			Kind:    conversation.KindMessageEnd,
 			Session: "session-1",
-			Payload: message.Message{
-				Role:       message.RoleTool,
+			Payload: conversation.Message{
+				Role:       conversation.RoleTool,
 				ToolCallID: "call-1",
 				Content:    content,
 			},
@@ -70,12 +69,12 @@ func TestHistoryReadToolResultPagesCanonicalOutput(t *testing.T) {
 func TestHistoryReadToolResultEnforcesSessionAndCallID(t *testing.T) {
 	reader := historyResultReader{
 		session: "session-1",
-		event: event.Event{
+		event: conversation.Event{
 			Seq:     42,
-			Kind:    event.KindMessageEnd,
+			Kind:    conversation.KindMessageEnd,
 			Session: "session-1",
-			Payload: message.Message{
-				Role:       message.RoleTool,
+			Payload: conversation.Message{
+				Role:       conversation.RoleTool,
 				ToolCallID: "call-1",
 				Content:    "secret",
 			},
@@ -115,12 +114,12 @@ func TestHistoryReadToolResultInspectSearchAndDigest(t *testing.T) {
 	content := "alpha\nBeta needle\nsecond needle line\nomega"
 	reader := historyResultReader{
 		session: "session-1",
-		event: event.Event{
+		event: conversation.Event{
 			Seq:     42,
-			Kind:    event.KindMessageEnd,
+			Kind:    conversation.KindMessageEnd,
 			Session: "session-1",
-			Payload: message.Message{
-				Role:       message.RoleTool,
+			Payload: conversation.Message{
+				Role:       conversation.RoleTool,
 				ToolCallID: "call-1",
 				Content:    content,
 			},

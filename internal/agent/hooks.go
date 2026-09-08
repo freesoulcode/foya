@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/hooks"
-	"github.com/freesoulcode/foya/internal/message"
+
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -88,7 +88,7 @@ func (e *Engine) notifyHook(ctx context.Context, sessionID string, request hooks
 
 func (e *Engine) recordHookResults(ctx context.Context, sessionID string, results []hooks.Result) {
 	for _, result := range results {
-		e.emit(ctx, sessionID, event.KindHookCompleted, map[string]any{
+		e.emit(ctx, sessionID, conversation.KindHookCompleted, map[string]any{
 			"id":            result.ID,
 			"event_id":      result.EventID,
 			"name":          result.Name,
@@ -172,8 +172,8 @@ func (e *Engine) appendHookContext(ctx context.Context, sessionID string, contex
 	if text == "" {
 		return
 	}
-	e.emit(ctx, sessionID, event.KindMessageEnd, message.Message{
-		Role:    message.RoleSystem,
+	e.emit(ctx, sessionID, conversation.KindMessageEnd, conversation.Message{
+		Role:    conversation.RoleSystem,
 		Content: "<hook_context source=\"" + source + "\">\n" + text + "\n</hook_context>",
 	}, true)
 }
@@ -206,7 +206,7 @@ func hookRequest(
 	eventName hooks.Event,
 	runID string,
 	userPrompt string,
-	call message.ToolCall,
+	call conversation.ToolCall,
 	toolOutput string,
 	assistantMessage string,
 	notification string,

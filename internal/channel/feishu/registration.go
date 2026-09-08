@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	larkregistration "github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 )
 
@@ -30,15 +30,15 @@ const (
 )
 
 type RegistrationInput struct {
-	Name         string        `json:"name"`
-	Locale       string        `json:"locale,omitempty"`
-	ConnectionID string        `json:"connection_id,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	ProjectID    string        `json:"project_id,omitempty"`
-	ApprovalMode approval.Mode `json:"approval_mode"`
-	AllowedUsers []string      `json:"allowed_users"`
-	AllowedChats []string      `json:"allowed_chats"`
-	AllowAll     bool          `json:"allow_all"`
+	Name         string           `json:"name"`
+	Locale       string           `json:"locale,omitempty"`
+	ConnectionID string           `json:"connection_id,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ApprovalMode interaction.Mode `json:"approval_mode"`
+	AllowedUsers []string         `json:"allowed_users"`
+	AllowedChats []string         `json:"allowed_chats"`
+	AllowAll     bool             `json:"allow_all"`
 }
 
 type RegistrationState struct {
@@ -70,8 +70,8 @@ func defaultAppRegistrar(
 
 func (m *Manager) StartRegistration(input RegistrationInput) (RegistrationState, error) {
 	input = normalizeRegistrationInput(input)
-	if input.ApprovalMode != approval.ModeAuto &&
-		input.ApprovalMode != approval.ModeFullAccess {
+	if input.ApprovalMode != interaction.ModeAuto &&
+		input.ApprovalMode != interaction.ModeFullAccess {
 		return RegistrationState{}, errors.New("Feishu channel approval mode must be auto or full_access")
 	}
 
@@ -312,7 +312,7 @@ func normalizeRegistrationInput(input RegistrationInput) RegistrationInput {
 	input.AllowedUsers = cleanIDs(input.AllowedUsers)
 	input.AllowedChats = cleanIDs(input.AllowedChats)
 	if input.ApprovalMode == "" {
-		input.ApprovalMode = approval.ModeAuto
+		input.ApprovalMode = interaction.ModeAuto
 	}
 	return input
 }

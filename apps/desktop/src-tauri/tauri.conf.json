@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Foya",
-  "version": "0.1.0",
-  "identifier": "com.freesoulcode.foya",
+  "version": "../package.json",
+  "identifier": "io.github.freesoulcode.foya",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm run build:remote-kernels && pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

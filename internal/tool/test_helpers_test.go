@@ -3,13 +3,13 @@ package tool
 import (
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/testkit"
 )
 
-func newTestSessionManager(t testing.TB) session.Manager {
+func newTestSessionManager(t testing.TB) conversation.Manager {
 	t.Helper()
-	manager, err := session.NewManager(testkit.OpenDatabase(t))
+	manager, err := conversation.NewManager(testkit.OpenDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}

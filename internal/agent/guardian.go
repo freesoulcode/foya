@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	modelapi "github.com/freesoulcode/foya/internal/model"
 )
 
 const guardianTimeout = 30 * time.Second
@@ -28,7 +28,7 @@ Return exactly one JSON object with no markdown:
 {"decision":"approve|deny","reason":"brief explanation"}`
 
 type guardianReviewer struct {
-	completer       provider.Completer
+	completer       modelapi.Completer
 	model           string
 	reasoningEffort string
 	userRequest     string
@@ -40,57 +40,57 @@ type guardianResponse struct {
 	Reason   string `json:"reason"`
 }
 
-func (g guardianReviewer) Review(ctx context.Context, req approval.Request) (approval.Review, error) {
+func (g guardianReviewer) Review(ctx context.Context, req interaction.Request) (interaction.Review, error) {
 	if g.completer == nil {
-		return approval.Review{}, approval.ErrGuardianUnavailable
+		return interaction.Review{}, interaction.ErrGuardianUnavailable
 	}
 	payload, err := json.Marshal(struct {
-		UserRequest string           `json:"user_request"`
-		ProjectPath string           `json:"project_path,omitempty"`
-		Action      approval.Request `json:"action"`
+		UserRequest string              `json:"user_request"`
+		ProjectPath string              `json:"project_path,omitempty"`
+		Action      interaction.Request `json:"action"`
 	}{
 		UserRequest: g.userRequest,
 		ProjectPath: g.projectPath,
 		Action:      req,
 	})
 	if err != nil {
-		return approval.Review{}, fmt.Errorf("encode request: %w", err)
+		return interaction.Review{}, fmt.Errorf("encode request: %w", err)
 	}
 
 	reviewCtx, cancel := context.WithTimeout(ctx, guardianTimeout)
 	defer cancel()
-	text, err := g.completer.Complete(reviewCtx, provider.Request{
+	text, err := g.completer.Complete(reviewCtx, modelapi.Request{
 		Model:           g.model,
 		ReasoningEffort: g.reasoningEffort,
-		Messages: []provider.InputMessage{
-			provider.TextMessage(message.Message{Role: message.RoleSystem, Content: guardianSystemPrompt}),
-			provider.TextMessage(message.Message{Role: message.RoleUser, Content: string(payload)}),
+		Messages: []modelapi.InputMessage{
+			modelMessage(conversation.Message{Role: conversation.RoleSystem, Content: guardianSystemPrompt}),
+			modelMessage(conversation.Message{Role: conversation.RoleUser, Content: string(payload)}),
 		},
 	})
 	if err != nil {
-		return approval.Review{}, err
+		return interaction.Review{}, err
 	}
 
 	var response guardianResponse
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&response); err != nil {
-		return approval.Review{}, fmt.Errorf("decode response: %w", err)
+		return interaction.Review{}, fmt.Errorf("decode response: %w", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return approval.Review{}, err
+		return interaction.Review{}, err
 	}
 	response.Reason = strings.TrimSpace(response.Reason)
 	if response.Reason == "" {
-		return approval.Review{}, errors.New("guardian response is missing reason")
+		return interaction.Review{}, errors.New("guardian response is missing reason")
 	}
 	switch response.Decision {
 	case "approve":
-		return approval.Review{Approved: true, Reason: response.Reason}, nil
+		return interaction.Review{Approved: true, Reason: response.Reason}, nil
 	case "deny":
-		return approval.Review{Approved: false, Reason: response.Reason}, nil
+		return interaction.Review{Approved: false, Reason: response.Reason}, nil
 	default:
-		return approval.Review{}, fmt.Errorf("invalid guardian decision %q", response.Decision)
+		return interaction.Review{}, fmt.Errorf("invalid guardian decision %q", response.Decision)
 	}
 }
 

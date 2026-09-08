@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 const maxDeleteDiffBytes = 256 << 10
@@ -20,11 +20,11 @@ type DeleteParams struct {
 }
 
 type deleteTool struct {
-	gw    approval.Gateway
+	gw    interaction.Gateway
 	trash func(string) error
 }
 
-func NewDeleteTool(gw approval.Gateway) Tool {
+func NewDeleteTool(gw interaction.Gateway) Tool {
 	return &deleteTool{gw: gw, trash: moveToTrash}
 }
 
@@ -54,7 +54,7 @@ func (t *deleteTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	decision, err := t.gw.Request(ctx, approval.Request{
+	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "delete",
 		Action:   "delete",
 		Detail:   "Move to Trash: " + path,
@@ -64,7 +64,7 @@ func (t *deleteTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("Approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("User denied moving the item to Trash"), nil
 	}
 
@@ -97,7 +97,7 @@ func validatedDeletePath(ctx context.Context, value string) (string, os.FileInfo
 		return "", nil, errors.New("path is required")
 	}
 	workspace := CWDFromContext(ctx)
-	fullAccess := approval.ModeFromContext(ctx) == approval.ModeFullAccess
+	fullAccess := interaction.ModeFromContext(ctx) == interaction.ModeFullAccess
 	if workspace == "" && !fullAccess {
 		return "", nil, errors.New("delete requires a workspace")
 	}

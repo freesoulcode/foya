@@ -12,6 +12,10 @@ import (
 
 const parentPIDEnv = "FOYA_PARENT_PID"
 
+func terminationSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM}
+}
+
 func watchParentProcess() <-chan struct{} {
 	pid, err := strconv.Atoi(os.Getenv(parentPIDEnv))
 	if err != nil || pid <= 1 {

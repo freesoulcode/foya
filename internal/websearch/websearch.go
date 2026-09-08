@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/provider"
+	model "github.com/freesoulcode/foya/internal/model"
 	xhtml "golang.org/x/net/html"
 )
 
@@ -47,13 +47,13 @@ type Settings struct {
 type Request struct {
 	Query  string
 	Limit  int
-	Native provider.NativeWebSearcher
+	Native model.NativeWebSearcher
 	Model  string
 }
 
 type SearchProvider interface {
 	ID() string
-	Search(context.Context, string, int) ([]provider.SearchResult, error)
+	Search(context.Context, string, int) ([]model.SearchResult, error)
 }
 
 type Manager struct {
@@ -124,7 +124,7 @@ func (m *Manager) Update(next Settings) error {
 	return m.saveLocked()
 }
 
-func (m *Manager) Search(ctx context.Context, req Request) ([]provider.SearchResult, string, error) {
+func (m *Manager) Search(ctx context.Context, req Request) ([]model.SearchResult, string, error) {
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
 		return nil, "", errors.New("search query is required")
@@ -163,7 +163,7 @@ func (m *Manager) Search(ctx context.Context, req Request) ([]provider.SearchRes
 	return normalizeResults(results, limit), "duckduckgo", err
 }
 
-func (m *Manager) Test(ctx context.Context, id, query string) ([]provider.SearchResult, error) {
+func (m *Manager) Test(ctx context.Context, id, query string) ([]model.SearchResult, error) {
 	if id == "duckduckgo" {
 		return (&duckDuckGoProvider{client: m.client}).Search(ctx, query, 3)
 	}
@@ -249,7 +249,7 @@ type googleCSEProvider struct {
 
 func (p *googleCSEProvider) ID() string { return p.config.ID }
 
-func (p *googleCSEProvider) Search(ctx context.Context, query string, limit int) ([]provider.SearchResult, error) {
+func (p *googleCSEProvider) Search(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
 	endpoint, _ := url.Parse("https://customsearch.googleapis.com/customsearch/v1")
 	values := endpoint.Query()
 	values.Set("key", p.config.APIKey)
@@ -279,7 +279,7 @@ func (p *googleCSEProvider) Search(ctx context.Context, query string, limit int)
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&payload); err != nil {
 		return nil, err
 	}
-	results := make([]provider.SearchResult, 0, len(payload.Items))
+	results := make([]model.SearchResult, 0, len(payload.Items))
 	for index, item := range payload.Items {
 		results = append(results, result(index, item.Title, item.Link, item.Snippet))
 	}
@@ -297,7 +297,7 @@ type bingProvider struct {
 
 func (p *bingProvider) ID() string { return p.config.ID }
 
-func (p *bingProvider) Search(ctx context.Context, query string, limit int) ([]provider.SearchResult, error) {
+func (p *bingProvider) Search(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
 	endpoint := strings.TrimSpace(p.config.Endpoint)
 	if endpoint == "" {
 		endpoint = "https://api.bing.microsoft.com/v7.0/search"
@@ -335,7 +335,7 @@ func (p *bingProvider) Search(ctx context.Context, query string, limit int) ([]p
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&payload); err != nil {
 		return nil, err
 	}
-	results := make([]provider.SearchResult, 0, len(payload.WebPages.Value))
+	results := make([]model.SearchResult, 0, len(payload.WebPages.Value))
 	for index, item := range payload.WebPages.Value {
 		results = append(results, result(index, item.Name, item.URL, item.Snippet))
 	}
@@ -349,7 +349,7 @@ type baiduProvider struct {
 
 func (p *baiduProvider) ID() string { return p.config.ID }
 
-func (p *baiduProvider) Search(ctx context.Context, query string, limit int) ([]provider.SearchResult, error) {
+func (p *baiduProvider) Search(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
 	endpoint := "https://www.baidu.com/s?wd=" + url.QueryEscape(query) +
 		"&rn=" + fmt.Sprint(normalizeLimit(limit))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -373,8 +373,8 @@ func (p *baiduProvider) Search(ctx context.Context, query string, limit int) ([]
 	return parseBaidu(root, normalizeLimit(limit)), nil
 }
 
-func parseBaidu(root *xhtml.Node, limit int) []provider.SearchResult {
-	var results []provider.SearchResult
+func parseBaidu(root *xhtml.Node, limit int) []model.SearchResult {
+	var results []model.SearchResult
 	var walk func(*xhtml.Node)
 	walk = func(node *xhtml.Node) {
 		if len(results) >= limit {
@@ -405,7 +405,7 @@ func parseBaidu(root *xhtml.Node, limit int) []provider.SearchResult {
 
 func (p *duckDuckGoProvider) ID() string { return "duckduckgo" }
 
-func (p *duckDuckGoProvider) Search(ctx context.Context, query string, limit int) ([]provider.SearchResult, error) {
+func (p *duckDuckGoProvider) Search(ctx context.Context, query string, limit int) ([]model.SearchResult, error) {
 	endpoint := "https://lite.duckduckgo.com/lite/?q=" + url.QueryEscape(query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -431,9 +431,9 @@ func (p *duckDuckGoProvider) Search(ctx context.Context, query string, limit int
 	return parseDuckDuckGo(root, normalizeLimit(limit)), nil
 }
 
-func parseDuckDuckGo(root *xhtml.Node, limit int) []provider.SearchResult {
-	var results []provider.SearchResult
-	var current *provider.SearchResult
+func parseDuckDuckGo(root *xhtml.Node, limit int) []model.SearchResult {
+	var results []model.SearchResult
+	var current *model.SearchResult
 	var walk func(*xhtml.Node)
 	walk = func(node *xhtml.Node) {
 		if len(results) >= limit {
@@ -444,7 +444,7 @@ func parseDuckDuckGo(root *xhtml.Node, limit int) []provider.SearchResult {
 				current.Rank = len(results) + 1
 				results = append(results, *current)
 			}
-			current = &provider.SearchResult{Title: nodeText(node)}
+			current = &model.SearchResult{Title: nodeText(node)}
 			for _, attr := range node.Attr {
 				if attr.Key == "href" {
 					current.URL = cleanDuckDuckGoURL(attr.Val)
@@ -552,8 +552,8 @@ func cleanDuckDuckGoURL(raw string) string {
 	return raw
 }
 
-func result(index int, title, location, snippet string) provider.SearchResult {
-	return provider.SearchResult{
+func result(index int, title, location, snippet string) model.SearchResult {
+	return model.SearchResult{
 		Title: strings.TrimSpace(title), URL: strings.TrimSpace(location),
 		Snippet: strings.TrimSpace(snippet), Source: sourceHost(location), Rank: index + 1,
 	}
@@ -577,7 +577,7 @@ func normalizeLimit(limit int) int {
 	return limit
 }
 
-func normalizeResults(results []provider.SearchResult, limit int) []provider.SearchResult {
+func normalizeResults(results []model.SearchResult, limit int) []model.SearchResult {
 	filtered := results[:0]
 	seen := make(map[string]bool)
 	for _, item := range results {

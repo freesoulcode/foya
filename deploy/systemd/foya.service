@@ -1,0 +1,42 @@
+[Unit]
+Description=Foya personal agent kernel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=foya
+Group=foya
+UMask=0077
+Environment=HOME=/var/lib/foya/home
+EnvironmentFile=-/etc/foya/foya.env
+StateDirectory=foya
+StateDirectoryMode=0700
+WorkingDirectory=/srv/foya/workspaces
+ExecStart=/usr/local/bin/foya serve \
+  --listen=0.0.0.0:8787 \
+  --data-dir=/var/lib/foya \
+  --auth-token-hash-file=/etc/foya/auth-token.sha256 \
+  --tls-cert=/etc/foya/tls/fullchain.pem \
+  --tls-key=/etc/foya/tls/privkey.pem
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/foya /srv/foya/workspaces
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

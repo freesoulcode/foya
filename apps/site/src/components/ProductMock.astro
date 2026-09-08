@@ -1,0 +1,434 @@
+---
+import {
+  ArrowUp,
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  ChevronsUpDown,
+  Clock3,
+  CodeXml,
+  Files,
+  FolderOpen,
+  Image,
+  ListChecks,
+  MessageCircle,
+  Package,
+  Palette,
+  PanelLeft,
+  PanelRight,
+  Paperclip,
+  Plus,
+  Settings,
+  Shield,
+} from "@lucide/astro";
+import AutomationMock from "./AutomationMock.astro";
+import CanvasMock from "./CanvasMock.astro";
+import PluginsMock from "./PluginsMock.astro";
+---
+
+<section
+  class="product-mock group mx-auto mt-11 w-[calc(100%-64px)] max-w-[1440px] overflow-hidden rounded-t-lg border border-line-strong bg-[#090a0c] shadow-[0_42px_100px_oklch(0_0_0/48%)] max-[720px]:mt-10 max-[720px]:w-[calc(100%-36px)]"
+  id="product-stage"
+  aria-label="Foya 产品示意"
+>
+  <div
+    class="grid h-[650px] grid-cols-[236px_minmax(0,1fr)] max-[980px]:grid-cols-[210px_minmax(0,1fr)] max-[720px]:h-[620px] max-[720px]:grid-cols-1"
+  >
+    <aside
+      class="relative flex min-w-0 flex-col border-r border-line bg-[#18191c] max-[720px]:hidden"
+    >
+      <div class="flex h-11 shrink-0 items-center justify-between px-3.5 text-muted">
+        <div class="flex gap-[7px]" aria-hidden="true">
+          <i class="size-[9px] rounded-full bg-[#ff5f57]"></i>
+          <i class="size-[9px] rounded-full bg-[#febc2e]"></i>
+          <i class="size-[9px] rounded-full bg-[#28c840]"></i>
+        </div>
+        <PanelLeft size={16} aria-hidden="true" />
+      </div>
+
+      <div class="px-3 pt-1">
+        <div class="flex h-9 items-center px-2 text-lg font-semibold">Foya</div>
+        <div class="mt-1 space-y-0.5">
+          <button
+            type="button"
+            class="product-switch flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-xs transition-colors hover:bg-white/[0.06] hover:text-foreground"
+            data-product-switch="chat"
+            data-active="true"
+            aria-pressed="true"
+          >
+            <Plus size={16} />
+            <span>新建对话</span>
+          </button>
+          <button
+            type="button"
+            class="product-switch flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-xs transition-colors hover:bg-white/[0.06] hover:text-foreground"
+            data-product-switch="canvas"
+            data-active="false"
+            aria-pressed="false"
+          >
+            <Palette size={16} />
+            <span>创作工作台</span>
+          </button>
+          <button
+            type="button"
+            class="product-switch flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-xs transition-colors hover:bg-white/[0.06] hover:text-foreground"
+            data-product-switch="automation"
+            data-active="false"
+            aria-pressed="false"
+          >
+            <Clock3 size={16} />
+            <span>自动化</span>
+          </button>
+          <button
+            type="button"
+            class="product-switch flex h-9 w-full items-center gap-2.5 rounded-md px-2 text-xs transition-colors hover:bg-white/[0.06] hover:text-foreground"
+            data-product-switch="plugins"
+            data-active="false"
+            aria-pressed="false"
+          >
+            <Package size={16} />
+            <span>插件</span>
+          </button>
+        </div>
+      </div>
+
+      <div data-product-sidebar="chat" class="mt-5 min-h-0 flex-1 px-3">
+        <div class="px-2 text-[10px] font-medium text-faint">项目</div>
+        <div
+          class="mt-2 flex h-8 items-center gap-1.5 rounded-md bg-white/[0.045] px-2 text-xs font-medium"
+        >
+          <ChevronDown class="text-muted" size={14} />
+          <FolderOpen size={15} />
+          <span class="min-w-0 flex-1 truncate">Northstar 商城</span>
+          <Plus class="text-muted" size={14} />
+        </div>
+        <div class="ml-[17px] border-l border-line py-1 pl-2">
+          <div
+            class="group/item flex h-9 items-center gap-2 rounded-md bg-white/[0.075] px-2 text-[11px] text-foreground transition-colors hover:bg-white/[0.1]"
+          >
+            <MessageCircle size={14} />
+            <span class="truncate">搭建电商经营自动化</span>
+          </div>
+          <div
+            class="flex h-9 items-center gap-2 rounded-md px-2 text-[11px] text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <MessageCircle size={14} />
+            <span class="truncate">排查支付失败订单</span>
+          </div>
+          <div
+            class="flex h-9 items-center gap-2 rounded-md px-2 text-[11px] text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <MessageCircle size={14} />
+            <span class="truncate">生成本周经营报告</span>
+          </div>
+          <div
+            class="flex h-9 items-center gap-2 rounded-md px-2 text-[11px] text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <MessageCircle size={14} />
+            <span class="truncate">优化库存补货策略</span>
+          </div>
+        </div>
+      </div>
+
+      <div data-product-sidebar="canvas" class="mt-5 min-h-0 flex-1 px-3" hidden>
+        <div class="flex h-6 items-center justify-between px-2 text-[10px] font-medium text-faint">
+          <span>创作项目</span>
+          <Plus size={13} />
+        </div>
+        <div class="mt-2 space-y-0.5">
+          <div
+            class="flex h-9 items-center gap-2 rounded-md bg-white/[0.075] px-2 text-[11px] text-foreground"
+          >
+            <Image size={14} />
+            <span class="truncate">品牌视觉探索</span>
+          </div>
+          <div
+            class="flex h-9 items-center gap-2 rounded-md px-2 text-[11px] text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <Image size={14} />
+            <span class="truncate">商品图批量迭代</span>
+          </div>
+          <div
+            class="flex h-9 items-center gap-2 rounded-md px-2 text-[11px] text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+          >
+            <Image size={14} />
+            <span class="truncate">发布会短片</span>
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="mx-3 mb-3 flex h-9 items-center gap-2.5 rounded-md px-2 text-xs text-muted transition-colors hover:bg-white/[0.06] hover:text-foreground"
+      >
+        <Settings size={15} />
+        <span>设置</span>
+      </div>
+    </aside>
+
+    <div class="relative min-h-0 min-w-0 overflow-hidden">
+      <nav
+        class="absolute inset-x-0 top-0 z-50 hidden h-11 grid-cols-4 border-b border-line bg-[#111216] p-1 max-[720px]:grid"
+        aria-label="产品视图"
+      >
+        <button
+          type="button"
+          class="product-switch flex min-w-0 items-center justify-center gap-1 rounded px-1 text-[9px]"
+          data-product-switch="chat"
+          data-active="true"
+          aria-label="对话"
+          aria-pressed="true"
+        >
+          <MessageCircle size={13} />
+          <span>对话</span>
+        </button>
+        <button
+          type="button"
+          class="product-switch flex min-w-0 items-center justify-center gap-1 rounded px-1 text-[9px]"
+          data-product-switch="canvas"
+          data-active="false"
+          aria-label="画布"
+          aria-pressed="false"
+        >
+          <Palette size={13} />
+          <span>画布</span>
+        </button>
+        <button
+          type="button"
+          class="product-switch flex min-w-0 items-center justify-center gap-1 rounded px-1 text-[9px]"
+          data-product-switch="automation"
+          data-active="false"
+          aria-label="自动化"
+          aria-pressed="false"
+        >
+          <Clock3 size={13} />
+          <span>自动化</span>
+        </button>
+        <button
+          type="button"
+          class="product-switch flex min-w-0 items-center justify-center gap-1 rounded px-1 text-[9px]"
+          data-product-switch="plugins"
+          data-active="false"
+          aria-label="插件"
+          aria-pressed="false"
+        >
+          <Package size={13} />
+          <span>插件</span>
+        </button>
+      </nav>
+      <div
+        data-product-panel="chat"
+        class="absolute inset-0 flex min-h-0 min-w-0 flex-col bg-[#090a0c]"
+      >
+      <header
+        class="flex h-11 shrink-0 items-center justify-between gap-4 border-b border-line px-3"
+      >
+        <span class="truncate text-xs font-medium">搭建电商经营自动化</span>
+        <div class="flex shrink-0 items-center gap-3 text-muted">
+          <div
+            class="flex h-8 items-center overflow-hidden rounded-md border border-line bg-surface transition-colors hover:border-line-strong"
+          >
+            <span class="flex h-full items-center gap-1.5 px-2.5 text-xs text-foreground">
+              <span
+                class="grid size-4 place-items-center rounded bg-foreground text-canvas"
+              >
+                <CodeXml size={11} />
+              </span>
+              打开
+            </span>
+            <span class="grid h-full w-8 place-items-center border-l border-line">
+              <ChevronDown size={14} />
+            </span>
+          </div>
+          <PanelRight size={17} aria-hidden="true" />
+        </div>
+      </header>
+
+      <div class="min-h-0 flex-1 overflow-hidden px-7 py-6 max-[720px]:px-4">
+        <div class="mx-auto max-w-3xl">
+          <div class="flex justify-end">
+            <div
+              class="max-w-[80%] rounded-2xl rounded-tr-md bg-surface-raised px-4 py-2.5 text-sm leading-relaxed text-foreground transition-colors hover:bg-[#25272b]"
+            >
+              为 Northstar 商城搭建经营自动化：同步订单和库存，识别低库存与异常退款，每天
+              09:00 生成经营简报并发送到飞书。
+            </div>
+          </div>
+
+          <div class="mt-6">
+            <div class="mb-3 flex items-center gap-2">
+              <span
+                class="grid size-7 shrink-0 place-items-center rounded-full bg-surface-raised text-muted"
+              >
+                <Bot size={16} />
+              </span>
+              <span class="text-xs font-medium text-muted">Foya</span>
+            </div>
+            <div class="mb-3 border-b border-line pb-2">
+              <div
+                class="flex items-center gap-1 rounded-lg px-1 py-1 text-xs text-muted transition-colors hover:text-foreground"
+              >
+                <ChevronRight size={14} />
+                <span>任务耗时 2m 18s</span>
+              </div>
+            </div>
+
+            <div class="mt-4 text-[13px] leading-[1.75] text-foreground">
+              <p class="m-0 font-medium">电商经营自动化已就绪：</p>
+              <ul class="mt-2 list-disc space-y-1 pl-5 text-muted">
+                <li>每 15 分钟同步订单与库存，低于 10 件时自动预警。</li>
+                <li>退款率超过 8% 时标记异常商品并保留订单明细。</li>
+                <li>每天 09:00 汇总销售、库存和退款情况并推送飞书。</li>
+              </ul>
+            </div>
+
+            <div
+              class="mt-4 flex h-12 items-center gap-2.5 rounded-lg border border-line bg-white/[0.02] px-3 transition-colors hover:bg-white/[0.045]"
+            >
+              <Files class="shrink-0 text-accent" size={16} />
+              <span class="min-w-0 flex-1 truncate text-sm font-medium">
+                3 个文件已更改
+              </span>
+              <span class="font-mono text-xs text-emerald-500">+312</span>
+              <span class="font-mono text-xs text-red-400">-18</span>
+              <ChevronRight class="text-muted" size={15} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="shrink-0 px-4 pt-1.5">
+        <div
+          class="mx-auto flex h-11 w-full max-w-3xl items-center overflow-hidden rounded-lg border border-line bg-white/[0.025] text-[11px] text-muted"
+        >
+          <div class="flex h-full shrink-0 items-center border-r border-line px-1">
+            <span
+              class="relative grid size-8 place-items-center rounded-md bg-white/[0.05] text-accent"
+            >
+              <ListChecks size={15} />
+              <i
+                class="absolute -top-0.5 -right-0.5 min-w-3.5 rounded-full bg-muted px-0.5 text-center text-[8px] not-italic leading-3.5 text-canvas"
+                >4</i
+              >
+            </span>
+            <span class="relative grid size-8 place-items-center rounded-md">
+              <Files size={15} />
+              <i
+                class="absolute -top-0.5 -right-0.5 min-w-3.5 rounded-full bg-muted px-0.5 text-center text-[8px] not-italic leading-3.5 text-canvas"
+                >3</i
+              >
+            </span>
+          </div>
+          <div
+            class="flex h-full min-w-0 flex-1 items-center gap-2 px-3 transition-colors hover:bg-white/[0.045] hover:text-foreground"
+          >
+            <span class="min-w-0 flex-1 truncate text-sm font-medium">
+              4/4 个任务
+            </span>
+            <ChevronsUpDown size={15} />
+          </div>
+        </div>
+      </div>
+
+      <div class="shrink-0 px-4 pt-2 pb-4">
+        <div
+          class="mx-auto w-full max-w-3xl rounded-2xl border border-line-strong bg-surface px-3.5 pt-3 pb-2.5 transition-colors hover:border-white/25"
+        >
+          <p class="m-0 mb-4 text-[11px] text-faint">
+            继续安排任务，或要求 Foya 调整自动化规则…
+          </p>
+          <div class="flex items-center gap-2.5 text-muted">
+            <Paperclip size={16} />
+            <span class="flex items-center gap-1 text-[10px] text-sky-400">
+              <Shield size={15} />
+              自动判断
+              <ChevronDown size={12} />
+            </span>
+            <span class="ml-auto truncate text-[10px] text-foreground">
+              Claude Sonnet 4.5 · 中推理
+            </span>
+            <span
+              class="grid size-8 shrink-0 place-items-center rounded-md bg-foreground text-canvas transition-transform hover:-translate-y-0.5"
+            >
+              <ArrowUp size={16} />
+            </span>
+          </div>
+        </div>
+        <div
+          class="mx-auto mt-1 flex h-9 w-full max-w-3xl items-center gap-2 rounded-xl bg-white/[0.035] px-3 text-[10px] text-muted"
+        >
+          <FolderOpen size={14} />
+          <span class="truncate">Northstar 商城 · ~/Projects/northstar</span>
+        </div>
+        <p class="mt-1.5 mb-0 text-center text-[9px] text-faint">
+          Enter 发送 · Shift+Enter 换行
+        </p>
+      </div>
+      </div>
+      <CanvasMock />
+      <AutomationMock />
+      <PluginsMock />
+    </div>
+  </div>
+</section>
+
+<script>
+  const productStage = document.querySelector<HTMLElement>("#product-stage");
+
+  function selectProductView(view: string) {
+    if (!productStage) return;
+    const sidebarView = view === "canvas" ? "canvas" : "chat";
+    productStage
+      .querySelectorAll<HTMLElement>("[data-product-panel]")
+      .forEach((panel) => {
+        panel.hidden = panel.dataset.productPanel !== view;
+      });
+    productStage
+      .querySelectorAll<HTMLElement>("[data-product-sidebar]")
+      .forEach((group) => {
+        group.hidden = group.dataset.productSidebar !== sidebarView;
+      });
+    productStage
+      .querySelectorAll<HTMLButtonElement>("[data-product-switch]")
+      .forEach((button) => {
+        const active = button.dataset.productSwitch === view;
+        button.dataset.active = String(active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+  }
+
+  productStage
+    ?.querySelectorAll<HTMLButtonElement>("[data-product-switch]")
+    .forEach((button) => {
+      button.addEventListener("click", () => {
+        selectProductView(button.dataset.productSwitch ?? "chat");
+      });
+    });
+
+  selectProductView("chat");
+</script>
+
+<style>
+  #product-stage [hidden] {
+    display: none !important;
+  }
+
+  .product-switch {
+    color: var(--color-muted);
+  }
+
+  .product-switch[data-active="true"] {
+    background: rgb(255 255 255 / 7.5%);
+    color: var(--color-foreground);
+  }
+
+  .product-switch:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+
+  @media (max-width: 719px) {
+    #product-stage [data-product-panel] {
+      top: 44px;
+    }
+  }
+</style>

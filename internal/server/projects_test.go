@@ -7,14 +7,14 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+	model "github.com/freesoulcode/foya/internal/model"
 	"github.com/freesoulcode/foya/internal/project"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
+
 	"github.com/freesoulcode/foya/internal/skill"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
@@ -33,13 +33,13 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	prov := idleProvider{}
 	engine := agent.NewEngine(log, bus, sessions, prov, "fallback", tool.NewRegistry(), gateway)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions, log, bus, engine, gateway, terminal.NewManager(),
-		func(connection config.Provider) (provider.Provider, string) {
+		func(connection config.Provider) (model.Provider, string) {
 			return prov, connection.Model
 		},
 		config.Provider{}, dataDir,
@@ -118,7 +118,7 @@ func TestProjectRoutesBindSessionsAndDiscoverSkills(t *testing.T) {
 		t.Fatalf("deleted project session status = %d, want %d", code, http.StatusBadRequest)
 	}
 
-	var createdSession session.Session
+	var createdSession conversation.Session
 	if code := requestJSON(t, handler, http.MethodPost, "/sessions", map[string]string{
 		"project_id": createdProject.ID,
 	}, &createdSession); code != http.StatusOK {

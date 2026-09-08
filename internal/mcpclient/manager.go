@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	foyatool "github.com/freesoulcode/foya/internal/tool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -84,7 +84,7 @@ type Manager struct {
 	dataDir       string
 	homeDir       string
 	registry      foyatool.Registry
-	gateway       approval.Gateway
+	gateway       interaction.Gateway
 	mu            sync.RWMutex
 	config        Config
 	secrets       map[string]string
@@ -93,7 +93,7 @@ type Manager struct {
 	runCtx        context.Context
 }
 
-func NewManager(dataDir, homeDir string, registry foyatool.Registry, gateway approval.Gateway) (*Manager, error) {
+func NewManager(dataDir, homeDir string, registry foyatool.Registry, gateway interaction.Gateway) (*Manager, error) {
 	manager := &Manager{
 		dataDir: dataDir, homeDir: homeDir, registry: registry, gateway: gateway,
 		config: Config{Version: 1}, secrets: make(map[string]string),

@@ -4,13 +4,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/backend"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
 )
 
 func TestUsageStatisticsRoute(t *testing.T) {
 	handler, _ := newQueueTestServer(t)
 
-	var statistics backend.UsageStatistics
+	var statistics kernel.UsageStatistics
 	if code := requestJSON(
 		t,
 		handler,

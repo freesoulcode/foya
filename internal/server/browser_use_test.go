@@ -7,25 +7,25 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
 func newBrowserUseTestServer(
 	t *testing.T,
-) (http.Handler, *browseruse.Controller, *broker.Broker[event.Event], string) {
+) (http.Handler, *browseruse.Controller, *broker.Broker[conversation.Event], string) {
 	t.Helper()
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log,
 		bus,
@@ -36,7 +36,7 @@ func newBrowserUseTestServer(
 		gateway,
 	)
 	dataDir := t.TempDir()
-	be := backend.New(
+	be := kernel.NewService(
 		sessions,
 		log,
 		bus,
@@ -52,7 +52,7 @@ func newBrowserUseTestServer(
 		t.Fatal(err)
 	}
 	be.SetBrowserController(controller)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
+	sess, err := be.CreateSession(conversation.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestBrowserUseRoutesReportStatusAndResolveAction(t *testing.T) {
 	}()
 	select {
 	case ev := <-events:
-		if ev.Kind != event.KindBrowserActionRequested {
+		if ev.Kind != conversation.KindBrowserActionRequested {
 			t.Fatalf("event kind = %q", ev.Kind)
 		}
 	case <-ctx.Done():

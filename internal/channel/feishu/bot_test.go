@@ -9,11 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	foyachannel "github.com/freesoulcode/foya/internal/channel"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
 
@@ -184,22 +183,22 @@ func TestNewRequiresExplicitAccessPolicy(t *testing.T) {
 type fakeBackend struct {
 	mu          sync.Mutex
 	createCount int
-	sessions    []*session.Session
-	inputs      []message.UserInput
+	sessions    []*conversation.Session
+	inputs      []conversation.UserInput
 	images      [][]byte
 	cancelled   []string
-	subscribers map[string]chan event.Event
+	subscribers map[string]chan conversation.Event
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{subscribers: make(map[string]chan event.Event)}
+	return &fakeBackend{subscribers: make(map[string]chan conversation.Event)}
 }
 
-func (b *fakeBackend) CreateSession(options session.CreateOptions) (*session.Session, error) {
+func (b *fakeBackend) CreateSession(options conversation.CreateOptions) (*conversation.Session, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.createCount++
-	created := &session.Session{
+	created := &conversation.Session{
 		ID:           "session-" + strconv.Itoa(b.createCount),
 		ConnectionID: options.ConnectionID,
 		Model:        options.Model,
@@ -210,46 +209,46 @@ func (b *fakeBackend) CreateSession(options session.CreateOptions) (*session.Ses
 	return created, nil
 }
 
-func (b *fakeBackend) ListSessions() []*session.Session {
+func (b *fakeBackend) ListSessions() []*conversation.Session {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]*session.Session(nil), b.sessions...)
+	return append([]*conversation.Session(nil), b.sessions...)
 }
 
-func (b *fakeBackend) Subscribe(_ context.Context, sessionID string) <-chan event.Event {
+func (b *fakeBackend) Subscribe(_ context.Context, sessionID string) <-chan conversation.Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	events := make(chan event.Event, 4)
+	events := make(chan conversation.Event, 4)
 	b.subscribers[sessionID] = events
 	return events
 }
 
-func (b *fakeBackend) SubmitChatInput(_ context.Context, sessionID string, input message.UserInput) error {
+func (b *fakeBackend) SubmitChatInput(_ context.Context, sessionID string, input conversation.UserInput) error {
 	b.mu.Lock()
 	b.inputs = append(b.inputs, input)
 	events := b.subscribers[sessionID]
 	b.mu.Unlock()
-	events <- event.Event{Kind: event.KindMessageDelta, Payload: "hel"}
-	events <- event.Event{
-		Kind: event.KindMessageEnd,
-		Payload: message.Message{
-			Role:    message.RoleAssistant,
+	events <- conversation.Event{Kind: conversation.KindMessageDelta, Payload: "hel"}
+	events <- conversation.Event{
+		Kind: conversation.KindMessageEnd,
+		Payload: conversation.Message{
+			Role:    conversation.RoleAssistant,
 			Content: "hello",
 		},
 	}
-	events <- event.Event{Kind: event.KindTurnComplete}
+	events <- conversation.Event{Kind: conversation.KindTurnComplete}
 	return nil
 }
 
-func (b *fakeBackend) PutImage(_ context.Context, _ string, _ string, source io.Reader) (message.AttachmentRef, error) {
+func (b *fakeBackend) PutImage(_ context.Context, _ string, _ string, source io.Reader) (conversation.AttachmentRef, error) {
 	data, err := io.ReadAll(source)
 	if err != nil {
-		return message.AttachmentRef{}, err
+		return conversation.AttachmentRef{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.images = append(b.images, data)
-	return message.AttachmentRef{ID: "artifact-1", Kind: "image"}, nil
+	return conversation.AttachmentRef{ID: "artifact-1", Kind: "image"}, nil
 }
 
 func (b *fakeBackend) CancelTurn(sessionID string) {
@@ -372,7 +371,7 @@ type fakeReaction struct {
 func newTestBot(t *testing.T, runtime foyachannel.Runtime, transport Channel) *Bot {
 	t.Helper()
 	bot, err := New(Config{
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 		SessionPath:  t.TempDir() + "/sessions.json",
 		AllowedUsers: []string{
 			"ou_allowed",

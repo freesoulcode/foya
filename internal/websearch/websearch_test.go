@@ -8,16 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/provider"
+	model "github.com/freesoulcode/foya/internal/model"
 	xhtml "golang.org/x/net/html"
 )
 
 type nativeSearcher struct {
-	results []provider.SearchResult
+	results []model.SearchResult
 	err     error
 }
 
-func (s nativeSearcher) SearchWeb(context.Context, string, string, int) ([]provider.SearchResult, error) {
+func (s nativeSearcher) SearchWeb(context.Context, string, string, int) ([]model.SearchResult, error) {
 	return s.results, s.err
 }
 
@@ -28,7 +28,7 @@ func TestSearchPrefersNativeProvider(t *testing.T) {
 	}
 	results, source, err := manager.Search(context.Background(), Request{
 		Query: "foya",
-		Native: nativeSearcher{results: []provider.SearchResult{{
+		Native: nativeSearcher{results: []model.SearchResult{{
 			Title: "Foya", URL: "https://example.com/foya",
 		}}},
 	})
@@ -54,7 +54,7 @@ func TestSearchFallsBackWhenNativeIsUnsupported(t *testing.T) {
 
 	results, source, err := manager.Search(context.Background(), Request{
 		Query:  "foya",
-		Native: nativeSearcher{err: provider.ErrNativeSearchUnsupported},
+		Native: nativeSearcher{err: model.ErrNativeSearchUnsupported},
 	})
 	if err != nil {
 		t.Fatal(err)

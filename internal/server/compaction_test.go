@@ -7,15 +7,14 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/protocol"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+
+	model "github.com/freesoulcode/foya/internal/model"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -26,19 +25,19 @@ func (compactingProvider) Name() string { return "test" }
 
 func (compactingProvider) Stream(
 	context.Context,
-	provider.Request,
-) (<-chan provider.StreamEvent, error) {
-	ch := make(chan provider.StreamEvent, 1)
-	ch <- provider.StreamEvent{Type: "done", FinishReason: "stop"}
+	model.Request,
+) (<-chan model.StreamEvent, error) {
+	ch := make(chan model.StreamEvent, 1)
+	ch <- model.StreamEvent{Type: "done", FinishReason: "stop"}
 	close(ch)
 	return ch, nil
 }
 
 func (compactingProvider) CompleteDetailed(
 	context.Context,
-	provider.Request,
-) (provider.Completion, error) {
-	return provider.Completion{Text: `## Goal
+	model.Request,
+) (model.Completion, error) {
+	return model.Completion{Text: `## Goal
 Continue the task.
 ## Progress
 History was summarized.
@@ -53,8 +52,8 @@ No unresolved detail.`, FinishReason: "stop"}, nil
 func TestCompactSessionRoute(t *testing.T) {
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log,
 		bus,
@@ -64,7 +63,7 @@ func TestCompactSessionRoute(t *testing.T) {
 		tool.NewRegistry(),
 		gateway,
 	)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions,
 		log,
 		bus,
@@ -75,22 +74,22 @@ func TestCompactSessionRoute(t *testing.T) {
 		config.Provider{},
 		t.TempDir(),
 	)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
+	sess, err := be.CreateSession(conversation.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, msg := range []message.Message{
-		{Role: message.RoleUser, Content: "question"},
-		{Role: message.RoleAssistant, Content: strings.Repeat("a sufficiently detailed completed answer ", 100)},
+	for _, msg := range []conversation.Message{
+		{Role: conversation.RoleUser, Content: "question"},
+		{Role: conversation.RoleAssistant, Content: strings.Repeat("a sufficiently detailed completed answer ", 100)},
 	} {
-		if _, err := log.Append(context.Background(), event.Event{
-			Kind: event.KindMessageEnd, Session: sess.ID, Payload: msg,
+		if _, err := log.Append(context.Background(), conversation.Event{
+			Kind: conversation.KindMessageEnd, Session: sess.ID, Payload: msg,
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	var result protocol.CompactSessionResponse
+	var result CompactSessionResponse
 	code := requestJSON(
 		t,
 		New(config.Config{}, be).Handler(),

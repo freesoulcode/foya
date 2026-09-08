@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -33,7 +33,7 @@ func TestToolsUseMacOSSandboxBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := approval.WithMode(WithCWD(context.Background(), project), approval.ModeManual)
+	ctx := interaction.WithMode(WithCWD(context.Background(), project), interaction.ModeManual)
 	runner := sandbox.NewRunner()
 
 	t.Run("bash writes project", func(t *testing.T) {

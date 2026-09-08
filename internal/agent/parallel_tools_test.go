@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+
+	modelapi "github.com/freesoulcode/foya/internal/model"
+
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -23,31 +23,31 @@ type parallelProvider struct {
 
 func (p *parallelProvider) Name() string { return "parallel-test" }
 
-func (p *parallelProvider) ListModels(context.Context) ([]provider.ModelInfo, error) {
-	return []provider.ModelInfo{{ID: "test-model", ContextWindow: 100_000}}, nil
+func (p *parallelProvider) ListModels(context.Context) ([]modelapi.ModelInfo, error) {
+	return []modelapi.ModelInfo{{ID: "test-model", ContextWindow: 100_000}}, nil
 }
 
 func (p *parallelProvider) Stream(
 	context.Context,
-	provider.Request,
-) (<-chan provider.StreamEvent, error) {
+	modelapi.Request,
+) (<-chan modelapi.StreamEvent, error) {
 	p.mu.Lock()
 	p.calls++
 	call := p.calls
 	p.mu.Unlock()
-	out := make(chan provider.StreamEvent, 4)
+	out := make(chan modelapi.StreamEvent, 4)
 	if call == 1 {
-		out <- provider.StreamEvent{
+		out <- modelapi.StreamEvent{
 			Type: "tool_call_delta", ToolIndex: 0,
 			ToolCallID: "call-1", ToolName: "parallel_test", ToolArgsDlt: `{}`,
 		}
-		out <- provider.StreamEvent{
+		out <- modelapi.StreamEvent{
 			Type: "tool_call_delta", ToolIndex: 1,
 			ToolCallID: "call-2", ToolName: "parallel_test", ToolArgsDlt: `{}`,
 		}
-		out <- provider.StreamEvent{Type: "done", FinishReason: "tool_calls"}
+		out <- modelapi.StreamEvent{Type: "done", FinishReason: "tool_calls"}
 	} else {
-		out <- provider.StreamEvent{Type: "done", FinishReason: "stop"}
+		out <- modelapi.StreamEvent{Type: "done", FinishReason: "stop"}
 	}
 	close(out)
 	return out, nil
@@ -64,17 +64,17 @@ type blockingSequentialTool struct {
 }
 
 type captureProvider struct {
-	request provider.Request
+	request modelapi.Request
 }
 
 func (p *captureProvider) Name() string { return "capture" }
 func (p *captureProvider) Stream(
 	_ context.Context,
-	request provider.Request,
-) (<-chan provider.StreamEvent, error) {
+	request modelapi.Request,
+) (<-chan modelapi.StreamEvent, error) {
 	p.request = request
-	out := make(chan provider.StreamEvent, 1)
-	out <- provider.StreamEvent{Type: "done", FinishReason: "stop"}
+	out := make(chan modelapi.StreamEvent, 1)
+	out <- modelapi.StreamEvent{Type: "done", FinishReason: "stop"}
 	close(out)
 	return out, nil
 }
@@ -120,13 +120,13 @@ func (t *blockingSequentialTool) Run(ctx context.Context, call tool.Call) (tool.
 
 func TestParallelSafeToolCallsRunConcurrently(t *testing.T) {
 	sessions := newTestSessionManager(t)
-	sess, err := sessions.Create(session.CreateOptions{Model: "test-model"})
+	sess, err := sessions.Create(conversation.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	registry := tool.NewRegistry()
 	parallel := &blockingParallelTool{
 		started: make(chan struct{}, 2),
@@ -161,9 +161,9 @@ func TestParallelSafeToolCallsRunConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var finalAssistant *message.Message
+	var finalAssistant *conversation.Message
 	for i := range history {
-		if history[i].Role == message.RoleAssistant && len(history[i].ToolCalls) == 0 {
+		if history[i].Role == conversation.RoleAssistant && len(history[i].ToolCalls) == 0 {
 			finalAssistant = &history[i]
 		}
 	}
@@ -190,12 +190,12 @@ func TestMixedToolBatchUsesParallelAndOrderedSequentialLanes(t *testing.T) {
 	engine := &Engine{
 		tools: registry,
 		log:   newTestStore(t),
-		bus:   broker.New[event.Event](),
+		bus:   broker.New[conversation.Event](),
 	}
 
 	done := make(chan []executedToolCall, 1)
 	go func() {
-		done <- engine.executeToolCalls(context.Background(), "session-1", []message.ToolCall{
+		done <- engine.executeToolCalls(context.Background(), "session-1", []conversation.ToolCall{
 			{ID: "parallel-1", Name: "parallel_test", Input: []byte(`{}`)},
 			{ID: "sequential-1", Name: "sequential_test", Input: []byte(`{}`)},
 			{ID: "sequential-2", Name: "sequential_test", Input: []byte(`{}`)},
@@ -248,7 +248,7 @@ func TestMixedToolBatchUsesParallelAndOrderedSequentialLanes(t *testing.T) {
 
 func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
 	sessions := newTestSessionManager(t)
-	child, err := sessions.Create(session.CreateOptions{
+	child, err := sessions.Create(conversation.CreateOptions{
 		Model: "test-model", ParentID: "parent",
 		AgentInstructions: "Only analyze market evidence.",
 		AllowedTools:      []string{"read"},
@@ -257,8 +257,8 @@ func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	registry := tool.NewRegistry()
 	registry.Register(staticTool{name: "read"})
 	registry.Register(staticTool{name: "write"})

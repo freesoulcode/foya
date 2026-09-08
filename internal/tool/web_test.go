@@ -9,30 +9,30 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 type allowGateway struct{}
 
-func (allowGateway) Request(context.Context, approval.Request) (approval.Decision, error) {
-	return approval.DecisionAutoApprove, nil
+func (allowGateway) Request(context.Context, interaction.Request) (interaction.Decision, error) {
+	return interaction.DecisionAutoApprove, nil
 }
 
-func (allowGateway) Resolve(string, approval.Decision) error { return nil }
+func (allowGateway) Resolve(string, interaction.Decision) error { return nil }
 
 func (allowGateway) ClearSession(string) {}
 
 type recordingGateway struct {
-	request  approval.Request
-	decision approval.Decision
+	request  interaction.Request
+	decision interaction.Decision
 }
 
-func (g *recordingGateway) Request(_ context.Context, request approval.Request) (approval.Decision, error) {
+func (g *recordingGateway) Request(_ context.Context, request interaction.Request) (interaction.Decision, error) {
 	g.request = request
 	return g.decision, nil
 }
 
-func (*recordingGateway) Resolve(string, approval.Decision) error { return nil }
+func (*recordingGateway) Resolve(string, interaction.Decision) error { return nil }
 
 func (*recordingGateway) ClearSession(string) {}
 
@@ -51,7 +51,7 @@ func (t staticTransport) RoundTrip(request *http.Request) (*http.Response, error
 }
 
 func TestWebFetchUsesStableSessionGrantScope(t *testing.T) {
-	gateway := &recordingGateway{decision: approval.DecisionApproved}
+	gateway := &recordingGateway{decision: interaction.DecisionApproved}
 	instance := NewWebFetchTool(gateway).(*webFetchTool)
 	instance.client = &http.Client{Transport: staticTransport{
 		contentType: "text/plain",
@@ -71,7 +71,7 @@ func TestWebFetchUsesStableSessionGrantScope(t *testing.T) {
 }
 
 func TestWebSearchUsesStableSessionGrantScope(t *testing.T) {
-	gateway := &recordingGateway{decision: approval.DecisionDenied}
+	gateway := &recordingGateway{decision: interaction.DecisionDenied}
 	instance := NewWebSearchTool(nil, gateway)
 	_, err := instance.Run(context.Background(), Call{
 		Input: []byte(`{"query":"Go release notes"}`),

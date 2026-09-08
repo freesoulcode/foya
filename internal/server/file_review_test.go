@@ -10,14 +10,12 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/protocol"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -25,8 +23,8 @@ import (
 func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log,
 		bus,
@@ -36,7 +34,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 		tool.NewRegistry(),
 		gateway,
 	)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions,
 		log,
 		bus,
@@ -47,7 +45,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 		config.Provider{},
 		t.TempDir(),
 	)
-	current, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
+	current, err := be.CreateSession(conversation.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,16 +55,16 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 	if err := os.WriteFile(path, after, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := log.Append(context.Background(), event.Event{
-		Kind:    event.KindMessageEnd,
+	if _, err := log.Append(context.Background(), conversation.Event{
+		Kind:    conversation.KindMessageEnd,
 		Session: current.ID,
 		Time:    time.Now(),
-		Payload: message.Message{
-			Role:       message.RoleTool,
+		Payload: conversation.Message{
+			Role:       conversation.RoleTool,
 			ToolCallID: "write-1",
 			Content:    "written",
 			Diff:       "--- main.go\n+++ main.go\n@@ -1 +1,2 @@\n-before\n+after\n+more\n",
-			FileChange: &message.FileChange{
+			FileChange: &conversation.FileChange{
 				Path:            path,
 				BeforeExists:    true,
 				BeforeMode:      0o644,
@@ -84,7 +82,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 
 	handler := New(config.Config{}, be).Handler()
 	endpoint := "/sessions/" + current.ID + "/file-review"
-	var review protocol.FileReviewResponse
+	var review FileReviewResponse
 	if code := requestJSON(
 		t,
 		handler,
@@ -96,7 +94,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 		t.Fatalf("file review status = %d", code)
 	}
 	if len(review.Files) != 1 ||
-		review.Files[0].Status != backend.RewindFileReady ||
+		review.Files[0].Status != kernel.RewindFileReady ||
 		review.Files[0].Additions != 1 ||
 		review.Files[0].Deletions != 1 ||
 		review.Files[0].Diff == "" ||
@@ -111,7 +109,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 		handler,
 		http.MethodPost,
 		endpoint,
-		protocol.ResolveFileReviewRequest{
+		ResolveFileReviewRequest{
 			Action:             "keep",
 			ExpectedThroughSeq: review.ThroughSeq,
 			ExpectedFileState:  review.FileStateToken,
@@ -121,7 +119,7 @@ func TestFileReviewRoutesListAndKeepChanges(t *testing.T) {
 		t.Fatalf("resolve status=%d body=%#v", code, result)
 	}
 
-	review = protocol.FileReviewResponse{}
+	review = FileReviewResponse{}
 	if code := requestJSON(
 		t,
 		handler,

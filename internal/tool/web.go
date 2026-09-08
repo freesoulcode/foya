@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/provider"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	model "github.com/freesoulcode/foya/internal/model"
 	"github.com/freesoulcode/foya/internal/websearch"
 	xhtml "golang.org/x/net/html"
 )
@@ -27,11 +27,11 @@ const (
 
 type webSearchTool struct {
 	manager *websearch.Manager
-	gateway approval.Gateway
+	gateway interaction.Gateway
 }
 
 type webFetchTool struct {
-	gateway approval.Gateway
+	gateway interaction.Gateway
 	client  *http.Client
 }
 
@@ -44,11 +44,11 @@ type webFetchParams struct {
 	URL string `json:"url"`
 }
 
-func NewWebSearchTool(manager *websearch.Manager, gateway approval.Gateway) Tool {
+func NewWebSearchTool(manager *websearch.Manager, gateway interaction.Gateway) Tool {
 	return &webSearchTool{manager: manager, gateway: gateway}
 }
 
-func NewWebFetchTool(gateway approval.Gateway) Tool {
+func NewWebFetchTool(gateway interaction.Gateway) Tool {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -114,7 +114,7 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err := json.Unmarshal(call.Input, &params); err != nil {
 		return errResult("invalid arguments: " + err.Error()), nil
 	}
-	decision, err := t.gateway.Request(ctx, approval.Request{
+	decision, err := t.gateway.Request(ctx, interaction.Request{
 		ToolName: t.Name(),
 		Action:   "network",
 		Detail:   "Web search: " + params.Query,
@@ -124,12 +124,12 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("search approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("user denied web search"), nil
 	}
 	runtime, _ := ModelRuntimeFromContext(ctx)
-	var native provider.NativeWebSearcher
-	if candidate, ok := runtime.Provider.(provider.NativeWebSearcher); ok {
+	var native model.NativeWebSearcher
+	if candidate, ok := runtime.Provider.(model.NativeWebSearcher); ok {
 		native = candidate
 	}
 	results, source, err := t.manager.Search(ctx, websearch.Request{
@@ -139,9 +139,9 @@ func (t *webSearchTool) Run(ctx context.Context, call Call) (Result, error) {
 		return errResult("web search failed: " + err.Error()), nil
 	}
 	payload, _ := json.Marshal(struct {
-		Provider string                  `json:"provider"`
-		Query    string                  `json:"query"`
-		Results  []provider.SearchResult `json:"results"`
+		Provider string               `json:"provider"`
+		Query    string               `json:"query"`
+		Results  []model.SearchResult `json:"results"`
 	}{source, params.Query, results})
 	return textResult(string(payload)), nil
 }
@@ -170,7 +170,7 @@ func (t *webFetchTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil || validateWebURL(location) != nil {
 		return errResult("invalid or unsafe URL"), nil
 	}
-	decision, err := t.gateway.Request(ctx, approval.Request{
+	decision, err := t.gateway.Request(ctx, interaction.Request{
 		ToolName: t.Name(),
 		Action:   "network",
 		Detail:   "Read web page: " + location.String(),
@@ -180,7 +180,7 @@ func (t *webFetchTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("fetch approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("user denied web fetch"), nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, location.String(), nil)

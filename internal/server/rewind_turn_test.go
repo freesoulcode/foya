@@ -13,15 +13,12 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/protocol"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -29,8 +26,8 @@ import (
 func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log,
 		bus,
@@ -40,7 +37,7 @@ func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 		tool.NewRegistry(),
 		gateway,
 	)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions,
 		log,
 		bus,
@@ -51,7 +48,7 @@ func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 		config.Provider{},
 		t.TempDir(),
 	)
-	sess, err := be.CreateSession(session.CreateOptions{Model: "test-model"})
+	sess, err := be.CreateSession(conversation.CreateOptions{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,23 +59,23 @@ func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	target := appendServerHistoryMessage(t, log, sess.ID, message.Message{
-		Role: message.RoleUser, Content: "old request",
+	target := appendServerHistoryMessage(t, log, sess.ID, conversation.Message{
+		Role: conversation.RoleUser, Content: "old request",
 	})
-	appendServerHistoryMessage(t, log, sess.ID, message.Message{
-		Role: message.RoleAssistant,
-		ToolCalls: []message.ToolCall{{
+	appendServerHistoryMessage(t, log, sess.ID, conversation.Message{
+		Role: conversation.RoleAssistant,
+		ToolCalls: []conversation.ToolCall{{
 			ID:    "write-1",
 			Name:  "write",
 			Input: json.RawMessage(`{"path":"main.go","content":"new"}`),
 		}},
 	})
-	appendServerHistoryMessage(t, log, sess.ID, message.Message{
-		Role:       message.RoleTool,
+	appendServerHistoryMessage(t, log, sess.ID, conversation.Message{
+		Role:       conversation.RoleTool,
 		ToolCallID: "write-1",
 		Content:    "written",
 		Diff:       "--- " + filePath + "\n+++ " + filePath + "\n@@ -1,1 +1,1 @@\n-old\n+new\n",
-		FileChange: &message.FileChange{
+		FileChange: &conversation.FileChange{
 			Path:            filePath,
 			BeforeExists:    true,
 			BeforeMode:      0o644,
@@ -94,32 +91,32 @@ func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 	handler := New(config.Config{}, be).Handler()
 	path := "/sessions/" + sess.ID + "/turns/" +
 		strconv.FormatUint(uint64(target), 10) + "/rewind"
-	var preview protocol.RewindTurnResponse
+	var preview RewindTurnResponse
 	code := requestJSON(
 		t,
 		handler,
 		http.MethodPost,
 		path,
-		protocol.RewindTurnRequest{},
+		RewindTurnRequest{},
 		&preview,
 	)
 	if code != http.StatusOK ||
-		preview.Status != backend.RewindConfirmationNeeded ||
+		preview.Status != kernel.RewindConfirmationNeeded ||
 		preview.Message != "old request" ||
 		len(preview.Files) != 1 ||
 		preview.Files[0].Path != filepath.ToSlash(filePath) ||
-		preview.Files[0].Status != backend.RewindFileReady ||
+		preview.Files[0].Status != kernel.RewindFileReady ||
 		preview.FileStateToken == "" {
 		t.Fatalf("preview status=%d body=%#v", code, preview)
 	}
 
-	var applied protocol.RewindTurnResponse
+	var applied RewindTurnResponse
 	code = requestJSON(
 		t,
 		handler,
 		http.MethodPost,
 		path,
-		protocol.RewindTurnRequest{
+		RewindTurnRequest{
 			Confirm:           true,
 			ExpectedHeadSeq:   preview.HeadSeq,
 			ExpectedFileState: preview.FileStateToken,
@@ -127,7 +124,7 @@ func TestRewindTurnRoutePreviewsAndConfirms(t *testing.T) {
 		&applied,
 	)
 	if code != http.StatusOK ||
-		applied.Status != backend.RewindApplied ||
+		applied.Status != kernel.RewindApplied ||
 		applied.Message != "old request" {
 		t.Fatalf("confirmed status=%d body=%#v", code, applied)
 	}
@@ -152,13 +149,13 @@ func rewindTestHash(content []byte) string {
 
 func appendServerHistoryMessage(
 	t *testing.T,
-	log state.Store,
+	log conversation.Store,
 	sessionID string,
-	msg message.Message,
-) event.Seq {
+	msg conversation.Message,
+) conversation.Seq {
 	t.Helper()
-	seq, err := log.Append(context.Background(), event.Event{
-		Kind:    event.KindMessageEnd,
+	seq, err := log.Append(context.Background(), conversation.Event{
+		Kind:    conversation.KindMessageEnd,
 		Session: sessionID,
 		Payload: msg,
 		Time:    time.Now(),

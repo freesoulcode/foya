@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/automation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 func TestAutomationRoutes(t *testing.T) {
@@ -18,7 +18,7 @@ func TestAutomationRoutes(t *testing.T) {
 		Cron:         "0 9 * * 1-5",
 		Timezone:     "UTC",
 		Enabled:      true,
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 	}
 
 	var created automation.Task

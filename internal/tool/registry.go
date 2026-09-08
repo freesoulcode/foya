@@ -7,7 +7,7 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/freesoulcode/foya/internal/provider"
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 // memRegistry is the thread-safe in-memory Registry implementation.
@@ -65,11 +65,11 @@ func (r *memRegistry) List() []Tool {
 }
 
 // Specs returns provider definitions for all non-hidden tools.
-func (r *memRegistry) Specs() []provider.ToolDef {
+func (r *memRegistry) Specs() []model.ToolDef {
 	return r.SpecsFor(nil)
 }
 
-func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []provider.ToolDef {
+func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []model.ToolDef {
 	r.mu.RLock()
 	tools := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
@@ -87,7 +87,7 @@ func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []provider.ToolDe
 	sort.Slice(tools, func(i, j int) bool {
 		return tools[i].Name() < tools[j].Name()
 	})
-	defs := make([]provider.ToolDef, 0, len(tools))
+	defs := make([]model.ToolDef, 0, len(tools))
 	for _, t := range tools {
 		spec := t.Spec()
 		var params json.RawMessage
@@ -97,9 +97,9 @@ func (r *memRegistry) SpecsFor(activeDeferred map[string]bool) []provider.ToolDe
 		} else {
 			params = json.RawMessage(`{"type":"object","properties":{}}`)
 		}
-		defs = append(defs, provider.ToolDef{
+		defs = append(defs, model.ToolDef{
 			Type: "function",
-			Function: provider.FunctionDef{
+			Function: model.FunctionDef{
 				Name:        t.Name(),
 				Description: t.Description(),
 				Parameters:  params,

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -37,7 +37,7 @@ func TestBashUsesExecutionBoundary(t *testing.T) {
 	project := t.TempDir()
 	runner := &recordingRunner{result: sandbox.ExecResult{Stdout: []byte("ok\n")}}
 	instance := NewBashTool(allowGateway{}, runner)
-	ctx := approval.WithMode(WithCWD(context.Background(), project), approval.ModeManual)
+	ctx := interaction.WithMode(WithCWD(context.Background(), project), interaction.ModeManual)
 
 	result, err := instance.Run(ctx, Call{Input: []byte(`{"command":"printf ok"}`)})
 	if err != nil || result.IsError {
@@ -54,7 +54,7 @@ func TestWriteUsesExecutionBoundary(t *testing.T) {
 	project := t.TempDir()
 	runner := &recordingRunner{}
 	instance := NewWriteTool(allowGateway{}, runner)
-	ctx := approval.WithMode(WithCWD(context.Background(), project), approval.ModeManual)
+	ctx := interaction.WithMode(WithCWD(context.Background(), project), interaction.ModeManual)
 
 	result, err := instance.Run(ctx, Call{
 		Input: []byte(`{"path":"nested/file.txt","content":"new content"}`),
@@ -85,7 +85,7 @@ func TestEditUsesExecutionBoundary(t *testing.T) {
 	}
 	runner := &recordingRunner{}
 	instance := NewEditTool(allowGateway{}, runner)
-	ctx := approval.WithMode(WithCWD(context.Background(), project), approval.ModeManual)
+	ctx := interaction.WithMode(WithCWD(context.Background(), project), interaction.ModeManual)
 
 	result, err := instance.Run(ctx, Call{
 		Input: []byte(`{"path":"file.txt","edits":[{"old_text":"before","new_text":"after"}]}`),
@@ -111,7 +111,7 @@ func TestEditUsesExecutionBoundary(t *testing.T) {
 func TestBypassUsesFullAccessProfile(t *testing.T) {
 	runner := &recordingRunner{}
 	instance := NewBashTool(allowGateway{}, runner)
-	ctx := approval.WithMode(context.Background(), approval.ModeFullAccess)
+	ctx := interaction.WithMode(context.Background(), interaction.ModeFullAccess)
 
 	_, err := instance.Run(ctx, Call{Input: []byte(`{"command":"true"}`)})
 	if err != nil {
@@ -125,7 +125,7 @@ func TestBypassUsesFullAccessProfile(t *testing.T) {
 
 func TestBashFailsWhenExecutionBoundaryIsUnavailable(t *testing.T) {
 	instance := NewBashTool(allowGateway{}, nil)
-	ctx := approval.WithMode(context.Background(), approval.ModeFullAccess)
+	ctx := interaction.WithMode(context.Background(), interaction.ModeFullAccess)
 
 	result, err := instance.Run(ctx, Call{Input: []byte(`{"command":"true"}`)})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestBashRejectsPermanentDeletionCommands(t *testing.T) {
 func TestBashAllowsPermanentDeletionInFullAccess(t *testing.T) {
 	runner := &recordingRunner{}
 	instance := NewBashTool(allowGateway{}, runner)
-	ctx := approval.WithMode(context.Background(), approval.ModeFullAccess)
+	ctx := interaction.WithMode(context.Background(), interaction.ModeFullAccess)
 
 	result, err := instance.Run(ctx, Call{
 		Input: []byte(`{"command":"rm -rf build"}`),

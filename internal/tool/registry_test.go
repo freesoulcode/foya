@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/testkit"
 )
 
@@ -62,12 +62,12 @@ func TestSearchDeferredMatchesQueryTerms(t *testing.T) {
 
 func TestBrowserToolsIncludeScroll(t *testing.T) {
 	log := testkit.NewLog()
-	bus := broker.New[event.Event]()
+	bus := broker.New[conversation.Event]()
 	controller, err := browseruse.NewController(t.TempDir(), bus, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway := approval.NewGateway(bus, log)
+	gateway := interaction.NewGateway(bus, log)
 	registry := NewRegistry()
 	for _, browserTool := range BrowserTools(controller, gateway) {
 		registry.Register(browserTool)
@@ -91,12 +91,12 @@ func TestBrowserToolsIncludeScroll(t *testing.T) {
 
 func TestBrowserNavigateAndSnapshotAreDirect(t *testing.T) {
 	log := testkit.NewLog()
-	bus := broker.New[event.Event]()
+	bus := broker.New[conversation.Event]()
 	controller, err := browseruse.NewController(t.TempDir(), bus, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway := approval.NewGateway(bus, log)
+	gateway := interaction.NewGateway(bus, log)
 	registry := NewRegistry()
 	for _, browserTool := range BrowserTools(controller, gateway) {
 		registry.Register(browserTool)

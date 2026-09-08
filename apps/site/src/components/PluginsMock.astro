@@ -1,0 +1,153 @@
+---
+import {
+  Blocks,
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Globe,
+  Palette,
+  RefreshCw,
+  Search,
+  Settings,
+  Wrench,
+} from "@lucide/astro";
+
+const marketplace = [
+  {
+    name: "Code Review",
+    version: "1.4.2",
+    description: "检查变更质量、风险和测试覆盖。",
+    icon: Wrench,
+    tone: "bg-blue-950/70 text-blue-300",
+  },
+  {
+    name: "Docs Writer",
+    version: "1.2.0",
+    description: "生成结构清晰、可维护的项目文档。",
+    icon: FileText,
+    tone: "bg-emerald-950/70 text-emerald-300",
+  },
+  {
+    name: "Data Explorer",
+    version: "2.1.0",
+    description: "连接数据源并分析结构化数据。",
+    icon: Blocks,
+    tone: "bg-amber-950/70 text-amber-300",
+  },
+  {
+    name: "Web Research",
+    version: "1.6.3",
+    description: "搜索、抓取并整理可信网页资料。",
+    icon: Globe,
+    tone: "bg-cyan-950/70 text-cyan-300",
+  },
+];
+---
+
+<section
+  data-product-panel="plugins"
+  class="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-[#090a0c] text-[#f2f3f5]"
+  aria-label="插件市场"
+  hidden
+>
+  <header
+    class="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-white/10 px-5"
+  >
+    <div class="flex items-center gap-1 text-xs">
+      <span class="rounded-md bg-white/[0.08] px-3 py-1.5 font-medium">插件</span>
+      <span class="px-3 py-1.5 text-[#858a94]">Skills</span>
+    </div>
+    <div class="flex items-center gap-1 text-[#858a94]">
+      <span class="grid size-7 place-items-center"><RefreshCw size={14} /></span>
+      <span class="grid size-7 place-items-center"><Settings size={14} /></span>
+      <span
+        class="ml-2 flex h-8 items-center gap-1.5 rounded-md bg-[#f1f2f4] px-3 text-xs font-semibold text-[#111216]"
+      >
+        添加
+        <ChevronDown size={13} />
+      </span>
+    </div>
+  </header>
+
+  <div class="mx-auto min-h-0 w-full max-w-[980px] flex-1 overflow-hidden px-8 pb-8 pt-8">
+    <h2 class="text-[28px] font-semibold">插件</h2>
+    <p class="mt-2 text-[13px] text-[#8d929c]">使用 Skills 和 Tools 扩展 Foya</p>
+
+    <div class="relative mt-6">
+      <Search
+        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#777d88]"
+        size={16}
+      />
+      <div
+        class="flex h-11 items-center rounded-md border border-white/12 bg-[#111317] pl-10 text-xs text-[#6f747e]"
+      >
+        搜索插件
+      </div>
+    </div>
+
+    <section class="mt-7">
+      <div class="flex items-center justify-between border-b border-white/10 pb-2.5">
+        <h3 class="text-sm font-medium">已安装</h3>
+        <Settings class="text-[#777d88]" size={14} />
+      </div>
+      <div class="flex h-20 items-center gap-5 px-1">
+        <span class="plugin-tile bg-blue-950/70 text-blue-300"><Wrench size={18} /></span>
+        <span class="plugin-tile bg-emerald-950/70 text-emerald-300"><FileText size={18} /></span>
+        <span class="plugin-tile bg-violet-950/70 text-violet-300"><Palette size={18} /></span>
+        <span class="plugin-tile bg-cyan-950/70 text-cyan-300"><Bot size={18} /></span>
+      </div>
+    </section>
+
+    <section class="mt-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-1 text-xs">
+          <span class="rounded-md bg-white/[0.08] px-3 py-1.5 font-medium">市场</span>
+          <span class="px-3 py-1.5 text-[#858a94]">本地</span>
+        </div>
+        <span
+          class="flex h-8 items-center gap-2 rounded-md border border-white/12 bg-[#111317] px-3 text-[11px] text-[#b3b7bf]"
+        >
+          Foya Community
+          <ChevronDown size={13} />
+        </span>
+      </div>
+
+      <h3 class="mt-6 border-b border-white/10 pb-2.5 text-[13px] font-medium">
+        开发工具
+      </h3>
+      <div class="grid grid-cols-2 gap-x-8 max-[900px]:grid-cols-1">
+        {
+          marketplace.map((item) => (
+            <div class="flex min-h-[84px] items-center gap-3 border-b border-white/10 py-3">
+              <span class={`grid size-11 shrink-0 place-items-center rounded-lg border border-white/10 ${item.tone}`}>
+                <item.icon size={20} />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="flex items-center gap-2">
+                  <strong class="truncate text-xs font-medium">{item.name}</strong>
+                  <small class="text-[9px] text-[#737984]">{item.version}</small>
+                </span>
+                <span class="mt-1 block truncate text-[11px] text-[#858a94]">
+                  {item.description}
+                </span>
+              </span>
+              <ChevronRight class="shrink-0 text-[#737984]" size={14} />
+            </div>
+          ))
+        }
+      </div>
+    </section>
+  </div>
+</section>
+
+<style>
+  .plugin-tile {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    place-items: center;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 8px;
+  }
+</style>

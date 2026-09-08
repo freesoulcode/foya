@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 const maxReadLen = 50000
@@ -23,11 +23,11 @@ type ReadParams struct {
 }
 
 type readTool struct {
-	gw approval.Gateway
+	gw interaction.Gateway
 }
 
 // NewReadTool creates a read-only tool allowed automatically in explore mode.
-func NewReadTool(gw approval.Gateway) Tool {
+func NewReadTool(gw interaction.Gateway) Tool {
 	return &readTool{gw: gw}
 }
 
@@ -58,7 +58,7 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 	}
 
 	// Read operations are allowed automatically in explore mode.
-	decision, err := t.gw.Request(ctx, approval.Request{
+	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "read",
 		Action:   "read",
 		Detail:   params.Path,
@@ -66,7 +66,7 @@ func (t *readTool) Run(ctx context.Context, call Call) (Result, error) {
 	if err != nil {
 		return errResult("Approval interrupted: " + err.Error()), nil
 	}
-	if decision == approval.DecisionDenied {
+	if decision == interaction.DecisionDenied {
 		return errResult("User denied file read"), nil
 	}
 

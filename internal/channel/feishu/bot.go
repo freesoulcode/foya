@@ -12,12 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	foyachannel "github.com/freesoulcode/foya/internal/channel"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/question"
-	"github.com/freesoulcode/foya/internal/session"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
 
@@ -28,7 +26,7 @@ type Config struct {
 	ConnectionID string
 	Model        string
 	ProjectID    string
-	ApprovalMode approval.Mode
+	ApprovalMode interaction.Mode
 	Locale       string
 	SessionPath  string
 	AllowedUsers []string
@@ -61,12 +59,12 @@ func New(config Config, runtime foyachannel.Runtime, channel Channel, logger *lo
 		return nil, errors.New("Feishu session path is required")
 	}
 	if config.ApprovalMode == "" {
-		config.ApprovalMode = approval.ModeAuto
+		config.ApprovalMode = interaction.ModeAuto
 	}
 	if config.Locale != "en-US" && config.Locale != "zh-CN" {
 		config.Locale = "zh-CN"
 	}
-	if config.ApprovalMode != approval.ModeAuto && config.ApprovalMode != approval.ModeFullAccess {
+	if config.ApprovalMode != interaction.ModeAuto && config.ApprovalMode != interaction.ModeFullAccess {
 		return nil, errors.New("Feishu bot approval mode must be auto or full_access")
 	}
 	config.AllowedUsers = cleanIDs(config.AllowedUsers)
@@ -264,7 +262,7 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 	}
 
 	events := b.backend.Subscribe(turnCtx, sessionID)
-	if err := b.backend.SubmitChatInput(turnCtx, sessionID, message.UserInput{
+	if err := b.backend.SubmitChatInput(turnCtx, sessionID, conversation.UserInput{
 		Text:        content,
 		Attachments: attachments,
 	}); err != nil {
@@ -283,9 +281,9 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 				return errors.New("Foya event stream closed before turn completion")
 			}
 			switch item.Kind {
-			case event.KindMessageEnd:
-				item, ok := item.Payload.(message.Message)
-				if !ok || item.Role != message.RoleAssistant {
+			case conversation.KindMessageEnd:
+				item, ok := item.Payload.(conversation.Message)
+				if !ok || item.Role != conversation.RoleAssistant {
 					continue
 				}
 				if item.Content != "" {
@@ -294,19 +292,19 @@ func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMess
 				if len(item.ToolCalls) == 0 {
 					finalAssistant = item.Content
 				}
-			case event.KindApprovalReq:
-				request, ok := item.Payload.(approval.Request)
+			case conversation.KindApprovalReq:
+				request, ok := item.Payload.(interaction.Request)
 				if ok {
-					_ = b.backend.ResolveApproval(request.ID, string(approval.DecisionDenied))
+					_ = b.backend.ResolveApproval(request.ID, string(interaction.DecisionDenied))
 				}
-			case event.KindQuestionRequested:
-				batch, ok := item.Payload.(question.Batch)
+			case conversation.KindQuestionRequested:
+				batch, ok := item.Payload.(interaction.Batch)
 				if ok {
 					_ = b.backend.CancelQuestions(sessionID, batch.ID)
 				}
-			case event.KindError:
+			case conversation.KindError:
 				responseErr = fmt.Errorf("%v", item.Payload)
-			case event.KindTurnComplete:
+			case conversation.KindTurnComplete:
 				response := finalAssistant
 				if response == "" {
 					response = lastAssistant
@@ -338,7 +336,7 @@ func (b *Bot) sessionForChat(chatID string) (string, error) {
 }
 
 func (b *Bot) createSession(chatID string) (string, error) {
-	created, err := b.backend.CreateSession(session.CreateOptions{
+	created, err := b.backend.CreateSession(conversation.CreateOptions{
 		ConnectionID: b.config.ConnectionID,
 		Model:        b.config.Model,
 		ProjectID:    b.config.ProjectID,
@@ -357,7 +355,7 @@ func (b *Bot) imageAttachments(
 	ctx context.Context,
 	sessionID string,
 	incoming *types.NormalizedMessage,
-) ([]message.AttachmentRef, error) {
+) ([]conversation.AttachmentRef, error) {
 	for _, resource := range incoming.Resources {
 		if resource.Type != "image" {
 			return nil, errors.New(localizedMessage(
@@ -367,7 +365,7 @@ func (b *Bot) imageAttachments(
 			))
 		}
 	}
-	attachments := make([]message.AttachmentRef, 0, len(incoming.Resources))
+	attachments := make([]conversation.AttachmentRef, 0, len(incoming.Resources))
 	for index, resource := range incoming.Resources {
 		data, err := b.channel.DownloadFile(ctx, resource.FileKey, "image")
 		if err != nil {

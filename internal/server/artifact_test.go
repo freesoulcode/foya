@@ -11,8 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/protocol"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 )
 
 func TestArtifactRoutesUploadReadDeleteAndCommit(t *testing.T) {
@@ -42,13 +41,13 @@ func TestArtifactRoutesUploadReadDeleteAndCommit(t *testing.T) {
 	}
 
 	committed := uploadArtifact(t, handler, sessionID, "committed.png", imageData)
-	var submitted protocol.SubmitTurnResponse
+	var submitted SubmitTurnResponse
 	if code := requestJSON(
 		t,
 		handler,
 		http.MethodPost,
 		"/sessions/"+sessionID+"/turns",
-		protocol.SubmitTurnRequest{Attachments: []message.AttachmentRef{{ID: committed.ID}}},
+		SubmitTurnRequest{Attachments: []conversation.AttachmentRef{{ID: committed.ID}}},
 		&submitted,
 	); code != http.StatusOK {
 		t.Fatalf("submit image turn status = %d", code)
@@ -96,7 +95,7 @@ func uploadArtifact(
 	handler http.Handler,
 	sessionID, name string,
 	data []byte,
-) message.AttachmentRef {
+) conversation.AttachmentRef {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -117,7 +116,7 @@ func uploadArtifact(
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload status = %d, body=%s", response.Code, response.Body.String())
 	}
-	var decoded protocol.ArtifactResponse
+	var decoded ArtifactResponse
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
 		t.Fatal(err)
 	}

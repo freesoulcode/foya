@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/artifact"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	modelapi "github.com/freesoulcode/foya/internal/model"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -19,13 +19,13 @@ type imageCapabilityProvider struct {
 
 func (p imageCapabilityProvider) Name() string { return "image-test" }
 
-func (p imageCapabilityProvider) Stream(context.Context, provider.Request) (<-chan provider.StreamEvent, error) {
+func (p imageCapabilityProvider) Stream(context.Context, modelapi.Request) (<-chan modelapi.StreamEvent, error) {
 	return nil, nil
 }
 
-func (p imageCapabilityProvider) ModelCapabilities(string) provider.ModelCapabilities {
+func (p imageCapabilityProvider) ModelCapabilities(string) modelapi.ModelCapabilities {
 	supported := p.supported
-	return provider.ModelCapabilities{ImageInput: &supported}
+	return modelapi.ModelCapabilities{ImageInput: &supported}
 }
 
 func TestPersistToolImagesCommitsArtifact(t *testing.T) {
@@ -63,9 +63,9 @@ func TestMaterializeProviderMessagesHonorsImageCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := []message.Message{{
-		Role: message.RoleUser, Content: "describe",
-		Attachments: []message.AttachmentRef{ref},
+	input := []conversation.Message{{
+		Role: conversation.RoleUser, Content: "describe",
+		Attachments: []conversation.AttachmentRef{ref},
 	}}
 
 	engine := &Engine{provider: imageCapabilityProvider{supported: true}, artifacts: store}

@@ -1,11 +1,13 @@
 {
   "name": "desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "pnpm run i18n:check && vue-tsc --noEmit && vite build",
+    "build:remote-kernels": "node scripts/build-remote-kernels.mjs",
     "i18n:check": "node scripts/check-i18n.mjs",
     "preview": "vite preview",
     "tauri": "tauri"

@@ -14,6 +14,7 @@ import {
   PaletteIcon,
   PlugZapIcon,
   ScrollTextIcon,
+  ServerIcon,
 } from "@lucide/vue";
 import { usePlatform } from "@/composables/usePlatform";
 import {
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/sidebar";
 
 export type SettingsSection =
+  | "kernel"
   | "connections"
   | "default-models"
   | "rules"
@@ -51,6 +53,7 @@ const emit = defineEmits<{
 const { isMac } = usePlatform();
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZapIcon }> = [
+  { id: "kernel", label: "Kernel", icon: ServerIcon },
   { id: "connections", label: "Connections", icon: PlugZapIcon },
   { id: "default-models", label: "Default models", icon: GaugeIcon },
   { id: "rules", label: "Rules", icon: ScrollTextIcon },

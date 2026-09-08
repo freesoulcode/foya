@@ -1,0 +1,101 @@
+---
+import {
+  ChevronDown,
+  Circle,
+  Play,
+  Plus,
+  Search,
+} from "@lucide/astro";
+
+const tasks = [
+  {
+    name: "每日经营简报",
+    schedule: "工作日 09:00",
+    next: "下次运行 14 小时后",
+    tone: "text-emerald-400 fill-emerald-400",
+  },
+  {
+    name: "库存异常巡检",
+    schedule: "每天 18:30",
+    next: "下次运行 7 小时后",
+    tone: "text-emerald-400 fill-emerald-400",
+  },
+  {
+    name: "回归测试汇总",
+    schedule: "每周五 17:00",
+    next: "上次运行已完成",
+    tone: "text-sky-400 fill-sky-400",
+  },
+  {
+    name: "竞品价格监控",
+    schedule: "0 */6 * * *",
+    next: "已暂停",
+    tone: "text-white/25",
+  },
+];
+---
+
+<section
+  data-product-panel="automation"
+  class="absolute inset-0 min-h-0 overflow-hidden bg-[#090a0c] text-[#f2f3f5]"
+  aria-label="自动化任务"
+  hidden
+>
+  <div class="mx-auto flex h-full min-h-0 w-full max-w-[900px] flex-col px-8 pb-8 pt-12">
+    <header class="flex items-start justify-between gap-4">
+      <div>
+        <h2 class="text-[28px] font-medium">自动化</h2>
+        <p class="mt-2 text-[13px] text-[#8d929c]">
+          让 Foya 按计划执行任务、生成报告或检查更新
+        </p>
+      </div>
+      <button
+        type="button"
+        tabindex="-1"
+        class="flex h-9 items-center gap-1.5 rounded-md bg-[#f1f2f4] px-3 text-xs font-semibold text-[#111216]"
+      >
+        <Plus size={14} />
+        创建
+        <ChevronDown size={13} />
+      </button>
+    </header>
+
+    <div class="relative mt-7">
+      <Search
+        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#777d88]"
+        size={15}
+      />
+      <div
+        class="flex h-10 items-center rounded-full border border-white/12 bg-[#111317] pl-9 text-xs text-[#6f747e]"
+      >
+        搜索自动化任务
+      </div>
+    </div>
+
+    <div class="mt-5 flex items-center gap-1 text-xs">
+      <span class="rounded-md bg-white/[0.08] px-3 py-1.5 font-medium">全部</span>
+      <span class="px-3 py-1.5 text-[#858a94]">已启用</span>
+      <span class="px-3 py-1.5 text-[#858a94]">已暂停</span>
+      <span class="px-3 py-1.5 text-[#858a94]">已完成</span>
+    </div>
+
+    <div class="mt-4 min-h-0 flex-1 overflow-hidden border-t border-white/10">
+      {
+        tasks.map((task) => (
+          <div class="group flex w-full items-center gap-3 border-b border-white/10 px-2 py-4">
+            <Circle class={`size-3.5 shrink-0 ${task.tone}`} />
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[13px] font-medium">{task.name}</span>
+              <span class="mt-1 block truncate text-[11px] text-[#818690]">
+                {task.schedule} · {task.next}
+              </span>
+            </span>
+            <span class="grid size-7 shrink-0 place-items-center rounded-md text-[#858a94]">
+              <Play size={14} />
+            </span>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>

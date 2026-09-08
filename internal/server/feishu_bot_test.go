@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/channel/feishu"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 )
 
 func TestFeishuBotSettingsAPI(t *testing.T) {
@@ -14,7 +14,7 @@ func TestFeishuBotSettingsAPI(t *testing.T) {
 		Enabled:      false,
 		AppID:        "cli_test",
 		HasAppSecret: true,
-		ApprovalMode: approval.ModeAuto,
+		ApprovalMode: interaction.ModeAuto,
 		Status:       feishu.StatusStopped,
 	}}
 	server := &Server{channels: manager, mux: http.NewServeMux()}
@@ -44,7 +44,7 @@ func TestFeishuBotSettingsAPI(t *testing.T) {
 		feishu.UpdateInput{
 			Enabled:      true,
 			AppID:        "cli_updated",
-			ApprovalMode: approval.ModeAuto,
+			ApprovalMode: interaction.ModeAuto,
 			AllowAll:     true,
 		},
 		&updated,

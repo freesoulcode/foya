@@ -14,11 +14,9 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/contextdata"
-	"github.com/freesoulcode/foya/internal/event"
-	"github.com/freesoulcode/foya/internal/message"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/state"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+
+	model "github.com/freesoulcode/foya/internal/model"
 )
 
 const (
@@ -52,13 +50,13 @@ type persistentState struct {
 }
 
 // CompleterResolver selects the model bound to the source session.
-type CompleterResolver func(sessionID string) (provider.Completer, string, string, bool)
+type CompleterResolver func(sessionID string) (model.Completer, string, string, bool)
 
 // Manager owns the persistent maintenance watermark. It accepts wakeups from
 // root-session creation but executes only when its time and idle gates pass.
 type Manager struct {
-	sessions session.Manager
-	log      state.Store
+	sessions conversation.Manager
+	log      conversation.Store
 	store    *contextdata.Store
 	complete CompleterResolver
 	path     string
@@ -73,8 +71,8 @@ type Manager struct {
 
 func New(
 	dataDir string,
-	sessions session.Manager,
-	log state.Store,
+	sessions conversation.Manager,
+	log conversation.Store,
 	store *contextdata.Store,
 	complete CompleterResolver,
 ) (*Manager, error) {
@@ -156,7 +154,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		if processed >= settings.BatchSize {
 			break
 		}
-		if item.ParentID != "" || item.Phase != session.PhaseIdle {
+		if item.ParentID != "" || item.Phase != conversation.PhaseIdle {
 			continue
 		}
 		events, err := m.log.Events(ctx, item.ID)
@@ -303,15 +301,15 @@ Return an empty array if nothing merits future memory. At most five items.`
 
 func extract(
 	ctx context.Context,
-	completer provider.Completer,
-	model, effort, source string,
+	completer model.Completer,
+	modelID, effort, source string,
 ) ([]string, error) {
-	answer, err := completer.Complete(ctx, provider.Request{
-		Model: model, ReasoningEffort: effort,
-		Messages: provider.TextMessages([]message.Message{
-			{Role: message.RoleSystem, Content: extractionPrompt},
-			{Role: message.RoleUser, Content: "<session_evidence>\n" + source + "\n</session_evidence>"},
-		}),
+	answer, err := completer.Complete(ctx, model.Request{
+		Model: modelID, ReasoningEffort: effort,
+		Messages: []model.InputMessage{
+			model.TextMessage(model.RoleSystem, extractionPrompt),
+			model.TextMessage(model.RoleUser, "<session_evidence>\n"+source+"\n</session_evidence>"),
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -341,34 +339,34 @@ func extract(
 	return out, nil
 }
 
-func buildSource(events []event.Event) (string, bool) {
+func buildSource(events []conversation.Event) (string, bool) {
 	var out strings.Builder
 	hasSignal := false
 	successfulWrites := make(map[string]bool)
 	for _, event := range events {
-		item, ok := event.Payload.(message.Message)
+		item, ok := event.Payload.(conversation.Message)
 		if !ok {
-			if pointer, ok := event.Payload.(*message.Message); ok && pointer != nil {
+			if pointer, ok := event.Payload.(*conversation.Message); ok && pointer != nil {
 				item = *pointer
 			} else {
 				continue
 			}
 		}
-		if item.Role == message.RoleTool && item.ToolCallID != "" && item.Diff != "" {
+		if item.Role == conversation.RoleTool && item.ToolCallID != "" && item.Diff != "" {
 			successfulWrites[item.ToolCallID] = true
 		}
 	}
 	for _, event := range events {
-		item, ok := event.Payload.(message.Message)
+		item, ok := event.Payload.(conversation.Message)
 		if !ok {
-			if pointer, ok := event.Payload.(*message.Message); ok && pointer != nil {
+			if pointer, ok := event.Payload.(*conversation.Message); ok && pointer != nil {
 				item = *pointer
 			} else {
 				continue
 			}
 		}
 		switch item.Role {
-		case message.RoleUser:
+		case conversation.RoleUser:
 			content := clipped(item.Content, 1200)
 			if content == "" {
 				continue
@@ -379,7 +377,7 @@ func buildSource(events []event.Event) (string, bool) {
 			if containsDurableCue(content) {
 				hasSignal = true
 			}
-		case message.RoleAssistant:
+		case conversation.RoleAssistant:
 			if len(item.ToolCalls) > 0 {
 				for _, call := range item.ToolCalls {
 					if (call.Name == "write" || call.Name == "edit") && successfulWrites[call.ID] {

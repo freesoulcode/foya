@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/message"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/tool"
 )
 
@@ -38,7 +38,7 @@ func TestCancelToolStopsOnlyToolContext(t *testing.T) {
 	defer cancelParent()
 	done := make(chan tool.Result, 1)
 	go func() {
-		done <- engine.executeTool(parentCtx, "session-1", message.ToolCall{
+		done <- engine.executeTool(parentCtx, "session-1", conversation.ToolCall{
 			ID: "call-1", Name: "cancellable", Input: []byte(`{}`),
 		})
 	}()
@@ -70,7 +70,7 @@ func TestExecuteToolRejectsDeferredToolNotActiveForStep(t *testing.T) {
 	result := engine.executeTool(
 		tool.WithActiveToolSnapshot(context.Background(), map[string]bool{}),
 		"session-1",
-		message.ToolCall{ID: "call-1", Name: "deferred_test", Input: []byte(`{}`)},
+		conversation.ToolCall{ID: "call-1", Name: "deferred_test", Input: []byte(`{}`)},
 	)
 	if !result.IsError || !strings.Contains(result.Content[0].Text, "has not been activated") {
 		t.Fatalf("inactive deferred result = %#v", result)
@@ -82,7 +82,7 @@ func TestExecuteToolRejectsDeferredToolNotActiveForStep(t *testing.T) {
 			map[string]bool{"deferred_test": true},
 		),
 		"session-1",
-		message.ToolCall{ID: "call-2", Name: "deferred_test", Input: []byte(`{}`)},
+		conversation.ToolCall{ID: "call-2", Name: "deferred_test", Input: []byte(`{}`)},
 	)
 	if result.IsError || result.Content[0].Text != "ok" {
 		t.Fatalf("active deferred result = %#v", result)

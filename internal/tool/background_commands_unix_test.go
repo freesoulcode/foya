@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/approval"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/sandbox"
 )
 
@@ -18,7 +18,7 @@ func TestBashBackgroundCommandCanBeReadAndStopped(t *testing.T) {
 	manager := NewBackgroundCommandManager(runner)
 	bash := NewBashToolWithManager(allowGateway{}, runner, manager)
 	ctx := WithSessionID(
-		approval.WithMode(context.Background(), approval.ModeFullAccess),
+		interaction.WithMode(context.Background(), interaction.ModeFullAccess),
 		"session-1",
 	)
 	result, err := bash.Run(ctx, Call{Input: []byte(
@@ -71,7 +71,7 @@ func TestForegroundCommandCanBePromotedWithoutRestart(t *testing.T) {
 	manager := NewBackgroundCommandManager(runner)
 	bash := NewBashToolWithManager(allowGateway{}, runner, manager)
 	ctx := WithSessionID(
-		approval.WithMode(context.Background(), approval.ModeFullAccess),
+		interaction.WithMode(context.Background(), interaction.ModeFullAccess),
 		"session-1",
 	)
 	done := make(chan Result, 1)
@@ -158,7 +158,7 @@ func TestForegroundCommandCanBeRevealedWithoutPromotion(t *testing.T) {
 	manager := NewBackgroundCommandManager(runner)
 	bash := NewBashToolWithManager(allowGateway{}, runner, manager)
 	ctx := WithSessionID(
-		approval.WithMode(context.Background(), approval.ModeFullAccess),
+		interaction.WithMode(context.Background(), interaction.ModeFullAccess),
 		"session-1",
 	)
 	done := make(chan Result, 1)

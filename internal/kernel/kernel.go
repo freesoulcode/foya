@@ -9,56 +9,66 @@ import (
 	"time"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/agentdef"
-	"github.com/freesoulcode/foya/internal/approval"
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/automation"
-	"github.com/freesoulcode/foya/internal/backend"
+
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
-	"github.com/freesoulcode/foya/internal/canvas"
+	canvas "github.com/freesoulcode/foya/internal/canvas"
 	"github.com/freesoulcode/foya/internal/channel/feishu"
-	"github.com/freesoulcode/foya/internal/command"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/hooks"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/mcpclient"
 	"github.com/freesoulcode/foya/internal/memorymaint"
+	model "github.com/freesoulcode/foya/internal/model"
+	openai "github.com/freesoulcode/foya/internal/model/openai"
 	"github.com/freesoulcode/foya/internal/plugin"
 	"github.com/freesoulcode/foya/internal/project"
-	"github.com/freesoulcode/foya/internal/provider"
-	"github.com/freesoulcode/foya/internal/provider/openai"
-	"github.com/freesoulcode/foya/internal/question"
+	subagent "github.com/freesoulcode/foya/internal/subagent"
+	workflow "github.com/freesoulcode/foya/internal/workflow"
+
 	"github.com/freesoulcode/foya/internal/sandbox"
-	"github.com/freesoulcode/foya/internal/session"
+
 	"github.com/freesoulcode/foya/internal/skill"
-	"github.com/freesoulcode/foya/internal/state"
+
 	"github.com/freesoulcode/foya/internal/storage"
-	"github.com/freesoulcode/foya/internal/subagent"
+
 	foyatelemetry "github.com/freesoulcode/foya/internal/telemetry"
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 	"github.com/freesoulcode/foya/internal/websearch"
-	"github.com/freesoulcode/foya/internal/workflow"
 )
 
 // App is the kernel composition root.
 type App struct {
-	cfg         config.Config
-	backend     *backend.Backend
-	cancel      context.CancelFunc
-	mcp         *mcpclient.Manager
-	memory      *memorymaint.Manager
-	browser     *browseruse.Controller
-	channels    *feishu.Manager
-	automations *automation.Manager
-	telemetry   *foyatelemetry.Provider
-	database    *storage.Database
+	cfg          config.Config
+	service      *Service
+	cancel       context.CancelFunc
+	mcp          *mcpclient.Manager
+	memory       *memorymaint.Manager
+	browser      *browseruse.Controller
+	channels     *feishu.Manager
+	automations  *automation.Manager
+	telemetry    *foyatelemetry.Provider
+	database     *storage.Database
+	instanceLock *storage.InstanceLock
 }
 
 // New assembles a kernel from configuration.
 func New(cfg config.Config) (*App, error) {
+	instanceLock, err := storage.AcquireInstanceLock(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	keepInstanceLock := false
+	defer func() {
+		if !keepInstanceLock {
+			_ = instanceLock.Close()
+		}
+	}()
 	if saved, ok, err := config.LoadAgentLimits(cfg.DataDir); err != nil {
 		return nil, err
 	} else if ok {
@@ -93,18 +103,18 @@ func New(cfg config.Config) (*App, error) {
 			_ = database.Close()
 		}
 	}()
-	sessions, err := session.NewManager(database)
+	sessions, err := conversation.NewManager(database)
 	if err != nil {
 		return nil, err
 	}
-	log := state.NewStore(database)
-	if err := backend.RecoverFileRewinds(context.Background(), log); err != nil {
+	log := conversation.NewStore(database)
+	if err := RecoverFileRewinds(context.Background(), log); err != nil {
 		return nil, fmt.Errorf("recover interrupted file rewind: %w", err)
 	}
 	if err := log.PruneFileCheckpoints(context.Background(), time.Now()); err != nil {
 		return nil, fmt.Errorf("prune file checkpoints: %w", err)
 	}
-	bus := broker.New[event.Event]()
+	bus := broker.New[conversation.Event]()
 	artifactStore, err := artifact.NewFileStore(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -120,8 +130,8 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	// Approval gateway and tool registry.
-	gw := approval.NewGateway(bus, log)
-	questions := question.NewGateway(bus, log)
+	gw := interaction.NewGateway(bus, log)
+	questions := interaction.NewQuestionGateway(bus, log)
 	browserController, err := browseruse.NewController(cfg.DataDir, bus, log)
 	if err != nil {
 		return nil, err
@@ -129,8 +139,8 @@ func New(cfg config.Config) (*App, error) {
 	executionRunner := sandbox.NewRunner()
 	backgroundCommands := tool.NewBackgroundCommandManager(executionRunner)
 	backgroundCommands.SetNotifier(func(snapshot tool.BackgroundCommandSnapshot) {
-		ev := event.Event{
-			Kind:    event.KindBackgroundCommandUpdated,
+		ev := conversation.Event{
+			Kind:    conversation.KindBackgroundCommandUpdated,
 			Session: snapshot.SessionID,
 			Time:    time.Now(),
 			Payload: snapshot,
@@ -144,7 +154,7 @@ func New(cfg config.Config) (*App, error) {
 	})
 	tools := tool.NewRegistry()
 	for _, canvasTool := range tool.CanvasTools(canvasStore, func(ctx context.Context, doc canvas.Document) {
-		ev := event.Event{Seq: event.Seq(doc.Revision), Kind: event.KindCanvasUpdated, Session: doc.ID, Time: time.Now(), Payload: doc}
+		ev := conversation.Event{Seq: conversation.Seq(doc.Revision), Kind: conversation.KindCanvasUpdated, Session: doc.ID, Time: time.Now(), Payload: doc}
 		_ = bus.PublishMustDeliver(ctx, "canvas:"+doc.ID, ev)
 	}) {
 		tools.Register(canvasTool)
@@ -160,15 +170,15 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewReadTasksTool(sessions))
 	tools.Register(tool.NewHistoryReadToolResult(log))
 	tools.Register(workflow.NewSubmitSpecTool(workflows))
-	tools.Register(tool.NewUpdateTasksTool(sessions, func(ctx context.Context, s *session.Session) {
-		ev := event.Event{Kind: event.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
+	tools.Register(tool.NewUpdateTasksTool(sessions, func(ctx context.Context, s *conversation.Session) {
+		ev := conversation.Event{Kind: conversation.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
 		seq, _ := log.Append(ctx, ev)
 		ev.Seq = seq
 		_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, ev)
 		record, changed, err := workflows.SyncSpecTaskProgress(s.ID, s.Tasks)
 		if err != nil {
-			failed := event.Event{
-				Kind:    event.KindError,
+			failed := conversation.Event{
+				Kind:    conversation.KindError,
 				Session: s.ID,
 				Time:    time.Now(),
 				Payload: "Failed to synchronize Spec task list: " + err.Error(),
@@ -176,8 +186,8 @@ func New(cfg config.Config) (*App, error) {
 			failed.Seq, _ = log.Append(ctx, failed)
 			_ = bus.PublishMustDeliver(ctx, "session:"+s.ID, failed)
 		} else if changed {
-			updated := event.Event{
-				Kind:    event.KindWorkflowUpdated,
+			updated := conversation.Event{
+				Kind:    conversation.KindWorkflowUpdated,
 				Session: s.ID,
 				Time:    time.Now(),
 				Payload: record,
@@ -187,7 +197,7 @@ func New(cfg config.Config) (*App, error) {
 		}
 	}))
 	homeDir, _ := os.UserHomeDir()
-	agents := agentdef.NewManager(homeDir, agentdef.BuiltinDefinitions())
+	agents := subagent.NewDefinitionManager(homeDir, subagent.BuiltinDefinitions())
 	plugins, err := plugin.NewManager(cfg.DataDir, homeDir)
 	if err != nil {
 		return nil, err
@@ -343,7 +353,7 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(subagent.NewCancelTool(subagents))
 	tools.Register(subagent.NewListTool(subagents))
 
-	be := backend.New(
+	service := NewService(
 		sessions,
 		log,
 		bus,
@@ -358,27 +368,27 @@ func New(cfg config.Config) (*App, error) {
 	// provider.json or environment variables are migrated into one default
 	// Connection so no configured endpoint is lost.
 	connections := loadConnections(cfg)
-	be.SetConnections(connections)
-	be.SetCapabilityManagers(skills, web, mcpManager)
-	be.SetPluginManager(plugins)
-	be.SetArtifactStore(artifactStore)
-	be.SetCanvasStore(canvasStore)
-	be.SetAgentManager(agents)
-	be.SetSubAgentManager(subagents)
-	be.SetProjectManager(projects)
-	be.SetContextStore(contextStore)
-	be.SetHooksHomeDir(homeDir)
-	be.SetCommandManager(command.NewManager(homeDir))
-	be.SetWorkflowManager(workflows)
-	be.SetQuestionGateway(questions)
-	be.SetBrowserController(browserController)
-	be.SetBackgroundCommandManager(backgroundCommands)
-	engine.SetWorkflowCompletionHandler(be.CompleteWorkflow)
+	service.SetConnections(connections)
+	service.SetCapabilityManagers(skills, web, mcpManager)
+	service.SetPluginManager(plugins)
+	service.SetArtifactStore(artifactStore)
+	service.SetCanvasStore(canvasStore)
+	service.SetAgentManager(agents)
+	service.SetSubAgentManager(subagents)
+	service.SetProjectManager(projects)
+	service.SetContextStore(contextStore)
+	service.SetHooksHomeDir(homeDir)
+	service.SetCommandManager(workflow.NewCommandManager(homeDir))
+	service.SetWorkflowManager(workflows)
+	service.SetQuestionGateway(questions)
+	service.SetBrowserController(browserController)
+	service.SetBackgroundCommandManager(backgroundCommands)
+	engine.SetWorkflowCompletionHandler(service.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
 	feishuManager, err := feishu.NewManager(
 		appCtx,
 		cfg.DataDir,
-		be,
+		service,
 		nil,
 		!cfg.DisableExternalIntegrations,
 	)
@@ -389,7 +399,7 @@ func New(cfg config.Config) (*App, error) {
 	automationManager, err := automation.NewManager(
 		appCtx,
 		cfg.DataDir,
-		be,
+		service,
 		!cfg.DisableExternalIntegrations,
 	)
 	if err != nil {
@@ -402,7 +412,7 @@ func New(cfg config.Config) (*App, error) {
 		sessions,
 		log,
 		contextStore,
-		be.MemoryCompleter,
+		service.MemoryCompleter,
 	)
 	if err != nil {
 		automationManager.Close()
@@ -410,18 +420,19 @@ func New(cfg config.Config) (*App, error) {
 		cancel()
 		return nil, err
 	}
-	be.SetMemoryMaintenanceWake(memoryManager.Wake)
+	service.SetMemoryMaintenanceWake(memoryManager.Wake)
 	memoryManager.Start(appCtx)
 	go mcpManager.Start(appCtx)
 	app := &App{
-		cfg: cfg, backend: be, cancel: cancel, mcp: mcpManager,
+		cfg: cfg, service: service, cancel: cancel, mcp: mcpManager,
 		memory: memoryManager, browser: browserController,
 		channels: feishuManager, automations: automationManager,
 		telemetry: telemetryProvider,
-		database:  database,
+		database:  database, instanceLock: instanceLock,
 	}
 	keepDatabase = true
 	keepTelemetry = true
+	keepInstanceLock = true
 	return app, nil
 }
 
@@ -447,7 +458,7 @@ func loadConnections(cfg config.Config) []config.Connection {
 }
 
 // buildProvider creates an OpenAI-compatible provider and its default model.
-func buildProvider(pc config.Provider) (provider.Provider, string) {
+func buildProvider(pc config.Provider) (model.Provider, string) {
 	p := openai.New(openai.Config{
 		BaseURL:       pc.BaseURL,
 		APIKey:        pc.APIKey,
@@ -457,8 +468,8 @@ func buildProvider(pc config.Provider) (provider.Provider, string) {
 	return p, pc.Model
 }
 
-// Backend exposes the transport-neutral service layer.
-func (a *App) Backend() *backend.Backend { return a.backend }
+// Service exposes the transport-neutral application layer.
+func (a *App) Service() *Service { return a.service }
 
 // Config returns kernel configuration.
 func (a *App) Config() config.Config { return a.cfg }
@@ -478,4 +489,5 @@ func (a *App) Close() {
 	defer cancel()
 	_ = a.telemetry.Shutdown(shutdownCtx)
 	_ = a.database.Close()
+	_ = a.instanceLock.Close()
 }

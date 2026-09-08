@@ -9,15 +9,14 @@ import (
 	"testing"
 
 	"github.com/freesoulcode/foya/internal/agent"
-	"github.com/freesoulcode/foya/internal/agentdef"
-	"github.com/freesoulcode/foya/internal/approval"
-	"github.com/freesoulcode/foya/internal/backend"
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/config"
-	"github.com/freesoulcode/foya/internal/event"
+	conversation "github.com/freesoulcode/foya/internal/conversation"
+	interaction "github.com/freesoulcode/foya/internal/interaction"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
 	"github.com/freesoulcode/foya/internal/project"
-	"github.com/freesoulcode/foya/internal/session"
-	"github.com/freesoulcode/foya/internal/subagent"
+	subagent "github.com/freesoulcode/foya/internal/subagent"
+
 	"github.com/freesoulcode/foya/internal/terminal"
 	"github.com/freesoulcode/foya/internal/tool"
 )
@@ -40,11 +39,11 @@ Research this project.
 
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	prov := idleProvider{}
 	engine := agent.NewEngine(log, bus, sessions, prov, "fallback", tool.NewRegistry(), gateway)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions, log, bus, engine, gateway, terminal.NewManager(),
 		nil, config.Provider{}, t.TempDir(),
 	)
@@ -57,10 +56,10 @@ Research this project.
 		t.Fatal(err)
 	}
 	be.SetProjectManager(projects)
-	be.SetAgentManager(agentdef.NewManager(home, agentdef.BuiltinDefinitions()))
+	be.SetAgentManager(subagent.NewDefinitionManager(home, subagent.BuiltinDefinitions()))
 	handler := New(config.Config{}, be).Handler()
 
-	var global []agentdef.Definition
+	var global []subagent.Definition
 	if code := requestJSON(t, handler, http.MethodGet, "/agents", nil, &global); code != http.StatusOK {
 		t.Fatalf("global agents status = %d", code)
 	}
@@ -68,7 +67,7 @@ Research this project.
 		t.Fatalf("global agents = %#v", global)
 	}
 
-	var scoped []agentdef.Definition
+	var scoped []subagent.Definition
 	if code := requestJSON(
 		t, handler, http.MethodGet, "/projects/"+created.ID+"/agents", nil, &scoped,
 	); code != http.StatusOK {
@@ -83,12 +82,12 @@ func TestAgentLimitsRoutesPersistAndApplySettings(t *testing.T) {
 	dataDir := t.TempDir()
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log, bus, sessions, idleProvider{}, "fallback", tool.NewRegistry(), gateway,
 	)
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := subagent.NewDefinitionManager("", subagent.BuiltinDefinitions())
 	manager := subagent.NewManager(
 		definitions, sessions, engine, log, log, bus, nil,
 		subagent.Limits{
@@ -97,7 +96,7 @@ func TestAgentLimitsRoutesPersistAndApplySettings(t *testing.T) {
 			MaxChildrenPerRoot:   config.InternalMaxChildrenPerRoot,
 		},
 	)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions, log, bus, engine, gateway, terminal.NewManager(),
 		nil, config.Provider{}, dataDir,
 	)
@@ -156,14 +155,14 @@ func TestAgentLimitsRoutesPersistAndApplySettings(t *testing.T) {
 func TestAgentLimitsChildSafetyStillEnforced(t *testing.T) {
 	dataDir := t.TempDir()
 	sessions := newTestSessionManager(t)
-	parent, _ := sessions.Create(session.CreateOptions{Model: "model"})
+	parent, _ := sessions.Create(conversation.CreateOptions{Model: "model"})
 	log := newTestStore(t)
-	bus := broker.New[event.Event]()
-	gateway := approval.NewGateway(bus, log)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
 	engine := agent.NewEngine(
 		log, bus, sessions, idleProvider{}, "fallback", tool.NewRegistry(), gateway,
 	)
-	definitions := agentdef.NewManager("", agentdef.BuiltinDefinitions())
+	definitions := subagent.NewDefinitionManager("", subagent.BuiltinDefinitions())
 	manager := subagent.NewManager(
 		definitions, sessions, engine, log, log, bus, nil,
 		subagent.Limits{
@@ -172,7 +171,7 @@ func TestAgentLimitsChildSafetyStillEnforced(t *testing.T) {
 			MaxChildrenPerRoot:   3,
 		},
 	)
-	be := backend.New(
+	be := kernel.NewService(
 		sessions, log, bus, engine, gateway, terminal.NewManager(),
 		nil, config.Provider{}, dataDir,
 	)
