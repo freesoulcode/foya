@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, nextTick } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { PanelRightIcon } from "@lucide/vue";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
-import { useWorkbar } from "@/composables/useWorkbar";
+import { useWorkbarStore } from "@/stores/workbar";
 import type { Session } from "@/lib/api";
 import ExternalEditorButton from "@/components/workbar/ExternalEditorButton.vue";
 
@@ -21,7 +22,9 @@ const emit = defineEmits<{
 
 const { isMac, showCustomWindowControls } = usePlatform();
 const { state } = useSidebar();
-const { open: workbarOpen, toggle: toggleWorkbar } = useWorkbar();
+const workbarStore = useWorkbarStore();
+const { open: workbarOpen } = storeToRefs(workbarStore);
+const { toggle: toggleWorkbar } = workbarStore;
 
 const isCollapsed = computed(() => state.value === "collapsed");
 

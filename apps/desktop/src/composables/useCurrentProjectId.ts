@@ -1,10 +1,14 @@
 import { computed } from "vue";
-import { useKernel } from "@/composables/useKernel";
+import { storeToRefs } from "pinia";
+import { useSessionStore } from "@/stores/session";
 
 export function useCurrentProjectId() {
-  const { activeSession, draft, isDraft } = useKernel();
+  const sessionStore = useSessionStore();
+  const { activeSession, isDraft } = storeToRefs(sessionStore);
 
   return computed(() =>
-    isDraft.value ? draft.projectID : activeSession.value?.project_id ?? ""
+    isDraft.value
+      ? sessionStore.draft.projectID
+      : activeSession.value?.project_id ?? ""
   );
 }

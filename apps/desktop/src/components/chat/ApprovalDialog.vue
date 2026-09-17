@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { ShieldAlertIcon } from "@lucide/vue";
 import {
@@ -11,10 +12,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { useKernel } from "@/composables/useKernel";
 import { localizeRuntimeText } from "@/i18n";
+import { useInteractionStore } from "@/stores/interaction";
+import { useSessionStore } from "@/stores/session";
 
-const { activeId, pendingApprovals, resolveApproval } = useKernel();
+const { activeId } = storeToRefs(useSessionStore());
+const interactionStore = useInteractionStore();
+const { pendingApprovals } = storeToRefs(interactionStore);
+const { resolveApproval } = interactionStore;
 const { t } = useI18n();
 
 const open = computed({

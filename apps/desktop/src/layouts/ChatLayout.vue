@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { RouterView, useRoute, useRouter } from "vue-router";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useKernel } from "@/composables/useKernel";
+import { useConversationStore } from "@/stores/conversation";
 import { useLinkPreference } from "@/composables/useLinkPreference";
 import { usePlatform } from "@/composables/usePlatform";
-import { useWorkbar } from "@/composables/useWorkbar";
+import { useRoutedSelection } from "@/composables/useRoutedSelection";
+import { useWorkbarStore } from "@/stores/workbar";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   api,
@@ -24,22 +26,35 @@ import ChatSidebar from "@/layouts/chat/ChatSidebar.vue";
 import MessageList from "@/components/chat/MessageList.vue";
 import ProjectCreateDialog from "@/components/projects/ProjectCreateDialog.vue";
 import WorkbarPanel from "@/components/workbar/WorkbarPanel.vue";
-import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
+import {
+  provideChatWorkspace,
+  type ChatWorkspaceContext,
+} from "@/layouts/chatWorkspace";
+import {
+  RouteName,
+  chatLocation,
+  newChatLocation,
+  studioLocation,
+} from "@/router/navigation";
 
 const router = useRouter();
 const route = useRoute();
 const { t } = useI18n();
 const { isMac } = usePlatform();
+const workbarStore = useWorkbarStore();
+const { open: workbarOpen } = storeToRefs(workbarStore);
 const {
-  open: workbarOpen,
   openFile: openWorkbarFile,
   openBrowser: openWorkbarBrowser,
   openAgentBrowser,
   openBackgroundCommand: openWorkbarBackgroundCommand,
   setActiveSession: setActiveWorkbarSession,
   removeSession: removeWorkbarSession,
-} = useWorkbar();
+} = workbarStore;
 const { linkOpenMode } = useLinkPreference();
+const conversationStore = useConversationStore();
+const { draft: _draft, ...conversationRefs } = storeToRefs(conversationStore);
+const draft = conversationStore.draft;
 
 const {
   ready,
@@ -54,7 +69,6 @@ const {
   activeId,
   activeSession,
   isDraft,
-  draft,
   connectionModels,
   modelsLoading,
   modelsError,
@@ -68,6 +82,8 @@ const {
   pendingBrowserActions,
   pendingHistoryRewind,
   composerRestore,
+} = conversationRefs;
+const {
   newSession,
   select,
   send,
@@ -97,7 +113,7 @@ const {
   refreshConnections,
   refreshProjects,
   registerProject,
-} = useKernel();
+} = conversationStore;
 
 const projectCreateOpen = ref(false);
 const projectCreateBusy = ref(false);
@@ -107,11 +123,35 @@ const activeTurn = ref(0);
 const questionPanelExpanded = ref(false);
 const pendingBrowserElements = ref<BrowserElementSelection[]>([]);
 const sessionDeleteDialogOpen = ref(false);
-const automationsActive = computed(() => route.name === "automations");
+const automationsActive = computed(() => route.name === RouteName.automations);
 const pluginsActive = computed(
-  () => route.name === "plugins" || route.name === "plugin-detail"
+  () =>
+    route.name === RouteName.plugins ||
+    route.name === RouteName.pluginDetail
 );
-const workspacePageActive = computed(() => route.name !== "chat");
+const chatPageActive = computed(
+  () =>
+    route.name === RouteName.chat ||
+    route.name === RouteName.chatDraft
+);
+const workspacePageActive = computed(() => !chatPageActive.value);
+
+useRoutedSelection({
+  ready,
+  routeNames: [RouteName.chat, RouteName.chatDraft],
+  paramName: "sessionId",
+  activeId,
+  emptyRoute: () =>
+    route.name === RouteName.chatDraft ? "clear" : "active",
+  exists: (sessionId) =>
+    sessions.value.some((session) => session.id === sessionId),
+  select,
+  clear: newSession,
+  location: chatLocation,
+  onError: (error) => {
+    console.error("Failed to select routed chat:", error);
+  },
+});
 
 // Each user message starts a turn; its leading text becomes the summary.
 const TURN_LABEL_MAX = 40;
@@ -392,14 +432,13 @@ async function onCreateProject(input: { name: string; path: string }) {
   }
 }
 
-function onNewSession(projectID?: string) {
-  if (workspacePageActive.value) void router.push("/chat");
+async function onNewSession(projectID?: string) {
+  await router.push(newChatLocation());
   newSession(projectID);
 }
 
 function onSelectSession(id: string) {
-  if (workspacePageActive.value) void router.push("/chat");
-  select(id);
+  void router.push(chatLocation(id));
 }
 
 function onApprovalChange(value: ApprovalMode) {
@@ -421,7 +460,6 @@ function onPin(id: string, pinned: boolean) {
 }
 
 function onFork(id: string) {
-  if (workspacePageActive.value) void router.push("/chat");
   void forkSession(id).catch((error) => {
     console.error("Failed to fork chat:", error);
   });
@@ -461,19 +499,19 @@ async function onPinProject(id: string, pinned: boolean) {
 }
 
 function openSettings() {
-  void router.push("/settings/connections");
+  void router.push({ name: RouteName.settingsConnections });
 }
 
 function openStudio() {
-  void router.push("/studio");
+  void router.push(studioLocation());
 }
 
 function openAutomations() {
-  void router.push("/automations");
+  void router.push({ name: RouteName.automations });
 }
 
 function openPlugins() {
-  void router.push("/plugins");
+  void router.push({ name: RouteName.plugins });
 }
 
 const viewContext: ChatWorkspaceContext = {
@@ -544,6 +582,8 @@ const viewContext: ChatWorkspaceContext = {
   clearBrowserElements,
   restoreBrowserElements,
 };
+
+provideChatWorkspace(viewContext);
 </script>
 
 <template>
@@ -583,9 +623,7 @@ const viewContext: ChatWorkspaceContext = {
           :project-path="projectPath"
           @rename="onRename"
         />
-        <RouterView v-slot="{ Component }">
-          <component :is="Component" :workspace="viewContext" />
-        </RouterView>
+        <RouterView />
       </div>
 
       <WorkbarPanel

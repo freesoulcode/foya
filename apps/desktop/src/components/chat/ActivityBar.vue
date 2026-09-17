@@ -27,7 +27,7 @@ import type {
   SessionTask,
   WorkflowRecord,
 } from "@/lib/api";
-import type { PendingFileReview } from "@/composables/useKernel";
+import type { PendingFileReview } from "@/stores/conversation";
 import TaskProgress from "./TaskProgress.vue";
 import BackgroundCommandsPanel from "./BackgroundCommandsPanel.vue";
 import FileReviewBar from "./FileReviewBar.vue";

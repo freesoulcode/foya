@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { RouterView, useRouter } from "vue-router";
 import {
   ArrowLeftIcon,
@@ -43,14 +44,22 @@ import {
 } from "@/components/ui/sidebar";
 import WindowControls from "@/components/WindowControls.vue";
 import { usePlatform } from "@/composables/usePlatform";
-import { useStudioWorkspace } from "@/composables/useStudioWorkspace";
+import { useRoutedSelection } from "@/composables/useRoutedSelection";
+import { useStudioStore } from "@/stores/studio";
+import type { CanvasDocument } from "@/lib/api";
+import {
+  RouteName,
+  chatLocation,
+  studioLocation,
+} from "@/router/navigation";
 
 const router = useRouter();
 const { isMac, showCustomWindowControls } = usePlatform();
 const sidebarOpen = ref(true);
-const pendingDelete = ref<ReturnType<typeof useStudioWorkspace>["activeProject"]["value"]>(null);
-const pendingRename = ref<ReturnType<typeof useStudioWorkspace>["activeProject"]["value"]>(null);
+const pendingDelete = ref<CanvasDocument | null>(null);
+const pendingRename = ref<CanvasDocument | null>(null);
 const renameValue = ref("");
+const studioStore = useStudioStore();
 const {
   projects,
   activeId,
@@ -58,11 +67,34 @@ const {
   creating,
   error,
   activeProject,
+} = storeToRefs(studioStore);
+const {
+  ensureLoaded,
   createProject,
   renameProject,
   deleteProject: removeProject,
-} = useStudioWorkspace();
+} = studioStore;
 const isSidebarCollapsed = computed(() => !sidebarOpen.value);
+
+ensureLoaded();
+
+useRoutedSelection({
+  ready: () => !loading.value,
+  routeNames: RouteName.studio,
+  paramName: "canvasId",
+  activeId,
+  emptyRoute: "clear",
+  exists: (canvasId) =>
+    projects.value.some((project) => project.id === canvasId),
+  select: (canvasId) => {
+    activeId.value = canvasId;
+  },
+  location: studioLocation,
+});
+
+function selectProject(canvasId: string) {
+  void router.push(studioLocation(canvasId));
+}
 
 async function deleteProject() {
   const project = pendingDelete.value;
@@ -85,7 +117,7 @@ async function submitRename() {
 }
 
 function close() {
-  void router.push({ name: "chat" });
+  void router.push(chatLocation());
 }
 
 </script>
@@ -131,7 +163,7 @@ function close() {
                 <SidebarMenuButton
                   :is-active="activeId === project.id"
                   :tooltip="project.title"
-                  @click="activeId = project.id"
+                  @click="selectProject(project.id)"
                 >
                   <ImageIcon />
                   <span>{{ project.title }}</span>

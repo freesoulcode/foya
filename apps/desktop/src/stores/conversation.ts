@@ -1,43 +1,48 @@
-import { ref, computed, reactive } from "vue";
+import { ref, computed } from "vue";
+import { defineStore, storeToRefs } from "pinia";
 import {
   api,
   type Session,
   type ChatMessage,
-  type UpdateSessionPatch,
-  type ApprovalMode,
-  type ApprovalDecision,
-  type ReasoningEffort,
-  type ConnectionModelGroup,
   type QueuedMessage,
   type ContextUsage,
   type FileReview,
-  type RewindFile,
-  type ProjectInfo,
   type AgentRunSnapshot,
   type AgentBudget,
   type ToolCallView,
   type AttachmentRef,
   type WorkflowRecord,
   type PendingQuestionBatch,
-  type QuestionAnswer,
   type BackgroundCommand,
   type BrowserElementSelection,
   type BrowserActionRequest,
-  type DefaultModels,
 } from "@/lib/api";
 import { translate } from "@/i18n";
+import { useConnectionStore } from "@/stores/connection";
+import {
+  useInteractionStore,
+  type PendingApproval,
+} from "@/stores/interaction";
+import { useSessionStore } from "@/stores/session";
+import {
+  deleteSessionRuntime,
+  getStreamingIndex,
+  isDeletedSession,
+  restoreSessionRuntime,
+  setStreamingIndex,
+  subscribeSessionEvents,
+} from "@/services/kernelEventRuntime";
 
-// Settings selected before a draft becomes a persisted chat.
-export interface DraftConfig {
-  connectionID: string;
-  model: string;
-  reasoningEffort: ReasoningEffort;
-  projectID: string;
-  approvalMode: ApprovalMode;
+export type {
+  PendingApproval,
+  PendingHistoryRewind,
+} from "@/stores/interaction";
+
+export interface PendingFileReview extends FileReview {
+  forceFileKeys: string[];
+  submitting: boolean;
+  error: string;
 }
-
-// Default approval mode matches the kernel and prompts before risky operations.
-const DEFAULT_APPROVAL: ApprovalMode = "manual";
 
 // Public subset of Go event.Event.
 interface KernelEvent {
@@ -48,13 +53,31 @@ interface KernelEvent {
   payload?: unknown;
 }
 
-// Singleton state shared by the entire application.
-const ready = ref(false);
-const connecting = ref(false);
-const connectError = ref("");
-const sessions = ref<Session[]>([]);
-const projects = ref<ProjectInfo[]>([]);
-const activeId = ref<string>("");
+export const useConversationStore = defineStore("conversation", () => {
+  const connectionStore = useConnectionStore();
+  const sessionStore = useSessionStore();
+  const interactionStore = useInteractionStore();
+  const { ready, connecting, connectError } = storeToRefs(connectionStore);
+  const {
+    sessions,
+    projects,
+    activeId,
+    activeSession,
+    isDraft,
+    connectionModels,
+    defaultModels,
+    modelsLoading,
+    modelsError,
+  } = storeToRefs(sessionStore);
+  const draft = sessionStore.draft;
+  const {
+    pendingApprovals,
+    pendingQuestions,
+    pendingBrowserActions,
+    pendingHistoryRewind,
+    composerRestore,
+  } = storeToRefs(interactionStore);
+
 const streaming = ref(false);
 // Running state is tracked per chat, independent of the active chat.
 const runningSessions = ref<Record<string, boolean>>({});
@@ -62,94 +85,34 @@ const runningSessions = ref<Record<string, boolean>>({});
 const unreadSessions = ref<Record<string, boolean>>({});
 const compactingSessions = ref<Record<string, boolean>>({});
 
-// Draft configuration used while activeId is empty.
-const draft = reactive<DraftConfig>({
-  connectionID: "",
-  model: "",
-  reasoningEffort: "",
-  projectID: "",
-  approvalMode: DEFAULT_APPROVAL,
-});
-
-// Model catalogs grouped by connection to disambiguate identical model names.
-const connectionModels = ref<ConnectionModelGroup[]>([]);
-const modelsLoading = ref(false);
-const modelsError = ref("");
-const defaultModels = ref<DefaultModels>({
-  language: { connection_id: "", model: "" },
-  fast: { connection_id: "", model: "" },
-  image: { connection_id: "", model: "" },
-  video: { connection_id: "", model: "" },
-});
-
 // Per-chat messages and subscriptions persist across navigation.
 const messagesBySession = ref<Record<string, ChatMessage[]>>({});
-const subscribed = new Set<string>();
-const streamingIdx: Record<string, number> = {};
-// Ignore late events from deleted chats instead of rebuilding their buckets.
-const deletedSessions = new Set<string>();
 // The kernel owns queues; this state stores their SSE and GET projections.
 const queuedBySession = ref<Record<string, QueuedMessage[]>>({});
 const usageBySession = ref<Record<string, ContextUsage>>({});
 const agentRunsBySession = ref<Record<string, AgentRunSnapshot[]>>({});
 const agentBudgetBySession = ref<Record<string, AgentBudget>>({});
 const workflowsBySession = ref<Record<string, WorkflowRecord | null>>({});
-const backgroundCommandsBySession = ref<Record<string, BackgroundCommand[]>>({});
+  const backgroundCommandsBySession = ref<Record<string, BackgroundCommand[]>>(
+    {},
+  );
 const fileReviewsBySession = ref<Record<string, PendingFileReview>>({});
 
-// Pending approval requests keyed by request ID.
-export interface PendingApproval {
-  id: string;
-  session: string;
-  execution_session?: string;
-  tool_name: string;
-  action: string;
-  detail: string;
-  resource?: string;
-  scope?: string;
-}
-const pendingApprovals = ref<Record<string, PendingApproval>>({});
-const pendingQuestions = ref<Record<string, PendingQuestionBatch>>({});
-const pendingBrowserActions = ref<Record<string, BrowserActionRequest>>({});
-
-export interface PendingHistoryRewind {
-  sessionId: string;
-  messageSeq: number;
-  message: string;
-  files: RewindFile[];
-  headSeq: number;
-  fileStateToken: string;
-  forceFileKeys: string[];
-  submitting?: boolean;
-  error?: string;
-}
-const pendingHistoryRewind = ref<PendingHistoryRewind | null>(null);
-
-export interface PendingFileReview extends FileReview {
-  forceFileKeys: string[];
-  submitting: boolean;
-  error: string;
-}
-
-const composerRestore = ref<{ sessionId: string; text: string; nonce: number } | null>(null);
-let composerRestoreNonce = 0;
-
-const activeMessages = computed<ChatMessage[]>(() => messagesBySession.value[activeId.value] ?? []);
+  const activeMessages = computed<ChatMessage[]>(
+    () => messagesBySession.value[activeId.value] ?? [],
+  );
 const activeQueuedMessages = computed<QueuedMessage[]>(
-  () => queuedBySession.value[activeId.value] ?? []
+    () => queuedBySession.value[activeId.value] ?? [],
 );
 const activeUsage = computed<ContextUsage | undefined>(
-  () => usageBySession.value[activeId.value]
+    () => usageBySession.value[activeId.value],
 );
 const activeBackgroundCommands = computed<BackgroundCommand[]>(
-  () => backgroundCommandsBySession.value[activeId.value] ?? []
+    () => backgroundCommandsBySession.value[activeId.value] ?? [],
 );
 const activeFileReview = computed<PendingFileReview | undefined>(
-  () => fileReviewsBySession.value[activeId.value]
+    () => fileReviewsBySession.value[activeId.value],
 );
-const activeSession = computed(() => sessions.value.find((s) => s.id === activeId.value));
-const isDraft = computed(() => activeId.value === "");
-
 function ensureBucket(id: string) {
   if (!messagesBySession.value[id]) messagesBySession.value[id] = [];
 }
@@ -162,7 +125,10 @@ function findLastAssistantIdx(bucket: ChatMessage[]): number {
   return -1;
 }
 
-function matchingAgentTools(sessionId: string, toolCallId?: string): ToolCallView[] {
+  function matchingAgentTools(
+    sessionId: string,
+    toolCallId?: string,
+  ): ToolCallView[] {
   if (!toolCallId) return [];
   const tools: ToolCallView[] = [];
   for (const msg of messagesBySession.value[sessionId] ?? []) {
@@ -178,7 +144,10 @@ function matchingAgentTools(sessionId: string, toolCallId?: string): ToolCallVie
   return tools;
 }
 
-async function hydrateAgentRun(parentSessionId: string, run: AgentRunSnapshot) {
+  async function hydrateAgentRun(
+    parentSessionId: string,
+    run: AgentRunSnapshot,
+  ) {
   const runs = agentRunsBySession.value[parentSessionId] ?? [];
   const index = runs.findIndex((item) => item.id === run.id);
   if (index >= 0) runs[index] = run;
@@ -206,13 +175,19 @@ async function hydrateAgentRun(parentSessionId: string, run: AgentRunSnapshot) {
 }
 
 // Ensure a message has ordered segments and return them.
-function ensureSegments(msg: ChatMessage): NonNullable<ChatMessage["segments"]> {
+  function ensureSegments(
+    msg: ChatMessage,
+  ): NonNullable<ChatMessage["segments"]> {
   if (!msg.segments) msg.segments = [];
   return msg.segments;
 }
 
 // Append a streamed delta, merging adjacent segments of the same kind.
-function appendDelta(msg: ChatMessage, kind: "reasoning" | "text", delta: string) {
+  function appendDelta(
+    msg: ChatMessage,
+    kind: "reasoning" | "text",
+    delta: string,
+  ) {
   const segs = ensureSegments(msg);
   const last = segs[segs.length - 1];
   if (last && last.kind === kind) {
@@ -231,19 +206,19 @@ function handleEvent(sessionId: string, data: string) {
     return;
   }
   // Deletion can race with delivery, so discard late events for deleted chats.
-  if (deletedSessions.has(sessionId)) return;
+    if (isDeletedSession(sessionId)) return;
   ensureBucket(sessionId);
   const bucket = messagesBySession.value[sessionId];
 
   switch (ev.kind) {
     case "message_delta": {
       const delta = ev.payload as string;
-      let idx = streamingIdx[sessionId] ?? -1;
+        let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
         // Recreate the optimistic bubble when it is missing after a reload.
         bucket.push({ role: "assistant", content: "" });
         idx = bucket.length - 1;
-        streamingIdx[sessionId] = idx;
+          setStreamingIndex(sessionId, idx);
       }
       // The first delta clears pending or error state.
       bucket[idx].error = false;
@@ -255,11 +230,11 @@ function handleEvent(sessionId: string, data: string) {
     case "reasoning_delta": {
       // Preserve repeated reasoning phases by appending ordered segments.
       const delta = ev.payload as string;
-      let idx = streamingIdx[sessionId] ?? -1;
+        let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
         bucket.push({ role: "assistant", content: "" });
         idx = bucket.length - 1;
-        streamingIdx[sessionId] = idx;
+          setStreamingIndex(sessionId, idx);
       }
       bucket[idx].error = false;
       appendDelta(bucket[idx], "reasoning", delta);
@@ -274,7 +249,7 @@ function handleEvent(sessionId: string, data: string) {
         bucket.push(m);
         break;
       }
-      const idx = streamingIdx[sessionId] ?? -1;
+        const idx = getStreamingIndex(sessionId);
       if (m.role === "assistant" && idx >= 0) {
         bucket[idx].event_seq = m.event_seq;
         // Prefer accumulated deltas and use the final payload as a fallback.
@@ -283,18 +258,26 @@ function handleEvent(sessionId: string, data: string) {
           appendDelta(bucket[idx], "text", m.content);
         }
         // Restore reasoning from the final payload if no delta was received.
-        if (m.reasoning && !bucket[idx].segments?.some((s) => s.kind === "reasoning")) {
-          ensureSegments(bucket[idx]).unshift({ kind: "reasoning", text: m.reasoning });
+          if (
+            m.reasoning &&
+            !bucket[idx].segments?.some((s) => s.kind === "reasoning")
+          ) {
+            ensureSegments(bucket[idx]).unshift({
+              kind: "reasoning",
+              text: m.reasoning,
+            });
         }
-        if (m.turn_started_at) bucket[idx].turn_started_at = m.turn_started_at;
-        if (m.turn_completed_at) bucket[idx].turn_completed_at = m.turn_completed_at;
+          if (m.turn_started_at)
+            bucket[idx].turn_started_at = m.turn_started_at;
+          if (m.turn_completed_at)
+            bucket[idx].turn_completed_at = m.turn_completed_at;
         if (m.turn_status) bucket[idx].turn_status = m.turn_status;
         if (m.turn_reason) bucket[idx].turn_reason = m.turn_reason;
         bucket[idx].error = false;
         // Tool-call messages do not end the turn. Keep the same streaming slot
         // so later deltas remain in one bubble; turn_complete or error resets it.
         if (!m.tool_calls) {
-          streamingIdx[sessionId] = -1;
+            setStreamingIndex(sessionId, -1);
         }
       }
       // Tool results are rendered from tool_end events.
@@ -304,10 +287,10 @@ function handleEvent(sessionId: string, data: string) {
       const p = ev.payload as { target_user_seq?: number };
       const target = Number(p?.target_user_seq ?? 0);
       const index = bucket.findIndex(
-        (message) => message.role === "user" && message.event_seq === target
+          (message) => message.role === "user" && message.event_seq === target,
       );
       if (index >= 0) bucket.splice(index);
-      streamingIdx[sessionId] = -1;
+        setStreamingIndex(sessionId, -1);
       delete usageBySession.value[sessionId];
       void refreshFileReview(sessionId);
       break;
@@ -380,7 +363,7 @@ function handleEvent(sessionId: string, data: string) {
       if (p.diff) tc.diff = p.diff;
       if (p.attachments) tc.attachments = p.attachments;
       const seg = msg.segments?.find(
-        (s) => s.kind === "tool" && s.tool.id === p.id
+          (s) => s.kind === "tool" && s.tool.id === p.id,
       );
       if (seg && seg.kind === "tool") {
         if (p.name) seg.tool.name = p.name;
@@ -413,7 +396,7 @@ function handleEvent(sessionId: string, data: string) {
         }
         // Segments and tool_calls hold different object references.
         const seg = bucket[asstIdx].segments?.find(
-          (s) => s.kind === "tool" && s.tool.id === p.id
+            (s) => s.kind === "tool" && s.tool.id === p.id,
         );
         if (seg && seg.kind === "tool") {
           seg.tool.status = p.is_error ? "error" : "done";
@@ -444,42 +427,42 @@ function handleEvent(sessionId: string, data: string) {
     }
     case "approval_request": {
       const p = ev.payload as PendingApproval;
-      pendingApprovals.value[p.id] = p;
+        interactionStore.requestApproval(p);
       break;
     }
     case "approval_resolved": {
       const p = ev.payload as { id: string };
-      delete pendingApprovals.value[p.id];
+        interactionStore.resolveApprovalEvent(p.id);
       break;
     }
     case "question_requested": {
       const p = ev.payload as PendingQuestionBatch;
-      if (p?.id && p.questions?.length) pendingQuestions.value[p.id] = p;
+        interactionStore.requestQuestions(p);
       break;
     }
     case "question_resolved": {
       const p = ev.payload as { id?: string };
-      if (p?.id) delete pendingQuestions.value[p.id];
+        if (p?.id) interactionStore.resolveQuestionsEvent(p.id);
       break;
     }
     case "browser_action_requested": {
       const action = ev.payload as BrowserActionRequest;
-      if (action?.id) pendingBrowserActions.value[action.id] = action;
+        interactionStore.requestBrowserAction(action);
       break;
     }
     case "browser_action_resolved": {
       const result = ev.payload as { id?: string };
-      if (result?.id) delete pendingBrowserActions.value[result.id];
+        if (result?.id) interactionStore.resolveBrowserActionEvent(result.id);
       break;
     }
     case "turn_started": {
       const p = ev.payload as { started_at?: string } | null;
       runningSessions.value[sessionId] = true;
-      let idx = streamingIdx[sessionId] ?? -1;
+        let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
         bucket.push({ role: "assistant", content: "" });
         idx = bucket.length - 1;
-        streamingIdx[sessionId] = idx;
+          setStreamingIndex(sessionId, idx);
       }
       bucket[idx].turn_started_at = p?.started_at ?? ev.time;
       if (sessionId === activeId.value) streaming.value = true;
@@ -492,8 +475,11 @@ function handleEvent(sessionId: string, data: string) {
         status?: ChatMessage["turn_status"];
         reason?: string;
       } | null;
-      const streamingMessageIdx = streamingIdx[sessionId] ?? -1;
-      const idx = streamingMessageIdx >= 0 ? streamingMessageIdx : findLastAssistantIdx(bucket);
+        const streamingMessageIdx = getStreamingIndex(sessionId);
+        const idx =
+          streamingMessageIdx >= 0
+            ? streamingMessageIdx
+            : findLastAssistantIdx(bucket);
       if (idx >= 0) {
         bucket[idx].turn_started_at ??= p?.started_at ?? ev.time;
         bucket[idx].turn_completed_at = p?.completed_at ?? ev.time;
@@ -509,7 +495,7 @@ function handleEvent(sessionId: string, data: string) {
           turn_reason: p.reason,
         });
       }
-      streamingIdx[sessionId] = -1;
+        setStreamingIndex(sessionId, -1);
       delete runningSessions.value[sessionId];
       if (sessionId === activeId.value) {
         streaming.value = false;
@@ -551,8 +537,7 @@ function handleEvent(sessionId: string, data: string) {
       // Replace updated chat metadata by ID.
       const updated = ev.payload as Session;
       if (updated && updated.id) {
-        const idx = sessions.value.findIndex((s) => s.id === updated.id);
-        if (idx >= 0) sessions.value[idx] = { ...sessions.value[idx], ...updated };
+          sessionStore.mergeSession(updated);
       }
       break;
     }
@@ -571,7 +556,7 @@ function handleEvent(sessionId: string, data: string) {
       if (!command?.command_id) break;
       const current = backgroundCommandsBySession.value[sessionId] ?? [];
       const index = current.findIndex(
-        (item) => item.command_id === command.command_id
+          (item) => item.command_id === command.command_id,
       );
       if (index >= 0) {
         const next = [...current];
@@ -586,11 +571,11 @@ function handleEvent(sessionId: string, data: string) {
       // Reuse the current empty assistant bubble for errors.
       delete runningSessions.value[sessionId];
       const text = `⚠️ ${String(ev.payload)}`;
-      const idx = streamingIdx[sessionId] ?? -1;
+        const idx = getStreamingIndex(sessionId);
       if (idx >= 0) {
         bucket[idx].content = text;
         bucket[idx].error = true;
-        streamingIdx[sessionId] = -1;
+          setStreamingIndex(sessionId, -1);
       } else {
         bucket.push({ role: "assistant", content: text, error: true });
       }
@@ -602,31 +587,25 @@ function handleEvent(sessionId: string, data: string) {
 
 // Subscribe to a chat event stream idempotently.
 async function subscribe(sessionId: string) {
-  if (subscribed.has(sessionId)) return;
-  subscribed.add(sessionId);
-  streamingIdx[sessionId] = -1;
-  try {
-    await api.subscribeEvents(sessionId, (data) => handleEvent(sessionId, data));
-  } catch (error) {
-    subscribed.delete(sessionId);
-    throw error;
+    await subscribeSessionEvents(sessionId, (data) =>
+      handleEvent(sessionId, data),
+    );
   }
-}
 
 async function refreshFileReview(sessionId: string) {
   try {
     const review = await api.loadFileReview(sessionId);
-    if (deletedSessions.has(sessionId)) return;
+      if (isDeletedSession(sessionId)) return;
     const existing = fileReviewsBySession.value[sessionId];
     const availableKeys = new Set(
       review.files
         .filter((file) => file.status === "modified")
-        .map((file) => file.key)
+          .map((file) => file.key),
     );
     fileReviewsBySession.value[sessionId] = {
       ...review,
       forceFileKeys: (existing?.forceFileKeys ?? []).filter((key) =>
-        availableKeys.has(key)
+          availableKeys.has(key),
       ),
       submitting: false,
       error: "",
@@ -642,142 +621,37 @@ function refreshActiveFileReview() {
     return Promise.resolve();
   }
   return refreshFileReview(sessionId);
-}
-
-// Load every connection catalog without letting one failure block the others.
-async function refreshConnections() {
-  modelsLoading.value = true;
-  modelsError.value = "";
-  try {
-    const [allConnections, defaults] = await Promise.all([
-      api.listConnections(),
-      api.getDefaultModels(),
-    ]);
-    const connections = allConnections.filter((connection) => connection.type === "language");
-    defaultModels.value = defaults;
-    connectionModels.value = await Promise.all(
-      connections.map(async (connection) => {
-        try {
-          const catalog = await api.listConnectionModels(connection.id ?? "");
-          return { ...connection, ...catalog };
-        } catch (cause) {
-          return {
-            ...connection,
-            models: [],
-            context_windows: {},
-            models_error: String(cause),
-          };
-        }
-      })
-    );
-    if (isDraft.value && !draft.connectionID) {
-      const preferred = defaultModels.value.language;
-      const first = connectionModels.value.find(
-        (connection) => connection.id === preferred.connection_id &&
-          connection.models.includes(preferred.model)
-      ) ?? connectionModels.value.find(
-        (connection) => connection.type === "language" && connection.models.length > 0
-      );
-      if (first) {
-        draft.connectionID = first.id ?? "";
-        draft.model = first.id === preferred.connection_id
-          ? preferred.model
-          : first.models[0] || "";
       }
-    }
-  } catch (e) {
-    connectionModels.value = [];
-    modelsError.value = String(e);
-  } finally {
-    modelsLoading.value = false;
-  }
-}
-
-async function registerProject(path: string, name = ""): Promise<ProjectInfo> {
-  const project = await api.registerProject(path, name);
-  const index = projects.value.findIndex((item) => item.id === project.id);
-  if (index >= 0) projects.value[index] = project;
-  else projects.value.unshift(project);
-  return project;
-}
-
-async function refreshProjects() {
-  projects.value = await api.listProjects();
-  if (
-    isDraft.value &&
-    draft.projectID &&
-    !projects.value.some((project) => project.id === draft.projectID)
-  ) {
-    draft.projectID = "";
-  }
-}
-
-async function listSessionsWhenKernelReady(): Promise<Session[]> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await api.listSessions();
-    } catch (error) {
-      const message = String(error);
-      const connectionError =
-        message.includes("Failed to connect to kernel") ||
-        message.includes("client error (Connect)") ||
-        message === translate("Unable to connect to the kernel");
-      if (!connectionError) {
-        throw error;
-      }
-      await new Promise((resolve) =>
-        window.setTimeout(resolve, Math.min(1000, 250 + Math.floor(attempt / 20) * 250))
-      );
-    }
-  }
-}
 
 // Wait for the sidecar, load chats, and select an existing chat or draft.
 async function connect() {
   if (ready.value || connecting.value) return;
-  connecting.value = true;
-  connectError.value = "";
+    connectionStore.beginConnecting();
   try {
-    sessions.value = await listSessionsWhenKernelReady();
-    projects.value = await api.listProjects();
-    sessions.value.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      await sessionStore.loadInitialData();
     if (sessions.value.length > 0) {
       await select(sessions.value[0].id);
     } else {
-      activeId.value = "";
+        sessionStore.setActive("");
       ensureBucket("");
     }
-    ready.value = true;
+      connectionStore.markReady();
     // Load model catalogs after the kernel connection is ready.
-    void refreshConnections();
+      void sessionStore.refreshConnections();
   } catch (e) {
     // Surface startup failures so missing commands and kernel issues are visible.
-    connectError.value = String(e);
+      connectionStore.fail(e);
     console.error("Failed to connect to kernel:", e);
   } finally {
-    connecting.value = false;
+      connectionStore.finishConnecting();
   }
 }
 
 // Enter draft state without creating a chat until the first message is sent.
 function newSession(projectID = "") {
-  activeId.value = "";
+    sessionStore.resetDraft(projectID);
   ensureBucket("");
   streaming.value = false;
-  const preferred = defaultModels.value.language;
-  const first = connectionModels.value.find(
-    (connection) => connection.id === preferred.connection_id &&
-      connection.models.includes(preferred.model)
-  ) ?? connectionModels.value.find(
-    (connection) => connection.type === "language" && connection.models.length > 0
-  );
-  draft.connectionID = first?.id ?? "";
-  draft.model = first?.id === preferred.connection_id
-    ? preferred.model
-    : first?.models[0] || "";
-  draft.reasoningEffort = "";
-  draft.projectID = projectID;
-  draft.approvalMode = DEFAULT_APPROVAL;
 }
 
 // Fold flat backend history into assistant bubbles with ordered segments.
@@ -828,7 +702,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       if (cur) {
         if (m.event_seq) cur.event_seq = m.event_seq;
         const seg = cur.segments!.find(
-          (s) => s.kind === "tool" && s.tool.id === m.tool_call_id
+            (s) => s.kind === "tool" && s.tool.id === m.tool_call_id,
         );
         if (seg && seg.kind === "tool") {
           seg.tool.output = m.content;
@@ -855,10 +729,13 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
 
 // Load history and subscribe the first time a chat is opened.
 async function select(id: string) {
-  activeId.value = id;
+    sessionStore.setActive(id);
   delete unreadSessions.value[id];
   streaming.value = Boolean(runningSessions.value[id]);
-  if (!messagesBySession.value[id] || messagesBySession.value[id].length === 0) {
+    if (
+      !messagesBySession.value[id] ||
+      messagesBySession.value[id].length === 0
+    ) {
     const history = await api.loadHistory(id);
     messagesBySession.value[id] = normalizeHistory(history);
   }
@@ -902,33 +779,13 @@ async function select(id: string) {
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
-// Persist mutable chat settings and update the local projection.
-async function updateSession(id: string, patch: UpdateSessionPatch) {
-  const updated = await api.updateSession(id, patch);
-  const idx = sessions.value.findIndex((s) => s.id === id);
-  if (idx >= 0) sessions.value[idx] = updated;
-  return updated;
-}
-
-// Manual renames prevent generated titles from replacing the value.
-async function renameSession(id: string, title: string) {
-  return updateSession(id, { title });
-}
-
-// Persist a pin change and replace the local chat.
-async function pinSession(id: string, pinned: boolean) {
-  return updateSession(id, { pinned });
-}
-
 async function forkSession(id: string, throughSeq?: number) {
   const forked = await api.forkSession(
     id,
-    throughSeq ? { through_seq: throughSeq } : undefined
+      throughSeq ? { through_seq: throughSeq } : undefined,
   );
-  deletedSessions.delete(forked.id);
-  const existing = sessions.value.findIndex((s) => s.id === forked.id);
-  if (existing >= 0) sessions.value[existing] = forked;
-  else sessions.value.unshift(forked);
+    restoreSessionRuntime(forked.id);
+    sessionStore.upsertSession(forked, true);
   const history = await api.loadHistory(forked.id);
   messagesBySession.value[forked.id] = normalizeHistory(history);
   await select(forked.id);
@@ -937,32 +794,23 @@ async function forkSession(id: string, throughSeq?: number) {
 
 // Remove local chat state and select another chat or enter draft state.
 function removeSession(id: string) {
-  deletedSessions.add(id);
-  const idx = sessions.value.findIndex((s) => s.id === id);
-  if (idx >= 0) sessions.value.splice(idx, 1);
+    deleteSessionRuntime(id);
+    sessionStore.removeSessionRecord(id);
   delete messagesBySession.value[id];
   delete queuedBySession.value[id];
   delete usageBySession.value[id];
-  subscribed.delete(id);
-  delete streamingIdx[id];
   delete runningSessions.value[id];
   delete unreadSessions.value[id];
   delete compactingSessions.value[id];
   delete backgroundCommandsBySession.value[id];
   delete fileReviewsBySession.value[id];
-  // Clear pending approvals for this chat.
-  for (const [aid, a] of Object.entries(pendingApprovals.value)) {
-    if (a.session === id) delete pendingApprovals.value[aid];
-  }
-  for (const [batchID, batch] of Object.entries(pendingQuestions.value)) {
-    if (batch.session_id === id) delete pendingQuestions.value[batchID];
-  }
+    interactionStore.clearSession(id);
   if (activeId.value === id) {
     const next = sessions.value[0];
     if (next) {
       void select(next.id);
     } else {
-      activeId.value = "";
+        sessionStore.setActive("");
       streaming.value = false;
       ensureBucket("");
     }
@@ -973,30 +821,6 @@ function removeSession(id: string) {
 async function deleteSession(id: string) {
   await api.deleteSession(id);
   removeSession(id);
-}
-
-// Resolve an approval request.
-async function resolveApproval(
-  sessionId: string,
-  requestId: string,
-  decision: ApprovalDecision
-) {
-  await api.resolveApproval(sessionId, requestId, decision);
-  delete pendingApprovals.value[requestId];
-}
-
-async function answerQuestions(
-  sessionId: string,
-  batchId: string,
-  answers: QuestionAnswer[]
-) {
-  await api.answerQuestions(sessionId, batchId, answers);
-  delete pendingQuestions.value[batchId];
-}
-
-async function cancelQuestions(sessionId: string, batchId: string) {
-  await api.cancelQuestions(sessionId, batchId);
-  delete pendingQuestions.value[batchId];
 }
 
 // Stop the active turn while preserving and pausing its queued messages.
@@ -1021,7 +845,7 @@ async function cancelTool(toolCallId: string) {
 }
 
 async function backgroundTool(
-  toolCallId: string
+    toolCallId: string,
 ): Promise<BackgroundCommand | undefined> {
   const id = activeId.value;
   if (!id) return undefined;
@@ -1055,7 +879,10 @@ async function backgroundTool(
       } catch (error) {
         lastError = error;
         const message = String(error);
-        if (!message.includes("409") && !message.includes("tool_not_running")) {
+          if (
+            !message.includes("409") &&
+            !message.includes("tool_not_running")
+          ) {
           throw error;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 50));
@@ -1068,7 +895,7 @@ async function backgroundTool(
       ...current.filter(
         (item) =>
           item.command_id !== pendingId &&
-          item.command_id !== backgroundCommand.command_id
+            item.command_id !== backgroundCommand.command_id,
       ),
     ];
     return backgroundCommand;
@@ -1082,7 +909,7 @@ async function backgroundTool(
 }
 
 async function revealToolCommand(
-  toolCallId: string
+    toolCallId: string,
 ): Promise<BackgroundCommand | undefined> {
   const id = activeId.value;
   if (!id) return undefined;
@@ -1110,9 +937,7 @@ async function stopBackgroundCommand(commandId: string) {
     await api.stopBackgroundCommand(id, commandId);
     backgroundCommandsBySession.value[id] = (
       backgroundCommandsBySession.value[id] ?? []
-    ).filter(
-      (item) => item.command_id !== commandId
-    );
+      ).filter((item) => item.command_id !== commandId);
   } catch (e) {
     console.error("Failed to stop background command:", e);
   }
@@ -1128,10 +953,10 @@ async function ensureSession(): Promise<string> {
     project_id: draft.projectID || undefined,
     approval_mode: draft.approvalMode,
   });
-  sessions.value.unshift(s);
+    sessionStore.upsertSession(s, true);
   messagesBySession.value[s.id] = messagesBySession.value[""] ?? [];
   delete messagesBySession.value[""];
-  activeId.value = s.id;
+    sessionStore.setActive(s.id);
   await subscribe(s.id);
   queuedBySession.value[s.id] = [];
   return s.id;
@@ -1144,12 +969,17 @@ async function send(
   files: File[] = [],
   browserElements: BrowserElementSelection[] = [],
   skillRef = "",
-  restore?: () => void
+    restore?: () => void,
 ) {
-  if (!text.trim() && files.length === 0 && browserElements.length === 0) return;
+    if (!text.trim() && files.length === 0 && browserElements.length === 0)
+      return;
 
   let id = activeId.value;
-  if (text.trim() === "/compact" && files.length === 0 && browserElements.length === 0) {
+    if (
+      text.trim() === "/compact" &&
+      files.length === 0 &&
+      browserElements.length === 0
+    ) {
     if (!id) return;
     try {
       await api.compactSession(id);
@@ -1157,7 +987,9 @@ async function send(
       ensureBucket(id);
       messagesBySession.value[id].push({
         role: "assistant",
-        content: translate("Compaction failed: {error}", { error: String(e) }),
+          content: translate("Compaction failed: {error}", {
+            error: String(e),
+          }),
         error: true,
       });
     }
@@ -1176,7 +1008,7 @@ async function send(
       text,
       uploaded,
       browserElements,
-      skillRef
+        skillRef,
     );
     if (result.status === "queued" && result.queued) {
       const current = queuedBySession.value[id] ?? [];
@@ -1187,7 +1019,9 @@ async function send(
   } catch (e) {
     restore?.();
     if (id) {
-      await Promise.allSettled(uploaded.map((item) => api.deleteArtifact(id, item.id)));
+        await Promise.allSettled(
+          uploaded.map((item) => api.deleteArtifact(id, item.id)),
+        );
       ensureBucket(id);
       messagesBySession.value[id].push({
         role: "assistant",
@@ -1205,7 +1039,7 @@ async function rewindSentMessage(messageSeq: number) {
   if (!id || streaming.value) return;
   try {
     const result = await api.rewindTurn(id, messageSeq);
-    pendingHistoryRewind.value = {
+      interactionStore.setPendingHistoryRewind({
       sessionId: id,
       messageSeq,
       message: result.message,
@@ -1213,9 +1047,9 @@ async function rewindSentMessage(messageSeq: number) {
       headSeq: result.head_seq,
       fileStateToken: result.file_state_token,
       forceFileKeys: [],
-    };
+      });
   } catch (error) {
-    pendingHistoryRewind.value = {
+      interactionStore.setPendingHistoryRewind({
       sessionId: id,
       messageSeq,
       message: "",
@@ -1224,7 +1058,7 @@ async function rewindSentMessage(messageSeq: number) {
       fileStateToken: "",
       forceFileKeys: [],
       error: translate("Rewind failed: {error}", { error: String(error) }),
-    };
+      });
   }
 }
 
@@ -1240,41 +1074,35 @@ async function confirmHistoryRewind() {
       true,
       pending.headSeq,
       pending.fileStateToken,
-      pending.forceFileKeys
+        pending.forceFileKeys,
     );
-    pendingHistoryRewind.value = null;
+      interactionStore.setPendingHistoryRewind(null);
     if (activeId.value !== pending.sessionId) {
       await select(pending.sessionId);
     }
-    composerRestore.value = {
-      sessionId: pending.sessionId,
-      text: result.message || pending.message,
-      nonce: ++composerRestoreNonce,
-    };
+      interactionStore.restoreComposer(
+        pending.sessionId,
+        result.message || pending.message,
+      );
   } catch (error) {
     pending.submitting = false;
-    pending.error = translate("Rewind failed: {error}", { error: String(error) });
+      pending.error = translate("Rewind failed: {error}", {
+        error: String(error),
+      });
   }
 }
 
 function cancelHistoryRewind() {
-  pendingHistoryRewind.value = null;
+    interactionStore.cancelHistoryRewind();
 }
 
 function toggleHistoryRewindForceFile(key: string) {
-  const pending = pendingHistoryRewind.value;
-  if (!pending || pending.submitting) return;
-  const selected = new Set(pending.forceFileKeys);
-  if (selected.has(key)) selected.delete(key);
-  else selected.add(key);
-  pending.forceFileKeys = [...selected];
+    interactionStore.toggleHistoryRewindForceFile(key);
 }
 
 function consumeComposerRestore(nonce: number) {
-  if (composerRestore.value?.nonce === nonce) {
-    composerRestore.value = null;
+    interactionStore.consumeComposerRestore(nonce);
   }
-}
 
 function toggleFileReviewForceFile(key: string) {
   const review = activeFileReview.value;
@@ -1288,7 +1116,8 @@ function toggleFileReviewForceFile(key: string) {
 async function resolveActiveFileReview(action: "keep" | "undo") {
   const sessionId = activeId.value;
   const review = activeFileReview.value;
-  if (!sessionId || !review || review.submitting || review.files.length === 0) return;
+    if (!sessionId || !review || review.submitting || review.files.length === 0)
+      return;
 
   review.submitting = true;
   review.error = "";
@@ -1298,7 +1127,7 @@ async function resolveActiveFileReview(action: "keep" | "undo") {
       action,
       review.through_seq,
       review.file_state_token,
-      action === "undo" ? review.forceFileKeys : []
+        action === "undo" ? review.forceFileKeys : [],
     );
     delete fileReviewsBySession.value[sessionId];
   } catch (error) {
@@ -1306,7 +1135,9 @@ async function resolveActiveFileReview(action: "keep" | "undo") {
     const current = fileReviewsBySession.value[sessionId];
     if (current) {
       current.submitting = false;
-      current.error = translate("Operation failed: {error}", { error: String(error) });
+        current.error = translate("Operation failed: {error}", {
+          error: String(error),
+        });
     }
   }
 }
@@ -1350,7 +1181,7 @@ async function deleteQueuedMessage(messageId: string) {
   try {
     await api.deleteQueuedMessage(id, messageId);
     queuedBySession.value[id] = (queuedBySession.value[id] ?? []).filter(
-      (item) => item.id !== messageId
+        (item) => item.id !== messageId,
     );
   } catch (e) {
     console.error("Failed to delete queued message:", e);
@@ -1377,7 +1208,11 @@ async function approveWorkflow(id: string) {
 
 async function closeWorkflow(id: string) {
   const workflow = workflowsBySession.value[id];
-  if (!workflow || (workflow.status !== "active" && workflow.status !== "ready")) return;
+    if (
+      !workflow ||
+      (workflow.status !== "active" && workflow.status !== "ready")
+    )
+      return;
   try {
     workflowsBySession.value[id] = await api.closeWorkflow(id, workflow.id);
   } catch (e) {
@@ -1385,7 +1220,6 @@ async function closeWorkflow(id: string) {
   }
 }
 
-export function useKernel() {
   return {
     ready,
     connecting,
@@ -1436,9 +1270,9 @@ export function useKernel() {
     revealToolCommand,
     stopBackgroundCommand,
     ensureSession,
-    updateSession,
-    renameSession,
-    pinSession,
+    updateSession: sessionStore.updateSession,
+    renameSession: sessionStore.renameSession,
+    pinSession: sessionStore.pinSession,
     forkSession,
     deleteSession,
     editQueuedMessage,
@@ -1447,11 +1281,11 @@ export function useKernel() {
     dispatchQueuedMessage,
     approveWorkflow,
     closeWorkflow,
-    resolveApproval,
-    answerQuestions,
-    cancelQuestions,
-    refreshConnections,
-    refreshProjects,
-    registerProject,
+    resolveApproval: interactionStore.resolveApproval,
+    answerQuestions: interactionStore.answerQuestions,
+    cancelQuestions: interactionStore.cancelQuestions,
+    refreshConnections: sessionStore.refreshConnections,
+    refreshProjects: sessionStore.refreshProjects,
+    registerProject: sessionStore.registerProject,
   };
-}
+});

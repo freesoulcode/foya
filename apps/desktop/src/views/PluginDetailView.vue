@@ -37,6 +37,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { RouteName, chatLocation } from "@/router/navigation";
 
 type PluginDescriptor = { name: string; description?: string };
 
@@ -273,7 +274,7 @@ async function removePlugin() {
     skills.value = await api.listSkills();
     mcpStatuses.value = await api.getMcpStatus();
     if (marketplaceID.value === "installed") {
-      await router.push({ name: "plugins" });
+      await router.push({ name: RouteName.plugins });
     }
   } catch (cause) {
     error.value = String(cause);
@@ -283,11 +284,11 @@ async function removePlugin() {
 }
 
 function backToPlugins() {
-  void router.push({ name: "plugins" });
+  void router.push({ name: RouteName.plugins });
 }
 
 function startChat() {
-  void router.push({ name: "chat" });
+  void router.push(chatLocation());
 }
 
 function openRepository() {

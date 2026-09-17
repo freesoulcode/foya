@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import {
   FileIcon,
@@ -21,11 +22,11 @@ import type {
   ChatMessage,
 } from "@/lib/api";
 import {
-  useWorkbar,
+  useWorkbarStore,
   type WorkbarLaunchKind,
   type WorkbarTab,
   type WorkbarTabKind,
-} from "@/composables/useWorkbar";
+} from "@/stores/workbar";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -60,14 +61,17 @@ const emit = defineEmits<{
 
 const { showCustomWindowControls } = usePlatform();
 const { t } = useI18n();
+const workbarStore = useWorkbarStore();
 const {
-  items,
   tabs,
   allTabs,
   width,
   open,
   activeTabId,
   activeTab,
+} = storeToRefs(workbarStore);
+const {
+  items,
   minWidth,
   setWidth,
   setOpen,
@@ -79,7 +83,7 @@ const {
   closeTab,
   renameEntryTabs,
   resetDeletedEntryTab,
-} = useWorkbar();
+} = workbarStore;
 const resizing = ref(false);
 const addMenuOpen = ref(false);
 const focused = ref(false);

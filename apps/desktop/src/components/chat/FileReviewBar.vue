@@ -12,7 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { PendingFileReview } from "@/composables/useKernel";
+import type { PendingFileReview } from "@/stores/conversation";
 
 const props = defineProps<{
   review?: PendingFileReview;

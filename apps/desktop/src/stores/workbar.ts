@@ -1,4 +1,5 @@
 import { computed, reactive, ref } from "vue";
+import { defineStore } from "pinia";
 
 export type WorkbarLaunchKind = "terminal" | "browser";
 export type WorkbarTabKind = "file" | "background-command" | WorkbarLaunchKind;
@@ -46,6 +47,7 @@ function storedWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(value)));
 }
 
+export const useWorkbarStore = defineStore("workbar", () => {
 const width = ref(storedWidth());
 const activeSessionId = ref("");
 const sessions = reactive<Record<string, WorkbarSessionState>>({});
@@ -58,7 +60,9 @@ function sessionKey(sessionId: string) {
   return sessionId || DRAFT_SESSION_KEY;
 }
 
-function ensureSessionState(sessionId = activeSessionId.value): WorkbarSessionState {
+  function ensureSessionState(
+    sessionId = activeSessionId.value,
+  ): WorkbarSessionState {
   const key = sessionKey(sessionId);
   if (!sessions[key]) {
     sessions[key] = {
@@ -75,10 +79,10 @@ const open = computed(() => currentSession.value.open);
 const tabs = computed(() => currentSession.value.tabs);
 const activeTabId = computed(() => currentSession.value.activeTabId);
 const allTabs = computed(() =>
-  Object.values(sessions).flatMap((session) => session.tabs)
+    Object.values(sessions).flatMap((session) => session.tabs),
 );
 const activeTab = computed(() =>
-  tabs.value.find((tab) => tab.id === activeTabId.value)
+    tabs.value.find((tab) => tab.id === activeTabId.value),
 );
 
 function setActiveSession(sessionId: string) {
@@ -160,7 +164,7 @@ function openBrowser(url: string) {
 function openAgentBrowser(sessionId: string, browserId: string) {
   const session = ensureSessionState(sessionId);
   const existing = session.tabs.find(
-    (tab) => tab.id === browserId && tab.kind === "browser"
+      (tab) => tab.id === browserId && tab.kind === "browser",
   );
   if (!existing) {
     session.tabs.push({
@@ -200,7 +204,7 @@ function openFile(
   projectPath: string,
   path: string,
   view: "file" | "diff" = "file",
-  diff?: string
+    diff?: string,
 ) {
   const sessionId = activeSessionId.value;
   const session = ensureSessionState(sessionId);
@@ -231,7 +235,7 @@ function openFile(
 function openBackgroundCommand(
   sessionId: string,
   commandId: string,
-  command: string
+    command: string,
 ) {
   const session = ensureSessionState(sessionId);
   const id = `background-command:${commandId}`;
@@ -283,7 +287,7 @@ function closeTab(tabId: string) {
 function closeFileTabs() {
   const session = currentSession.value;
   const fileIds = new Set(
-    session.tabs.filter((tab) => tab.kind === "file").map((tab) => tab.id)
+      session.tabs.filter((tab) => tab.kind === "file").map((tab) => tab.id),
   );
   session.tabs = session.tabs.filter((tab) => tab.kind !== "file");
   if (session.activeTabId && fileIds.has(session.activeTabId)) {
@@ -291,15 +295,22 @@ function closeFileTabs() {
   }
 }
 
-function entryContainsPath(entryPath: string, filePath: string, isDirectory: boolean) {
-  return filePath === entryPath || (isDirectory && filePath.startsWith(`${entryPath}/`));
+  function entryContainsPath(
+    entryPath: string,
+    filePath: string,
+    isDirectory: boolean,
+  ) {
+    return (
+      filePath === entryPath ||
+      (isDirectory && filePath.startsWith(`${entryPath}/`))
+    );
 }
 
 function renameEntryTabs(
   projectPath: string,
   oldPath: string,
   newPath: string,
-  isDirectory: boolean
+    isDirectory: boolean,
 ) {
   const session = currentSession.value;
   session.tabs = session.tabs.map((tab) => {
@@ -325,7 +336,7 @@ function renameEntryTabs(
 function resetDeletedEntryTab(
   projectPath: string,
   path: string,
-  isDirectory: boolean
+    isDirectory: boolean,
 ) {
   const tab = currentSession.value.tabs.find(
     (candidate) =>
@@ -333,8 +344,8 @@ function resetDeletedEntryTab(
       candidate.projectPath === projectPath &&
       Boolean(
         candidate.path &&
-          entryContainsPath(path, candidate.path, isDirectory)
-      )
+            entryContainsPath(path, candidate.path, isDirectory),
+        ),
   );
   if (!tab) return;
   tab.title = "";
@@ -347,7 +358,6 @@ function removeSession(sessionId: string) {
   delete sessions[sessionKey(sessionId)];
 }
 
-export function useWorkbar() {
   return {
     items,
     tabs,
@@ -376,4 +386,4 @@ export function useWorkbar() {
     resetDeletedEntryTab,
     removeSession,
   };
-}
+});

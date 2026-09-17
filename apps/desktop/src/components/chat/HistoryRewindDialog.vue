@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { storeToRefs } from "pinia";
 import { AlertTriangleIcon, FilePenLineIcon, LoaderCircleIcon } from "@lucide/vue";
 import {
   Dialog,
@@ -11,14 +12,15 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { useKernel } from "@/composables/useKernel";
+import { useConversationStore } from "@/stores/conversation";
+import { useInteractionStore } from "@/stores/interaction";
 
+const { pendingHistoryRewind } = storeToRefs(useInteractionStore());
 const {
-  pendingHistoryRewind,
   confirmHistoryRewind,
   cancelHistoryRewind,
   toggleHistoryRewindForceFile,
-} = useKernel();
+} = useConversationStore();
 
 const open = computed(() => pendingHistoryRewind.value !== null);
 const hasFiles = computed(
