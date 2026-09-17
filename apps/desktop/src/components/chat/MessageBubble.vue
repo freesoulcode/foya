@@ -18,7 +18,7 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import type { ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
+import type { AttachmentRef, ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 import TaskArtifacts from "./TaskArtifacts.vue";
@@ -79,6 +79,7 @@ const emit = defineEmits<{
   (e: "background-tool", toolCallId: string): void;
   (e: "terminal-tool", toolCallId: string): void;
   (e: "open-link", url: string): void;
+  (e: "open-artifact", attachment: AttachmentRef): void;
 }>();
 
 const isUser = computed(() => props.message.role === "user");
@@ -443,6 +444,7 @@ function rewindMessage() {
                 @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
                 @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
                 @terminal-tool="(toolCallId) => emit('terminal-tool', toolCallId)"
+                @open-artifact="(attachment) => emit('open-artifact', attachment)"
               />
             </div>
 
@@ -472,9 +474,11 @@ function rewindMessage() {
 
         <TaskArtifacts
           v-if="isCompletedTask"
+          :session-id="sessionId"
           :tools="toolCalls"
           :project-path="projectPath"
           @open-diff="(diff) => emit('open-diff', diff)"
+          @open-artifact="(attachment) => emit('open-artifact', attachment)"
         />
 
         <div

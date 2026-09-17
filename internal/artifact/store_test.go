@@ -74,6 +74,156 @@ func TestFileStoreRejectsInvalidAndOversizedImages(t *testing.T) {
 	}
 }
 
+func TestFileStoreFileLifecycle(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	source := []byte("<!doctype html><title>Report</title>")
+
+	ref, err := store.PutFile(ctx, "session-1", "reports/index.html", "", bytes.NewReader(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Name != "index.html" || ref.Kind != "file" ||
+		!strings.HasPrefix(ref.MediaType, "text/html") ||
+		ref.Bytes != int64(len(source)) || ref.SHA256 == "" {
+		t.Fatalf("unexpected file metadata: %#v", ref)
+	}
+	data, canonical, err := store.Read(ctx, "session-1", ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, source) || canonical != ref {
+		t.Fatal("stored file or canonical metadata changed")
+	}
+	if err := store.Commit(ctx, "session-1", []string{ref.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "session-1", ref.ID); !errors.Is(err, ErrCommitted) {
+		t.Fatalf("delete committed file artifact error = %v", err)
+	}
+}
+
+func TestFileStoreWorkspaceDir(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := store.WorkspaceDir(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dataDir, "artifacts", "session-1", "workspace")
+	if dir != want {
+		t.Fatalf("workspace dir = %q, want %q", dir, want)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("workspace dir was not created: info=%#v err=%v", info, err)
+	}
+	if _, err := store.WorkspaceDir(context.Background(), "../escape"); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("invalid session workspace error = %v", err)
+	}
+}
+
+func TestFileStoreCopyWorkspace(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	source, err := store.WorkspaceDir(ctx, "source-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "nested", "report.md"), []byte("# Report"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyWorkspace(ctx, "source-session", "target-session"); err != nil {
+		t.Fatal(err)
+	}
+	target, err := store.WorkspaceDir(ctx, "target-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "nested", "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# Report" {
+		t.Fatalf("copied workspace data = %q", data)
+	}
+}
+
+func TestFileStoreCopyWorkspacePreservesSafeSymlinks(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	source, err := store.WorkspaceDir(ctx, "source-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "real.txt"), []byte("real"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(source, "link.txt")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(source, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyWorkspace(ctx, "source-session", "target-session"); err != nil {
+		t.Fatal(err)
+	}
+	target, err := store.WorkspaceDir(ctx, "target-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkTarget, err := os.Readlink(filepath.Join(target, "link.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTarget != "real.txt" {
+		t.Fatalf("copied symlink target = %q", linkTarget)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("copied escaping symlink or unexpected stat error: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "real.txt"))
+	if err != nil || string(data) != "real" {
+		t.Fatalf("copied regular file = %q, err = %v", data, err)
+	}
+}
+
+func TestFileStoreRejectsInvalidAndOversizedFiles(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tooLarge := bytes.NewReader(make([]byte, MaxFileBytes+1))
+	if _, err := store.PutFile(ctx, "session-1", "large.txt", "", tooLarge); !errors.Is(err, ErrArtifactTooLarge) {
+		t.Fatalf("large file error = %v", err)
+	}
+	if _, err := store.PutFile(ctx, "../escape", "note.txt", "", strings.NewReader("note")); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("invalid session error = %v", err)
+	}
+}
+
 func TestFileStoreScalesLongEdge(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {

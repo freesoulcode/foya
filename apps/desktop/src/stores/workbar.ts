@@ -1,8 +1,9 @@
 import { computed, reactive, ref } from "vue";
 import { defineStore } from "pinia";
+import type { AttachmentRef } from "@/lib/api";
 
 export type WorkbarLaunchKind = "terminal" | "browser";
-export type WorkbarTabKind = "file" | "background-command" | WorkbarLaunchKind;
+export type WorkbarTabKind = "file" | "artifact" | "background-command" | WorkbarLaunchKind;
 
 export interface WorkbarItem {
   kind: WorkbarLaunchKind;
@@ -19,6 +20,7 @@ export interface WorkbarTab {
   projectPath?: string;
   view?: "file" | "diff";
   diff?: string;
+  artifact?: AttachmentRef;
   sessionId?: string;
   commandId?: string;
   url?: string;
@@ -232,6 +234,29 @@ function openFile(
   session.open = true;
 }
 
+function openArtifact(sessionId: string, attachment: AttachmentRef) {
+  const session = ensureSessionState(sessionId);
+  const id = `artifact:${attachment.id}`;
+  const title = attachment.name || "";
+  const existing = session.tabs.find((tab) => tab.id === id);
+  if (existing) {
+    existing.title = title;
+    existing.titleKey = title ? undefined : "Generated file";
+    existing.artifact = attachment;
+  } else {
+    session.tabs.push({
+      id,
+      kind: "artifact",
+      title,
+      titleKey: title ? undefined : "Generated file",
+      artifact: attachment,
+      sessionId,
+    });
+  }
+  session.activeTabId = id;
+  session.open = true;
+}
+
 function openBackgroundCommand(
   sessionId: string,
   commandId: string,
@@ -377,6 +402,7 @@ function removeSession(sessionId: string) {
     openAgentBrowser,
     openFiles,
     openFile,
+    openArtifact,
     openBackgroundCommand,
     selectTab,
     setTabTitle,

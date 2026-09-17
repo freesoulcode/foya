@@ -14,7 +14,10 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"mime"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -26,6 +29,7 @@ import (
 
 const (
 	MaxImageBytes  int64 = 20 << 20
+	MaxFileBytes   int64 = 20 << 20
 	MaxTurnBytes   int64 = 50 << 20
 	MaxAttachments       = 8
 	MaxImagePixels int64 = 40_000_000
@@ -35,11 +39,12 @@ const (
 var safeID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 var (
-	ErrInvalidID       = errors.New("invalid artifact identifier")
-	ErrUnsupportedType = errors.New("unsupported image type")
-	ErrImageTooLarge   = errors.New("image exceeds size limit")
-	ErrTooManyPixels   = errors.New("image exceeds pixel limit")
-	ErrCommitted       = errors.New("artifact is already attached to a message")
+	ErrInvalidID        = errors.New("invalid artifact identifier")
+	ErrUnsupportedType  = errors.New("unsupported image type")
+	ErrImageTooLarge    = errors.New("image exceeds size limit")
+	ErrArtifactTooLarge = errors.New("artifact exceeds size limit")
+	ErrTooManyPixels    = errors.New("image exceeds pixel limit")
+	ErrCommitted        = errors.New("artifact is already attached to a message")
 )
 
 type metadata struct {
@@ -48,7 +53,10 @@ type metadata struct {
 }
 
 type Store interface {
+	WorkspaceDir(ctx context.Context, sessionID string) (string, error)
+	CopyWorkspace(ctx context.Context, sourceID, targetID string) error
 	PutImage(ctx context.Context, sessionID, name string, src io.Reader) (conversation.AttachmentRef, error)
+	PutFile(ctx context.Context, sessionID, name, mediaType string, src io.Reader) (conversation.AttachmentRef, error)
 	Read(ctx context.Context, sessionID, artifactID string) ([]byte, conversation.AttachmentRef, error)
 	Commit(ctx context.Context, sessionID string, artifactIDs []string) error
 	Delete(ctx context.Context, sessionID, artifactID string) error
@@ -65,6 +73,99 @@ func NewFileStore(dataDir string) (*FileStore, error) {
 		return nil, err
 	}
 	return &FileStore{root: root}, nil
+}
+
+func (s *FileStore) WorkspaceDir(ctx context.Context, sessionID string) (string, error) {
+	if err := validateID(sessionID); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(s.root, sessionID, "workspace")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func (s *FileStore) CopyWorkspace(ctx context.Context, sourceID, targetID string) error {
+	if err := validateID(sourceID); err != nil {
+		return err
+	}
+	if err := validateID(targetID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	source := filepath.Join(s.root, sourceID, "workspace")
+	target := filepath.Join(s.root, targetID, "workspace")
+	info, err := os.Stat(source)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("workspace path is not a directory")
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	return filepath.WalkDir(source, func(src string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, src)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(target, relative)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return copyWorkspaceSymlink(source, dst, src)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(dst, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		return copyFile(dst, src, info.Mode().Perm())
+	})
+}
+
+func copyWorkspaceSymlink(sourceRoot, dst, src string) error {
+	linkTarget, err := os.Readlink(src)
+	if err != nil {
+		return nil
+	}
+	if filepath.IsAbs(linkTarget) {
+		return nil
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(src), linkTarget))
+	relative, err := filepath.Rel(sourceRoot, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	if err := os.Symlink(linkTarget, dst); err != nil {
+		return nil
+	}
+	return nil
 }
 
 func (s *FileStore) PutImage(
@@ -96,7 +197,7 @@ func (s *FileStore) PutImage(
 	sum := sha256.Sum256(normalized)
 	ref := conversation.AttachmentRef{
 		ID:        id,
-		Name:      filepath.Base(strings.TrimSpace(name)),
+		Name:      safeArtifactName(name),
 		Kind:      "image",
 		MediaType: mediaType,
 		Bytes:     int64(len(normalized)),
@@ -107,23 +208,79 @@ func (s *FileStore) PutImage(
 	if ref.Name == "." || ref.Name == "" {
 		ref.Name = id
 	}
-	dir := filepath.Join(s.root, sessionID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := s.putRaw(ctx, sessionID, id, normalized, ref); err != nil {
 		return conversation.AttachmentRef{}, err
 	}
-	if err := writeAtomic(filepath.Join(dir, id+".bin"), normalized, 0o600); err != nil {
+	return ref, nil
+}
+
+func (s *FileStore) PutFile(
+	ctx context.Context,
+	sessionID, name, mediaType string,
+	src io.Reader,
+) (conversation.AttachmentRef, error) {
+	if err := validateID(sessionID); err != nil {
 		return conversation.AttachmentRef{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(src, MaxFileBytes+1))
+	if err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	if int64(len(raw)) > MaxFileBytes {
+		return conversation.AttachmentRef{}, ErrArtifactTooLarge
+	}
+	id, err := randomID()
+	if err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	safeName := safeArtifactName(name)
+	if safeName == "" || safeName == "." {
+		safeName = id
+	}
+	sum := sha256.Sum256(raw)
+	ref := conversation.AttachmentRef{
+		ID:        id,
+		Name:      safeName,
+		Kind:      "file",
+		MediaType: fileMediaType(safeName, mediaType, raw),
+		Bytes:     int64(len(raw)),
+		SHA256:    hex.EncodeToString(sum[:]),
+	}
+	if err := s.putRaw(ctx, sessionID, id, raw, ref); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	return ref, nil
+}
+
+func (s *FileStore) putRaw(
+	ctx context.Context,
+	sessionID, id string,
+	data []byte,
+	ref conversation.AttachmentRef,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	dir := filepath.Join(s.root, sessionID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := writeAtomic(filepath.Join(dir, id+".bin"), data, 0o600); err != nil {
+		return err
 	}
 	meta, err := json.Marshal(metadata{AttachmentRef: ref})
 	if err != nil {
 		_ = os.Remove(filepath.Join(dir, id+".bin"))
-		return conversation.AttachmentRef{}, err
+		return err
 	}
 	if err := writeAtomic(filepath.Join(dir, id+".json"), meta, 0o600); err != nil {
 		_ = os.Remove(filepath.Join(dir, id+".bin"))
-		return conversation.AttachmentRef{}, err
+		return err
 	}
-	return ref, nil
+	return nil
 }
 
 func (s *FileStore) Read(
@@ -301,6 +458,44 @@ func validateID(value string) error {
 	return nil
 }
 
+func safeArtifactName(name string) string {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" {
+		return ""
+	}
+	return path.Base(name)
+}
+
+func fileMediaType(name, provided string, data []byte) string {
+	if mediaType := normalizedMediaType(provided); mediaType != "" {
+		return mediaType
+	}
+	if ext := filepath.Ext(name); ext != "" {
+		if mediaType := normalizedMediaType(mime.TypeByExtension(ext)); mediaType != "" {
+			return mediaType
+		}
+	}
+	if mediaType := normalizedMediaType(http.DetectContentType(data)); mediaType != "" {
+		return mediaType
+	}
+	return "application/octet-stream"
+}
+
+func normalizedMediaType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	mediaType, params, err := mime.ParseMediaType(value)
+	if err != nil || mediaType == "" {
+		return ""
+	}
+	if charset := params["charset"]; charset != "" {
+		return mediaType + "; charset=" + charset
+	}
+	return mediaType
+}
+
 func randomID() (string, error) {
 	value := make([]byte, 16)
 	if _, err := rand.Read(value); err != nil {
@@ -332,6 +527,21 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func copyFile(dst, src string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	return errors.Join(copyErr, closeErr)
 }
 
 var (

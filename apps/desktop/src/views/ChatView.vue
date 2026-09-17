@@ -50,6 +50,7 @@ const {
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
+  onOpenArtifact,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,
@@ -121,6 +122,7 @@ function forkAtMessage(messageSeq: number) {
         @rewind-message="rewindSentMessage"
         @fork-message="forkAtMessage"
         @open-diff="onOpenDiff"
+        @open-artifact="onOpenArtifact"
         @cancel-tool="cancelTool"
         @background-tool="backgroundTool"
         @terminal-tool="onViewToolInWorkbar"

@@ -13,6 +13,7 @@ import (
 // need to provide relevant chat-level settings.
 type promptInput struct {
 	ProjectPath  string   // Current project directory.
+	WorkDir      string   // Current tool working directory.
 	ApprovalMode string   // manual, auto, or full_access.
 	Rules        []string // Global and project rules managed by Foya.
 	RuleIndex    []string // Rules available for on-demand model loading.
@@ -48,7 +49,7 @@ func assemblePrompt(in promptInput) string {
 		permissionFragment(in.ApprovalMode),
 		managedMemoriesFragment(in.Memories),
 		envFragment(promptEnvironmentInput{
-			Cwd:      in.ProjectPath,
+			Cwd:      promptWorkDir(in),
 			Platform: platform,
 			Shell:    shell,
 			Now:      now,
@@ -56,6 +57,13 @@ func assemblePrompt(in promptInput) string {
 	}
 
 	return joinFragments(fragments)
+}
+
+func promptWorkDir(in promptInput) string {
+	if strings.TrimSpace(in.WorkDir) != "" {
+		return in.WorkDir
+	}
+	return in.ProjectPath
 }
 
 func effectiveEnvironment(in promptInput, goos string) (platform, shell string) {

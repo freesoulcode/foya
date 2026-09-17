@@ -163,8 +163,8 @@ func New(cfg config.Config) (*App, error) {
 	tools.Register(tool.NewBashStatusTool(backgroundCommands))
 	tools.Register(tool.NewBashCancelTool(backgroundCommands))
 	tools.Register(tool.NewReadTool(gw))
-	tools.Register(tool.NewWriteTool(gw, executionRunner))
-	tools.Register(tool.NewEditTool(gw, executionRunner))
+	tools.Register(tool.NewWriteTool(gw, executionRunner, artifactStore))
+	tools.Register(tool.NewEditTool(gw, executionRunner, artifactStore))
 	tools.Register(tool.NewDeleteTool(gw))
 	tools.Register(tool.NewAskUserTool(questions))
 	tools.Register(tool.NewReadTasksTool(sessions))
@@ -279,6 +279,7 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 	engine.SetProjectResolver(resolveProject)
+	engine.SetSessionWorkspaceResolver(artifactStore.WorkspaceDir)
 	engine.SetPersistentContextResolver(func(projectID, activity string) ([]string, []string, []string) {
 		ruleItems := contextStore.ActiveRules(projectID, activity)
 		availableRuleItems := contextStore.AvailableRules(projectID)

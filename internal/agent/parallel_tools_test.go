@@ -279,3 +279,28 @@ func TestChildAgentUsesFrozenInstructionsAndRestrictedTools(t *testing.T) {
 		t.Fatalf("approval event session = %q, want parent", engine.approvalEventSession(child.ID))
 	}
 }
+
+func TestNoProjectSessionUsesFixedWorkspaceInPrompt(t *testing.T) {
+	sessions := newTestSessionManager(t)
+	sess, err := sessions.Create(conversation.CreateOptions{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := newTestStore(t)
+	bus := broker.New[conversation.Event]()
+	gateway := interaction.NewGateway(bus, log)
+	prov := &captureProvider{}
+	engine := NewEngine(log, bus, sessions, prov, "test-model", tool.NewRegistry(), gateway)
+	workspace := t.TempDir()
+	engine.SetSessionWorkspaceResolver(func(context.Context, string) (string, error) {
+		return workspace, nil
+	})
+
+	if err := engine.RunTurn(context.Background(), sess.ID, "write a report"); err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.request.Messages) == 0 ||
+		!strings.Contains(prov.request.Messages[0].Parts[0].Text, "- working directory: "+workspace) {
+		t.Fatalf("system prompt does not contain fixed workspace %q: %#v", workspace, prov.request.Messages)
+	}
+}

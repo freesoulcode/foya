@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ChevronRightIcon,
   FileDiffIcon,
   FilesIcon,
 } from "@lucide/vue";
-import type { ToolCallView } from "@/lib/api";
+import type { AttachmentRef, ToolCallView } from "@/lib/api";
 import { diffFileName, diffFilePath, diffStats } from "@/lib/diff";
+import ArtifactAttachmentList from "./ArtifactAttachmentList.vue";
 
 const props = defineProps<{
+  sessionId: string;
   tools: ToolCallView[];
   projectPath?: string;
 }>();
+const { t } = useI18n();
 
 const emit = defineEmits<{
   (event: "open-diff", diff: string): void;
+  (event: "open-artifact", attachment: AttachmentRef): void;
 }>();
 
 const expanded = ref(false);
@@ -48,6 +53,18 @@ const files = computed(() => {
   return Array.from(byName.values());
 });
 
+const generatedFiles = computed<AttachmentRef[]>(() => {
+  const byID = new Map<string, AttachmentRef>();
+  for (const tool of props.tools) {
+    if (!["write", "edit"].includes(tool.name) || tool.diff) continue;
+    for (const attachment of tool.attachments ?? []) {
+      if (attachment.kind !== "file") continue;
+      byID.set(attachment.id, attachment);
+    }
+  }
+  return Array.from(byID.values());
+});
+
 const totals = computed(() =>
   files.value.reduce(
     (sum, file) => ({
@@ -57,11 +74,22 @@ const totals = computed(() =>
     { additions: 0, deletions: 0 }
   )
 );
+
+const summaryLabel = computed(() => {
+  const parts: string[] = [];
+  if (files.value.length > 0) {
+    parts.push(t("Changed {count} files", { count: files.value.length }));
+  }
+  if (generatedFiles.value.length > 0) {
+    parts.push(t("Generated {count} files", { count: generatedFiles.value.length }));
+  }
+  return parts.join(t(", "));
+});
 </script>
 
 <template>
   <section
-    v-if="files.length"
+    v-if="files.length || generatedFiles.length"
     class="mb-3 mt-3 overflow-hidden rounded-lg border border-border bg-muted/20"
     :aria-label="$t('Task artifacts')"
   >
@@ -73,12 +101,12 @@ const totals = computed(() =>
     >
       <FilesIcon class="size-4 shrink-0 text-primary" />
       <span class="min-w-0 flex-1 truncate text-sm font-medium">
-        {{ $t("Changed {count} files", { count: files.length }) }}
+        {{ summaryLabel }}
       </span>
-      <span class="shrink-0 font-mono text-xs text-emerald-600">
+      <span v-if="files.length" class="shrink-0 font-mono text-xs text-emerald-600">
         +{{ totals.additions }}
       </span>
-      <span class="shrink-0 font-mono text-xs text-red-500">
+      <span v-if="files.length" class="shrink-0 font-mono text-xs text-red-500">
         -{{ totals.deletions }}
       </span>
       <ChevronRightIcon
@@ -87,12 +115,12 @@ const totals = computed(() =>
       />
     </button>
 
-    <div v-if="expanded" class="divide-y divide-border border-t border-border">
+    <div v-if="expanded" class="border-t border-border">
       <button
         v-for="file in files"
         :key="`${file.directory}${file.name}`"
         type="button"
-        class="flex h-10 w-full min-w-0 items-center gap-2 px-3 text-left text-sm hover:bg-muted/50"
+        class="flex h-10 w-full min-w-0 items-center gap-2 border-b border-border px-3 text-left text-sm hover:bg-muted/50 last:border-b-0"
         :title="$t('View changes for {path}', { path: file.name })"
         @click="emit('open-diff', file.diff)"
       >
@@ -110,6 +138,21 @@ const totals = computed(() =>
           -{{ file.deletions }}
         </span>
       </button>
+      <div
+        v-if="generatedFiles.length"
+        class="p-3"
+        :class="{ 'border-t border-border': files.length }"
+      >
+        <div class="mb-2 text-xs font-medium text-muted-foreground">
+          {{ $t("Generated files") }}
+        </div>
+        <ArtifactAttachmentList
+          :session-id="sessionId"
+          :attachments="generatedFiles"
+          compact
+          @open="(attachment) => emit('open-artifact', attachment)"
+        />
+      </div>
     </div>
   </section>
 </template>

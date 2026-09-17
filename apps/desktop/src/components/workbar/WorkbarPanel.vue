@@ -37,6 +37,7 @@ import ProjectFilesPanel from "./ProjectFilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import BackgroundCommandTerminalPanel from "./BackgroundCommandTerminalPanel.vue";
 import BrowserPanel from "./BrowserPanel.vue";
+import ArtifactPreviewPanel from "./ArtifactPreviewPanel.vue";
 
 const props = defineProps<{
   sessionId?: string;
@@ -106,6 +107,9 @@ const terminalTabs = computed(() =>
 const backgroundCommandTabs = computed(() =>
   allTabs.value.filter((tab) => tab.kind === "background-command")
 );
+const artifactTabs = computed(() =>
+  allTabs.value.filter((tab) => tab.kind === "artifact")
+);
 
 function isCurrentSessionTab(tab: WorkbarTab) {
   return (tab.sessionId ?? "") === (props.sessionId ?? "");
@@ -122,6 +126,7 @@ function isActiveWorkbarTab(tab: WorkbarTab) {
 
 const icons: Record<WorkbarTabKind, LucideIcon> = {
   file: FileIcon,
+  artifact: FileIcon,
   terminal: TerminalIcon,
   browser: GlobeIcon,
   "background-command": TerminalIcon,
@@ -269,7 +274,7 @@ onBeforeUnmount(() => stopResize?.());
   >
     <button
       type="button"
-      class="absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize touch-none"
+      class="no-drag absolute -left-1 top-0 z-20 h-full w-2 cursor-col-resize touch-none"
       :aria-label="$t('Resize workspace')"
       @pointerdown="startResize"
     >
@@ -277,8 +282,12 @@ onBeforeUnmount(() => stopResize?.());
     </button>
 
     <div class="flex min-w-0 flex-1 flex-col">
-      <div class="flex h-11 shrink-0 items-center">
+      <div
+        data-tauri-drag-region
+        class="flex h-11 shrink-0 items-center"
+      >
         <div
+          data-tauri-drag-region
           class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2"
         >
           <div
@@ -293,7 +302,7 @@ onBeforeUnmount(() => stopResize?.());
           >
             <button
               type="button"
-              class="flex min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1 text-sm"
+              class="no-drag flex min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1 text-sm"
               :title="tabTitle(tab)"
               @click="activateTab(tab)"
             >
@@ -302,7 +311,7 @@ onBeforeUnmount(() => stopResize?.());
             </button>
             <button
               type="button"
-              class="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background/80 hover:text-foreground"
+              class="no-drag mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background/80 hover:text-foreground"
               :title="$t('Close {name}', { name: tabTitle(tab) })"
               :aria-label="$t('Close {name}', { name: tabTitle(tab) })"
               @click.stop="closeWorkbarTab(tab)"
@@ -442,6 +451,16 @@ onBeforeUnmount(() => stopResize?.());
                   )
                 : undefined
             "
+            :active="isActiveWorkbarTab(tab)"
+          />
+        </template>
+        <template v-for="tab in artifactTabs" :key="tab.id">
+          <ArtifactPreviewPanel
+            v-if="tab.sessionId && tab.artifact"
+            v-show="isActiveWorkbarTab(tab)"
+            class="absolute inset-0"
+            :session-id="tab.sessionId"
+            :attachment="tab.artifact"
             :active="isActiveWorkbarTab(tab)"
           />
         </template>

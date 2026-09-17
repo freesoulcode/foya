@@ -7,6 +7,7 @@ import {
 } from "vue";
 import type {
   ApprovalMode,
+  AttachmentRef,
   BackgroundCommand,
   BrowserElementSelection,
   ChatMessage,
@@ -86,6 +87,7 @@ export interface ChatWorkspaceContext extends ConversationBindings {
   onOpenDiff: (diff: string) => void;
   onOpenReviewFile: (path: string, diff: string) => void;
   onOpenWorkflowFile: (path: string) => void;
+  onOpenArtifact: (attachment: AttachmentRef) => void;
   onViewToolInWorkbar: (toolCallId: string) => Promise<void>;
   onOpenLink: (url: string) => Promise<void>;
   onOpenBackgroundCommand: (command: BackgroundCommand) => void;

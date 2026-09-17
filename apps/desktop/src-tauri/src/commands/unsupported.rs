@@ -47,6 +47,15 @@ pub(crate) fn read_artifact(_session_id: String, _artifact_id: String) -> Result
 }
 
 #[tauri::command]
+pub(crate) fn save_artifact(
+    _session_id: String,
+    _artifact_id: String,
+    _path: String,
+) -> Result<(), String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
 pub(crate) fn delete_artifact(_session_id: String, _artifact_id: String) -> Result<(), String> {
     Err("Windows transport is not implemented yet".into())
 }

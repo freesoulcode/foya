@@ -18,6 +18,7 @@ const (
 	ctxKeyRunID
 	ctxKeyDeferredTools
 	ctxKeyActiveTools
+	ctxKeyManagedWorkspace
 )
 
 // WithCWD stores the engine-selected working directory in a context.
@@ -31,6 +32,15 @@ func CWDFromContext(ctx context.Context) string {
 		return d
 	}
 	return ""
+}
+
+func WithManagedWorkspace(ctx context.Context, managed bool) context.Context {
+	return context.WithValue(ctx, ctxKeyManagedWorkspace, managed)
+}
+
+func ManagedWorkspaceFromContext(ctx context.Context) bool {
+	managed, _ := ctx.Value(ctxKeyManagedWorkspace).(bool)
+	return managed
 }
 
 func WithProjectID(ctx context.Context, projectID string) context.Context {

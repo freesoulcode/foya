@@ -56,6 +56,35 @@ describe("workbar store", () => {
     });
   });
 
+  it("opens generated artifacts in a reusable tab", () => {
+    const store = useWorkbarStore();
+    store.setActiveSession("session-1");
+
+    store.openArtifact("session-1", {
+      id: "artifact-1",
+      name: "report.html",
+      kind: "file",
+      media_type: "text/html",
+      bytes: 42,
+    });
+    store.openArtifact("session-1", {
+      id: "artifact-1",
+      name: "report.html",
+      kind: "file",
+      media_type: "text/html",
+      bytes: 42,
+    });
+
+    expect(store.tabs).toHaveLength(1);
+    expect(store.tabs[0]).toMatchObject({
+      kind: "artifact",
+      title: "report.html",
+      sessionId: "session-1",
+    });
+    expect(store.open).toBe(true);
+    expect(store.activeTabId).toBe("artifact:artifact-1");
+  });
+
   it("clamps and persists panel width", () => {
     const store = useWorkbarStore();
 

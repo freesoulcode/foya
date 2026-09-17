@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ArrowDownToLineIcon,
@@ -22,8 +22,8 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { diffFileName, diffStats } from "@/lib/diff";
-import { api } from "@/lib/api";
-import type { ToolCallView } from "@/lib/api";
+import type { AttachmentRef, ToolCallView } from "@/lib/api";
+import ArtifactAttachmentList from "./ArtifactAttachmentList.vue";
 import SubAgentActivity from "./SubAgentActivity.vue";
 
 const props = defineProps<{
@@ -32,54 +32,12 @@ const props = defineProps<{
 }>();
 const { t } = useI18n();
 
-const attachmentURLs = ref<Record<string, string>>({});
-const attachmentKey = computed(() =>
-  props.tools.flatMap((tool) => tool.attachments ?? []).map((item) => item.id).join(",")
-);
-let attachmentLoad = 0;
-
-function releaseAttachmentURLs() {
-  for (const url of Object.values(attachmentURLs.value)) URL.revokeObjectURL(url);
-  attachmentURLs.value = {};
-}
-
-async function loadAttachmentPreviews() {
-  const load = ++attachmentLoad;
-  releaseAttachmentURLs();
-  if (!props.sessionId) return;
-  const attachments = props.tools.flatMap((tool) => tool.attachments ?? []);
-  for (const attachment of attachments) {
-    if (attachment.kind !== "image" || attachmentURLs.value[attachment.id]) continue;
-    try {
-      const bytes = await api.readArtifact(props.sessionId, attachment.id);
-      if (load !== attachmentLoad) return;
-      attachmentURLs.value = {
-        ...attachmentURLs.value,
-        [attachment.id]: URL.createObjectURL(
-          new Blob([bytes], { type: attachment.media_type })
-        ),
-      };
-    } catch {
-      // The tool output remains readable when an artifact cannot be loaded.
-    }
-  }
-}
-
-watch(
-  () => [props.sessionId, attachmentKey.value],
-  () => void loadAttachmentPreviews(),
-  { immediate: true }
-);
-onBeforeUnmount(() => {
-  attachmentLoad++;
-  releaseAttachmentURLs();
-});
-
 const emit = defineEmits<{
   (e: "open-diff", diff: string): void;
   (e: "cancel-tool", toolCallId: string): void;
   (e: "background-tool", toolCallId: string): void;
   (e: "terminal-tool", toolCallId: string): void;
+  (e: "open-artifact", attachment: AttachmentRef): void;
 }>();
 
 interface ToolMeta {
@@ -124,6 +82,7 @@ const errorCount = computed(
 function actionSummary(tools: ToolCallView[]): string {
   let filesChanged = 0;
   let filesRead = 0;
+  let filesGenerated = 0;
   let commands = 0;
   let webSearches = 0;
   let webPages = 0;
@@ -131,7 +90,9 @@ function actionSummary(tools: ToolCallView[]): string {
   let others = 0;
 
   for (const tool of tools) {
-    if (tool.name === "write" || tool.name === "edit" || tool.name === "delete") filesChanged++;
+    if (isGeneratedFileTool(tool)) {
+      filesGenerated += generatedFileCount(tool);
+    } else if (tool.name === "write" || tool.name === "edit" || tool.name === "delete") filesChanged++;
     else if (tool.name === "read") filesRead++;
     else if (tool.name === "bash") commands++;
     else if (tool.name === "web_search") webSearches++;
@@ -149,6 +110,7 @@ function actionSummary(tools: ToolCallView[]): string {
 
   const parts: string[] = [];
   if (filesChanged > 0) parts.push(t("Changed {count} files", { count: filesChanged }));
+  if (filesGenerated > 0) parts.push(t("Generated {count} files", { count: filesGenerated }));
   if (filesRead > 0) parts.push(t("Read {count} files", { count: filesRead }));
   if (commands > 0) parts.push(t("Ran {count} commands", { count: commands }));
   if (webSearches > 0) parts.push(t("Searched the web {count} times", { count: webSearches }));
@@ -157,7 +119,6 @@ function actionSummary(tools: ToolCallView[]): string {
   if (others > 0) parts.push(t("Called {count} tools", { count: others }));
   return parts.join(t(", "));
 }
-
 const batchTitle = computed(() => {
   const summary = actionSummary(props.tools);
   if (runningCount.value > 0 || queuedCount.value > 0) {
@@ -201,6 +162,18 @@ function isAgentTool(tool: ToolCallView): boolean {
 
 function isFileChangeTool(tool: ToolCallView): boolean {
   return tool.name === "write" || tool.name === "edit" || tool.name === "delete";
+}
+
+function generatedFileCount(tool: ToolCallView): number {
+  return (tool.attachments ?? []).filter((attachment) => attachment.kind === "file").length;
+}
+
+function isGeneratedFileTool(tool: ToolCallView): boolean {
+  return (
+    (tool.name === "write" || tool.name === "edit") &&
+    !tool.diff &&
+    generatedFileCount(tool) > 0
+  );
 }
 
 function toolTargetPath(tool: ToolCallView): string {
@@ -251,6 +224,9 @@ function toolLabel(tool: ToolCallView): string {
     return toolTargetKind(tool) === "directory"
       ? t("Deleted {count} folders", { count: 1 })
       : t("Deleted {count} files", { count: 1 });
+  }
+  if (isGeneratedFileTool(tool)) {
+    return t("Generated {count} files", { count: generatedFileCount(tool) });
   }
   if (tool.diff && tool.name !== "delete") {
     return t("Edited {count} files", { count: 1 });
@@ -383,23 +359,13 @@ function formatInput(input: string): string {
             </div>
             <div
               v-if="tool.attachments?.length"
-              class="mt-2 grid grid-cols-2 gap-2"
+              class="mt-2"
             >
-              <figure
-                v-for="attachment in tool.attachments"
-                :key="attachment.id"
-                class="overflow-hidden rounded-md border border-border bg-muted"
-              >
-                <img
-                  v-if="attachmentURLs[attachment.id]"
-                  :src="attachmentURLs[attachment.id]"
-                  :alt="attachment.name"
-                  class="max-h-64 w-full object-contain"
-                />
-                <figcaption class="truncate px-2 py-1 text-[10px] text-muted-foreground">
-                  {{ attachment.name }}
-                </figcaption>
-              </figure>
+              <ArtifactAttachmentList
+                :session-id="sessionId"
+                :attachments="tool.attachments"
+                @open="(attachment) => emit('open-artifact', attachment)"
+              />
             </div>
             <div
               v-if="tool.name === 'delete' && !tool.diff && toolTargetPath(tool)"
