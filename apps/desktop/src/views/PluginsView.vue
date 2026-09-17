@@ -55,6 +55,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { RouteName } from "@/router/navigation";
 
 type CatalogScope = "marketplace" | "local";
 type PluginDescriptor = { name: string; description?: string };
@@ -450,13 +451,13 @@ async function removePlugin() {
 }
 
 function openSkills() {
-  void router.push({ name: "settings-skills" });
+  void router.push({ name: RouteName.settingsSkills });
 }
 
 function openMarketplacePlugin(item: MarketplacePlugin) {
   if (!selectedMarketplace.value) return;
   void router.push({
-    name: "plugin-detail",
+    name: RouteName.pluginDetail,
     params: {
       marketplace: selectedMarketplace.value,
       plugin: item.name,
@@ -467,7 +468,7 @@ function openMarketplacePlugin(item: MarketplacePlugin) {
 function openInstalledPlugin(item: AgentPlugin) {
   const match = item.source?.match(/^marketplace:([^:]+):([^:]+)$/);
   void router.push({
-    name: "plugin-detail",
+    name: RouteName.pluginDetail,
     params: {
       marketplace: match?.[1] ?? "installed",
       plugin: match?.[2] ?? item.name,

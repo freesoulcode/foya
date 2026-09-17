@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
+import { storeToRefs } from "pinia";
 import { RouterView } from "vue-router";
 import { RefreshCwIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
-import { useKernel } from "@/composables/useKernel";
 import { usePlatform } from "@/composables/usePlatform";
 import { localizeError } from "@/i18n";
+import { useConnectionStore } from "@/stores/connection";
+import { useConversationStore } from "@/stores/conversation";
 import ApprovalDialog from "@/components/chat/ApprovalDialog.vue";
 import HistoryRewindDialog from "@/components/chat/HistoryRewindDialog.vue";
 import WindowControls from "@/components/WindowControls.vue";
 
-const { ready, connecting, connectError, connect } = useKernel();
+const { ready, connecting, connectError } = storeToRefs(useConnectionStore());
+const { connect } = useConversationStore();
 const { showCustomWindowControls } = usePlatform();
 
 onMounted(() => {

@@ -83,5 +83,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test
+        if: matrix.directory == 'apps/desktop'
+        run: pnpm test
+
       - name: Build
         run: pnpm build

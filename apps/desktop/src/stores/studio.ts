@@ -1,7 +1,9 @@
 import { computed, ref } from "vue";
+import { defineStore } from "pinia";
 import { api, type CanvasDocument } from "@/lib/api";
 import { translate } from "@/i18n";
 
+export const useStudioStore = defineStore("studio", () => {
 const projects = ref<CanvasDocument[]>([]);
 const activeId = ref("");
 const loading = ref(true);
@@ -10,14 +12,18 @@ const error = ref("");
 let loaded = false;
 
 const activeProject = computed(
-  () => projects.value.find((project) => project.id === activeId.value) ?? null
+    () =>
+      projects.value.find((project) => project.id === activeId.value) ?? null,
 );
 
 async function loadProjects() {
   loading.value = true;
   try {
     projects.value = await api.listCanvases();
-    if (activeId.value && !projects.value.some((item) => item.id === activeId.value)) {
+      if (
+        activeId.value &&
+        !projects.value.some((item) => item.id === activeId.value)
+      ) {
       activeId.value = "";
     }
   } catch (reason) {
@@ -34,7 +40,7 @@ async function createProject() {
     const project = await api.createCanvas(
       translate("Creative project {number}", {
         number: projects.value.length + 1,
-      })
+        }),
     );
     projects.value = [project, ...projects.value];
     activeId.value = project.id;
@@ -78,8 +84,8 @@ function updateProject(project: CanvasDocument) {
   if (index >= 0) projects.value[index] = project;
 }
 
-export function useStudioWorkspace() {
-  if (!loaded) {
+  function ensureLoaded() {
+    if (loaded) return;
     loaded = true;
     void loadProjects();
   }
@@ -91,10 +97,11 @@ export function useStudioWorkspace() {
     creating,
     error,
     activeProject,
+    ensureLoaded,
     loadProjects,
     createProject,
     renameProject,
     deleteProject,
     updateProject,
   };
-}
+});

@@ -1,29 +1,32 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
-import { useKernel } from "@/composables/useKernel";
 import {
   SidebarInset,
   SidebarProvider,
 } from "@/components/ui/sidebar";
-import SettingsSidebar, {
+import SettingsSidebar from "@/layouts/settings/SettingsSidebar.vue";
+import {
+  chatLocation,
+  settingsLocation,
   type SettingsSection,
-} from "@/layouts/settings/SettingsSidebar.vue";
+} from "@/router/navigation";
+import { useSessionStore } from "@/stores/session";
 
 const route = useRoute();
 const router = useRouter();
-const { refreshConnections, refreshProjects } = useKernel();
+const { refreshConnections, refreshProjects } = useSessionStore();
 
 const activeSection = computed(
   () => (route.meta.settingsSection ?? "connections") as SettingsSection
 );
 
 function selectSection(section: SettingsSection) {
-  void router.push({ name: `settings-${section}` });
+  void router.push(settingsLocation(section));
 }
 
 function close() {
-  void router.push({ name: "chat" });
+  void router.push(chatLocation());
 }
 
 onBeforeUnmount(() => {

@@ -5,9 +5,8 @@ import Timeline from "@/components/chat/Timeline.vue";
 import Composer from "@/components/chat/Composer.vue";
 import AskUserPanel from "@/components/chat/AskUserPanel.vue";
 import ActivityBar from "@/components/chat/ActivityBar.vue";
-import type { ChatWorkspaceContext } from "@/layouts/chatWorkspace";
+import { useChatWorkspace } from "@/layouts/chatWorkspace";
 
-const props = defineProps<{ workspace: ChatWorkspaceContext }>();
 const {
   ready,
   streaming,
@@ -75,7 +74,7 @@ const {
   clearBrowserElements,
   restoreBrowserElements,
   consumeComposerRestore,
-} = props.workspace;
+} = useChatWorkspace();
 
 function setMessageListRef(instance: Element | ComponentPublicInstance | null) {
   messageListRef.value = instance as InstanceType<typeof MessageList> | null;

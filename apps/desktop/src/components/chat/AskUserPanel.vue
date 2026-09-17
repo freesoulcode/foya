@@ -8,8 +8,8 @@ import {
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { useKernel } from "@/composables/useKernel";
 import type { PendingQuestionBatch } from "@/lib/api";
+import { useInteractionStore } from "@/stores/interaction";
 
 interface Draft {
   index: number;
@@ -28,7 +28,7 @@ const emit = defineEmits<{
   (event: "expanded-change", expanded: boolean): void;
 }>();
 
-const { answerQuestions, cancelQuestions } = useKernel();
+const { answerQuestions, cancelQuestions } = useInteractionStore();
 const drafts = reactive<Record<string, Draft>>({});
 
 function ensureDraft(batch: PendingQuestionBatch): Draft {

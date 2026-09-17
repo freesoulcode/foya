@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { storeToRefs } from "pinia";
 import { ImageIcon, LoaderCircleIcon, PlusIcon } from "@lucide/vue";
 import StudioCanvas from "@/components/studio/StudioCanvas.vue";
 import { Button } from "@/components/ui/button";
-import { useStudioWorkspace } from "@/composables/useStudioWorkspace";
+import { useStudioStore } from "@/stores/studio";
 
+const studioStore = useStudioStore();
 const {
   activeProject,
   creating,
+} = storeToRefs(studioStore);
+const {
   createProject,
   updateProject,
-} = useStudioWorkspace();
+} = studioStore;
 </script>
 
 <template>

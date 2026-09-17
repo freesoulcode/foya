@@ -4,7 +4,8 @@ import App from "./App.vue";
 import { i18n, initializeLocale } from "./i18n";
 import { initializeTheme } from "./composables/useTheme";
 import { router } from "./router";
+import { pinia } from "./stores";
 
 initializeTheme();
 initializeLocale();
-createApp(App).use(router).use(i18n).mount("#app");
+createApp(App).use(pinia).use(router).use(i18n).mount("#app");

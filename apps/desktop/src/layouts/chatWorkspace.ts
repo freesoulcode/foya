@@ -1,34 +1,32 @@
-import type { ComputedRef, Ref } from "vue";
+import {
+  inject,
+  provide,
+  type ComputedRef,
+  type InjectionKey,
+  type Ref,
+} from "vue";
 import type {
   ApprovalMode,
   BackgroundCommand,
   BrowserElementSelection,
+  ChatMessage,
+  ConnectionModelGroup,
   ContextUsage,
   PendingQuestionBatch,
   ProjectInfo,
+  QueuedMessage,
   ReasoningEffort,
+  Session,
   WorkflowRecord,
 } from "@/lib/api";
-import type { useKernel } from "@/composables/useKernel";
+import type { useConversationStore } from "@/stores/conversation";
+import type { PendingFileReview } from "@/stores/conversation";
+import type { ComposerRestore } from "@/stores/interaction";
 
-type Kernel = ReturnType<typeof useKernel>;
+type ConversationStore = ReturnType<typeof useConversationStore>;
 
-type KernelBindings = Pick<
-  Kernel,
-  | "ready"
-  | "streaming"
-  | "messages"
-  | "queuedMessages"
-  | "backgroundCommands"
-  | "fileReview"
-  | "connectionModels"
-  | "modelsLoading"
-  | "modelsError"
-  | "activeId"
-  | "activeSession"
-  | "isDraft"
-  | "runningSessions"
-  | "composerRestore"
+type ConversationBindings = Pick<
+  ConversationStore,
   | "rewindSentMessage"
   | "consumeComposerRestore"
   | "keepAllFileChanges"
@@ -47,9 +45,24 @@ type KernelBindings = Pick<
   | "dispatchQueuedMessage"
   | "deleteQueuedMessage"
   | "refreshConnections"
->;
+> & {
+  ready: Ref<boolean>;
+  streaming: Ref<boolean>;
+  messages: ComputedRef<ChatMessage[]>;
+  queuedMessages: ComputedRef<QueuedMessage[]>;
+  backgroundCommands: ComputedRef<BackgroundCommand[]>;
+  fileReview: ComputedRef<PendingFileReview | undefined>;
+  connectionModels: Ref<ConnectionModelGroup[]>;
+  modelsLoading: Ref<boolean>;
+  modelsError: Ref<string>;
+  activeId: Ref<string>;
+  activeSession: ComputedRef<Session | undefined>;
+  isDraft: ComputedRef<boolean>;
+  runningSessions: Ref<Record<string, boolean>>;
+  composerRestore: Ref<ComposerRestore | null>;
+};
 
-export interface ChatWorkspaceContext extends KernelBindings {
+export interface ChatWorkspaceContext extends ConversationBindings {
   activeTurn: Ref<number>;
   turnPoints: ComputedRef<Array<{ label: string }>>;
   messageListRef: Ref<{ scrollToTurn: (turnIndex: number) => void } | null>;
@@ -88,4 +101,19 @@ export interface ChatWorkspaceContext extends KernelBindings {
   removeBrowserElement: (index: number) => void;
   clearBrowserElements: () => void;
   restoreBrowserElements: (elements: BrowserElementSelection[]) => void;
+}
+
+const chatWorkspaceKey: InjectionKey<ChatWorkspaceContext> =
+  Symbol("chat-workspace");
+
+export function provideChatWorkspace(workspace: ChatWorkspaceContext) {
+  provide(chatWorkspaceKey, workspace);
+}
+
+export function useChatWorkspace(): ChatWorkspaceContext {
+  const workspace = inject(chatWorkspaceKey);
+  if (!workspace) {
+    throw new Error("useChatWorkspace must be used inside ChatLayout");
+  }
+  return workspace;
 }

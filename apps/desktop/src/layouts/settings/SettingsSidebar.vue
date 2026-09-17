@@ -27,22 +27,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-
-export type SettingsSection =
-  | "kernel"
-  | "connections"
-  | "default-models"
-  | "rules"
-  | "memory"
-  | "skills"
-  | "commands"
-  | "hooks"
-  | "mcp"
-  | "web-search"
-  | "channels"
-  | "agents"
-  | "usage"
-  | "appearance";
+import type { SettingsSection } from "@/router/navigation";
 
 defineProps<{ activeSection: SettingsSection }>();
 const emit = defineEmits<{
