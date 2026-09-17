@@ -107,10 +107,11 @@ type Engine struct {
 	model    string
 	// providerResolver binds a Session to its configured Connection. It is
 	// optional so focused engine tests can continue using the configured provider.
-	providerResolver func(sessionID string) modelapi.Provider
-	titleResolver    func() (modelapi.Provider, string)
-	projectResolver  func(projectID string) (string, bool)
-	contextResolver  func(projectID, activity string) (
+	providerResolver  func(sessionID string) modelapi.Provider
+	titleResolver     func() (modelapi.Provider, string)
+	projectResolver   func(projectID string) (string, bool)
+	workspaceResolver func(context.Context, string) (string, error)
+	contextResolver   func(projectID, activity string) (
 		rules []string,
 		ruleIndex []string,
 		memories []string,
@@ -155,6 +156,12 @@ func (e *Engine) SetProjectResolver(resolve func(projectID string) (string, bool
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.projectResolver = resolve
+}
+
+func (e *Engine) SetSessionWorkspaceResolver(resolve func(context.Context, string) (string, error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.workspaceResolver = resolve
 }
 
 // SetPersistentContextResolver provides Foya-managed rules and memories for a

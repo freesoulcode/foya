@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	conversation "github.com/freesoulcode/foya/internal/conversation"
@@ -25,14 +26,19 @@ type EditParams struct {
 }
 
 type editTool struct {
-	gw     interaction.Gateway
-	runner sandbox.Runner
+	gw        interaction.Gateway
+	runner    sandbox.Runner
+	artifacts fileArtifactStore
 }
 
 // NewEditTool creates a tool for exact replacements in existing files.
 // Each old_text must match exactly once or the edit is rejected.
-func NewEditTool(gw interaction.Gateway, runner sandbox.Runner) Tool {
-	return &editTool{gw: gw, runner: runner}
+func NewEditTool(gw interaction.Gateway, runner sandbox.Runner, artifacts ...fileArtifactStore) Tool {
+	var store fileArtifactStore
+	if len(artifacts) > 0 {
+		store = artifacts[0]
+	}
+	return &editTool{gw: gw, runner: runner, artifacts: store}
 }
 
 func (t *editTool) Name() string       { return "edit" }
@@ -74,8 +80,11 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 	if len(params.Edits) == 0 {
 		return errResult("edits must not be empty"), nil
 	}
+	if CWDFromContext(ctx) == "" && !filepath.IsAbs(strings.TrimSpace(params.Path)) {
+		return errResult("relative edit path requires a workspace"), nil
+	}
 
-	path := absoluteToolPath(ctx, params.Path)
+	path := absoluteToolPath(ctx, strings.TrimSpace(params.Path))
 	decision, err := t.gw.Request(ctx, interaction.Request{
 		ToolName: "edit",
 		Action:   "write",
@@ -117,6 +126,26 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		applied++
 	}
 
+	displayPath := path
+	if managedWorkspacePath(ctx, path) {
+		relativePath, _ := managedWorkspaceRelativePath(ctx, path)
+		if relativePath != "" {
+			displayPath = relativePath
+		}
+		ref, err := putArtifact(ctx, t.artifacts, params.Path, content)
+		if err != nil {
+			return errResult(fmt.Sprintf("Write failed: artifact snapshot failed: %v", err)), nil
+		}
+		if err := writeFileAtBoundary(ctx, t.runner, path, []byte(content)); err != nil {
+			deleteArtifactSnapshot(context.WithoutCancel(ctx), t.artifacts, ref.ID)
+			return errResult(fmt.Sprintf("Write failed: %v", err)), nil
+		}
+		return Result{Content: []ContentPart{
+			{Type: "text", Text: fmt.Sprintf("Applied %d replacements to %s", applied, displayPath)},
+			{Type: "artifact_ref", Attachment: &ref},
+		}}, nil
+	}
+
 	if err := writeFileAtBoundary(ctx, t.runner, path, []byte(content)); err != nil {
 		return errResult(fmt.Sprintf("Write failed: %v", err)), nil
 	}
@@ -126,8 +155,8 @@ func (t *editTool) Run(ctx context.Context, call Call) (Result, error) {
 		change = trackedFileChange(path, data, true, info.Mode(), []byte(content), info.Mode())
 	}
 	return Result{
-		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("Applied %d replacements to %s", applied, path)}},
-		Diff:       UnifiedDiff(path, original, content),
+		Content:    []ContentPart{{Type: "text", Text: fmt.Sprintf("Applied %d replacements to %s", applied, displayPath)}},
+		Diff:       UnifiedDiff(displayPath, original, content),
 		FileChange: change,
 	}, nil
 }

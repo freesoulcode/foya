@@ -177,6 +177,10 @@ func (e *Engine) runTurn(
 	userText := input.Text
 	reasoningEffort := e.resolveReasoningEffort(sessionID)
 	projectPath := e.resolveProjectPath(sessionID)
+	workDir, managedWorkspace, workspaceErr := e.resolveWorkspacePath(ctx, sessionID, projectPath)
+	if workspaceErr != nil {
+		return fmt.Errorf("resolve session workspace: %w", workspaceErr)
+	}
 	turnAttrs := []attribute.KeyValue{
 		attribute.String("session.id", sessionID),
 		attribute.String("langfuse.session.id", e.rootSessionID(sessionID)),
@@ -307,7 +311,8 @@ func (e *Engine) runTurn(
 	defer e.setSessionPhase(context.WithoutCancel(ctx), sessionID, conversation.PhaseIdle)
 
 	if e.sessions != nil {
-		ctx = tool.WithCWD(ctx, projectPath)
+		ctx = tool.WithCWD(ctx, workDir)
+		ctx = tool.WithManagedWorkspace(ctx, managedWorkspace)
 		ctx = tool.WithProjectID(ctx, e.resolveProjectID(sessionID))
 		ctx = tool.WithSessionID(ctx, sessionID)
 		ctx = tool.WithModelRuntime(ctx, tool.ModelRuntime{Provider: prov, Model: model})
@@ -455,7 +460,8 @@ func (e *Engine) runTurn(
 
 		rules, ruleIndex, memories := e.persistentContext(sessionID, ruleActivity)
 		sysPrompt := assemblePrompt(promptInput{
-			ProjectPath:  e.resolveProjectPath(sessionID),
+			ProjectPath:  projectPath,
+			WorkDir:      workDir,
 			ApprovalMode: string(e.resolveApprovalMode(sessionID)),
 			Rules:        rules,
 			RuleIndex:    ruleIndex,

@@ -210,6 +210,7 @@ const NATIVE_ERROR_PREFIXES = [
   "Failed to read event stream",
   "Attachment response is not UTF-8",
   "Canvas asset response is not UTF-8",
+  "Unable to save artifact",
   "Event subscription ended before connecting",
   "Canvas event subscription ended before connecting",
   "Terminal subscription ended before connecting",
@@ -327,6 +328,7 @@ const RUNTIME_TEXT_PREFIXES = [
   "Web search:",
   "Read web page:",
   "Write file:",
+  "Create generated file:",
 ] as const;
 
 export function localizeRuntimeText(value: string): string {

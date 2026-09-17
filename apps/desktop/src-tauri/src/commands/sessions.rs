@@ -100,6 +100,29 @@ pub(crate) async fn read_artifact(
 }
 
 #[tauri::command]
+pub(crate) async fn save_artifact(
+    session_id: String,
+    artifact_id: String,
+    path: String,
+) -> Result<(), String> {
+    let data = kernel::request_bytes(
+        "GET",
+        &format!("/sessions/{session_id}/artifacts/{artifact_id}"),
+        None,
+        Vec::new(),
+    )
+    .await?;
+    let target = std::path::PathBuf::from(path);
+    if target.file_name().is_none() {
+        return Err("Unable to save artifact: target path must include a file name".into());
+    }
+    if target.is_dir() {
+        return Err("Unable to save artifact: target path is a directory".into());
+    }
+    std::fs::write(&target, data).map_err(|error| format!("Unable to save artifact: {error}"))
+}
+
+#[tauri::command]
 pub(crate) async fn delete_artifact(session_id: String, artifact_id: String) -> Result<(), String> {
     kernel::request(
         "DELETE",

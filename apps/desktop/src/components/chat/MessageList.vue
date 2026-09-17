@@ -2,7 +2,7 @@
 import { ref, nextTick, watch, onMounted, onBeforeUnmount, computed } from "vue";
 import { BotIcon, ArrowDownIcon, RefreshCwIcon } from "@lucide/vue";
 import MessageBubble from "./MessageBubble.vue";
-import type { ChatMessage } from "@/lib/api";
+import type { AttachmentRef, ChatMessage } from "@/lib/api";
 
 const props = defineProps<{
   sessionId: string;
@@ -23,6 +23,7 @@ const emit = defineEmits<{
   "background-tool": [toolCallId: string];
   "terminal-tool": [toolCallId: string];
   "open-link": [url: string];
+  "open-artifact": [attachment: AttachmentRef];
 }>();
 
 const scrollEl = ref<HTMLElement | null>(null);
@@ -199,6 +200,7 @@ onBeforeUnmount(() => {
             @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
             @terminal-tool="(toolCallId) => emit('terminal-tool', toolCallId)"
             @open-link="(url) => emit('open-link', url)"
+            @open-artifact="(attachment) => emit('open-artifact', attachment)"
           />
         </div>
 

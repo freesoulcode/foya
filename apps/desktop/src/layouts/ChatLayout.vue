@@ -13,6 +13,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   api,
   type ApprovalMode,
+  type AttachmentRef,
   type BackgroundCommand,
   type BrowserActionRequest,
   type BrowserActionResult,
@@ -45,6 +46,7 @@ const workbarStore = useWorkbarStore();
 const { open: workbarOpen } = storeToRefs(workbarStore);
 const {
   openFile: openWorkbarFile,
+  openArtifact: openWorkbarArtifact,
   openBrowser: openWorkbarBrowser,
   openAgentBrowser,
   openBackgroundCommand: openWorkbarBackgroundCommand,
@@ -300,6 +302,11 @@ function onOpenWorkflowFile(path: string) {
   const target = path.replace(/\\/g, "/");
   if (!root || !target.startsWith(`${root}/`)) return;
   openWorkbarFile(projectPath.value, target.slice(root.length + 1));
+}
+
+function onOpenArtifact(attachment: AttachmentRef) {
+  if (!activeId.value) return;
+  openWorkbarArtifact(activeId.value, attachment);
 }
 
 function onOpenBackgroundCommand(command: BackgroundCommand) {
@@ -558,6 +565,7 @@ const viewContext: ChatWorkspaceContext = {
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
+  onOpenArtifact,
   cancelTool,
   backgroundTool,
   onViewToolInWorkbar,

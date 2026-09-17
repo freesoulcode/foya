@@ -109,7 +109,14 @@ func (e *Engine) RunSessionStart(ctx context.Context, sessionID string) {
 	if _, ok := e.sessions.Get(sessionID); !ok {
 		return
 	}
-	ctx = tool.WithCWD(ctx, e.resolveProjectPath(sessionID))
+	projectPath := e.resolveProjectPath(sessionID)
+	workDir, managedWorkspace, err := e.resolveWorkspacePath(ctx, sessionID, projectPath)
+	if err != nil {
+		workDir = projectPath
+		managedWorkspace = false
+	}
+	ctx = tool.WithCWD(ctx, workDir)
+	ctx = tool.WithManagedWorkspace(ctx, managedWorkspace)
 	ctx = tool.WithSessionID(ctx, sessionID)
 	outcome := e.runHook(ctx, sessionID, hooks.Request{
 		Event:  hooks.EventSessionStart,

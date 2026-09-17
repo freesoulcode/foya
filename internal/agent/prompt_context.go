@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/freesoulcode/foya/internal/artifact"
 	conversation "github.com/freesoulcode/foya/internal/conversation"
 	interaction "github.com/freesoulcode/foya/internal/interaction"
 
@@ -138,6 +139,15 @@ func resultText(r tool.Result) string {
 				name = "image"
 			}
 			sb += "[Image: " + name + "]"
+		} else if p.Type == "artifact_ref" && p.Attachment != nil {
+			if sb != "" {
+				sb += "\n"
+			}
+			name := p.Attachment.Name
+			if name == "" {
+				name = p.Attachment.ID
+			}
+			sb += "[Generated artifact: " + name + "]"
 		}
 	}
 	if sb == "" {
@@ -149,58 +159,104 @@ func resultText(r tool.Result) string {
 	return sb
 }
 
-func (e *Engine) persistToolImages(
+func (e *Engine) persistToolArtifacts(
 	ctx context.Context,
 	sessionID, toolName string,
 	result tool.Result,
-) []conversation.AttachmentRef {
+) ([]conversation.AttachmentRef, error) {
 	e.mu.RLock()
 	store := e.artifacts
 	e.mu.RUnlock()
-	if store == nil {
-		return nil
-	}
 	var refs []conversation.AttachmentRef
-	var created []conversation.AttachmentRef
+	var cleanupIDs []string
 	for index, part := range result.Content {
 		if part.Type == "artifact_ref" && part.Attachment != nil {
 			refs = append(refs, *part.Attachment)
+			if part.Attachment.ID != "" {
+				cleanupIDs = append(cleanupIDs, part.Attachment.ID)
+			}
 			continue
 		}
 		if part.Type != "image" || len(part.Data) == 0 {
 			continue
+		}
+		if store == nil {
+			return nil, errors.New("artifact store is unavailable")
 		}
 		name := part.Name
 		if name == "" {
 			name = fmt.Sprintf("%s-image-%d", toolName, index+1)
 		}
 		ref, err := store.PutImage(ctx, sessionID, name, bytes.NewReader(part.Data))
-		if err == nil {
-			refs = append(refs, ref)
-			created = append(created, ref)
+		if err != nil {
+			cleanupToolArtifacts(context.WithoutCancel(ctx), store, sessionID, cleanupIDs)
+			return nil, fmt.Errorf("persist tool image %q: %w", name, err)
 		}
+		refs = append(refs, ref)
+		cleanupIDs = append(cleanupIDs, ref.ID)
 	}
-	if len(created) == 0 {
-		return refs
+	if len(refs) == 0 && len(cleanupIDs) == 0 {
+		return refs, nil
 	}
-	ids := make([]string, 0, len(created))
-	for _, ref := range created {
+	ids := make([]string, 0, len(refs)+len(cleanupIDs))
+	seen := make(map[string]struct{}, len(refs)+len(cleanupIDs))
+	for _, ref := range refs {
+		if ref.ID == "" {
+			continue
+		}
+		if _, ok := seen[ref.ID]; ok {
+			continue
+		}
+		seen[ref.ID] = struct{}{}
 		ids = append(ids, ref.ID)
 	}
-	if err := store.Commit(ctx, sessionID, ids); err != nil {
-		createdIDs := make(map[string]struct{}, len(created))
-		for _, ref := range created {
-			createdIDs[ref.ID] = struct{}{}
-			_ = store.Delete(context.WithoutCancel(ctx), sessionID, ref.ID)
+	for _, id := range cleanupIDs {
+		if id == "" {
+			continue
 		}
-		kept := refs[:0]
-		for _, ref := range refs {
-			if _, ok := createdIDs[ref.ID]; !ok {
-				kept = append(kept, ref)
-			}
+		if _, ok := seen[id]; ok {
+			continue
 		}
-		return kept
+		seen[id] = struct{}{}
+		ids = append(ids, id)
 	}
+	if len(ids) == 0 {
+		return refs, nil
+	}
+	if store == nil {
+		cleanupToolArtifacts(context.WithoutCancel(ctx), store, sessionID, cleanupIDs)
+		return nil, errors.New("artifact store is unavailable")
+	}
+	if err := store.Commit(ctx, sessionID, ids); err != nil {
+		cleanupToolArtifacts(context.WithoutCancel(ctx), store, sessionID, cleanupIDs)
+		return nil, fmt.Errorf("commit tool artifacts: %w", err)
+	}
+	return refs, nil
+}
+
+func cleanupToolArtifacts(ctx context.Context, store artifact.Store, sessionID string, artifactIDs []string) {
+	if store == nil || sessionID == "" {
+		return
+	}
+	seen := make(map[string]struct{}, len(artifactIDs))
+	for _, id := range artifactIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		_ = store.Delete(ctx, sessionID, id)
+	}
+}
+
+func (e *Engine) persistToolImages(
+	ctx context.Context,
+	sessionID, toolName string,
+	result tool.Result,
+) []conversation.AttachmentRef {
+	refs, _ := e.persistToolArtifacts(ctx, sessionID, toolName, result)
 	return refs
 }
 
@@ -217,6 +273,23 @@ func (e *Engine) resolveProjectPath(sessionID string) string {
 		}
 	}
 	return ""
+}
+
+func (e *Engine) resolveWorkspacePath(ctx context.Context, sessionID, projectPath string) (string, bool, error) {
+	if projectPath != "" {
+		return projectPath, false, nil
+	}
+	e.mu.RLock()
+	resolve := e.workspaceResolver
+	e.mu.RUnlock()
+	if resolve == nil {
+		return "", false, nil
+	}
+	path, err := resolve(ctx, sessionID)
+	if err != nil {
+		return "", false, err
+	}
+	return path, path != "", nil
 }
 
 func (e *Engine) resolveProjectID(sessionID string) string {

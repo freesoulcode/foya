@@ -1,6 +1,6 @@
 // Kernel API wrapper. Components and composables depend only on this module.
 import { invoke as tauriInvoke, Channel } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { localizeError, translate } from "@/i18n";
 
 function invoke<T>(
@@ -136,7 +136,7 @@ export interface SubmitTurnResult {
 export interface AttachmentRef {
   id: string;
   name: string;
-  kind: "image";
+  kind: string;
   media_type: string;
   bytes: number;
   width?: number;
@@ -1191,6 +1191,20 @@ export const api = {
     invoke<number[]>("read_artifact", { sessionId, artifactId }).then(
       (bytes) => new Uint8Array(bytes)
     ),
+
+  saveArtifact: async (sessionId: string, attachment: AttachmentRef) => {
+    const path = await saveDialog({
+      title: translate("Save generated file"),
+      defaultPath: attachment.name || "generated",
+    });
+    if (!path) return false;
+    await invoke("save_artifact", {
+      sessionId,
+      artifactId: attachment.id,
+      path,
+    });
+    return true;
+  },
 
   deleteArtifact: (sessionId: string, artifactId: string) =>
     invoke("delete_artifact", { sessionId, artifactId }),

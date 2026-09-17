@@ -100,6 +100,7 @@ pub fn run() {
             submit_turn,
             upload_image,
             read_artifact,
+            save_artifact,
             delete_artifact,
             list_canvases,
             create_canvas,

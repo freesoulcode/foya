@@ -13,6 +13,7 @@
     "core:window:allow-close",
     "opener:default",
     "dialog:allow-open",
+    "dialog:allow-save",
     {
       "identifier": "shell:allow-execute",
       "allow": [

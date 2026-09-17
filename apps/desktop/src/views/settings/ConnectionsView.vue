@@ -41,6 +41,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
+  normalizeTokenLimitInput,
+  tokenLimitEditorValue,
+  type TokenLimitValue,
+} from "@/views/settings/modelTokenLimits";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -68,9 +73,9 @@ const pendingImportedModels = ref<Set<string>>(new Set());
 const modelImportOpen = ref(false);
 const modelImportQuery = ref("");
 const modelImportLoading = ref(false);
-const modelContextWindowValue = ref("");
-const modelMaxInputTokensValue = ref("");
-const modelMaxOutputTokensValue = ref("");
+const modelContextWindowValue = ref<TokenLimitValue>(undefined);
+const modelMaxInputTokensValue = ref<TokenLimitValue>(undefined);
+const modelMaxOutputTokensValue = ref<TokenLimitValue>(undefined);
 const connectionModels = ref<Record<string, string[]>>({});
 const modelEditor = ref<string | null>(null);
 const showApiKey = ref(false);
@@ -311,26 +316,38 @@ function setReasoningEffort(
   };
 }
 
-function setTokenValue(value?: number): string {
-  return value && value > 0 ? String(value) : "";
-}
-
 function updateModelTokenLimits() {
   if (!modelEditor.value) return;
   modelSettings.value = {
     ...modelSettings.value,
     [modelEditor.value]: {
       ...(modelSettings.value[modelEditor.value] ?? {}),
-      context_window: parseTokenValue(modelContextWindowValue.value),
-      max_input_tokens: parseTokenValue(modelMaxInputTokensValue.value),
-      max_output_tokens: parseTokenValue(modelMaxOutputTokensValue.value),
+      context_window: modelContextWindowValue.value,
+      max_input_tokens: modelMaxInputTokensValue.value,
+      max_output_tokens: modelMaxOutputTokensValue.value,
     },
   };
 }
 
-function parseTokenValue(value: string): number | undefined {
-  const parsed = Number(value.trim());
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+function updateTokenInput(target: "context_window" | "max_input_tokens" | "max_output_tokens", value: string | number) {
+  const normalized = normalizeTokenLimitInput(value);
+  if (target === "context_window") modelContextWindowValue.value = normalized;
+  else if (target === "max_input_tokens") modelMaxInputTokensValue.value = normalized;
+  else modelMaxOutputTokensValue.value = normalized;
+}
+
+function preventNonNumericTokenInput(event: KeyboardEvent) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key.length === 1 && !/^\d$/.test(event.key)) {
+    event.preventDefault();
+  }
+}
+
+function preventNonNumericTokenPaste(event: ClipboardEvent) {
+  const text = event.clipboardData?.getData("text") ?? "";
+  if (text && !/^\d+$/.test(text.trim())) {
+    event.preventDefault();
+  }
 }
 
 async function checkConnection(connection: ConnectionConfig, force = false) {
@@ -417,9 +434,9 @@ function openModelEditor(model: string) {
     },
   };
   const settings = modelSettings.value[model];
-  modelContextWindowValue.value = setTokenValue(settings?.context_window);
-  modelMaxInputTokensValue.value = setTokenValue(settings?.max_input_tokens);
-  modelMaxOutputTokensValue.value = setTokenValue(settings?.max_output_tokens);
+  modelContextWindowValue.value = tokenLimitEditorValue(settings?.context_window);
+  modelMaxInputTokensValue.value = tokenLimitEditorValue(settings?.max_input_tokens);
+  modelMaxOutputTokensValue.value = tokenLimitEditorValue(settings?.max_output_tokens);
 }
 
 function closeModelEditor() {
@@ -1013,12 +1030,17 @@ void loadConnections();
               <Label for="model-context-window">{{ $t("Context window") }}</Label>
               <Input
                 id="model-context-window"
-                v-model="modelContextWindowValue"
+                :model-value="modelContextWindowValue"
                 type="number"
-                min="0"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                min="1"
                 step="1"
                 :placeholder="$t('Use service default')"
                 :disabled="loading"
+                @keydown="preventNonNumericTokenInput"
+                @paste="preventNonNumericTokenPaste"
+                @update:model-value="updateTokenInput('context_window', $event)"
                 @change="updateModelTokenLimits"
               />
             </div>
@@ -1026,12 +1048,17 @@ void loadConnections();
               <Label for="model-max-input-tokens">{{ $t("Maximum input tokens") }}</Label>
               <Input
                 id="model-max-input-tokens"
-                v-model="modelMaxInputTokensValue"
+                :model-value="modelMaxInputTokensValue"
                 type="number"
-                min="0"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                min="1"
                 step="1"
                 :placeholder="$t('Use service default')"
                 :disabled="loading"
+                @keydown="preventNonNumericTokenInput"
+                @paste="preventNonNumericTokenPaste"
+                @update:model-value="updateTokenInput('max_input_tokens', $event)"
                 @change="updateModelTokenLimits"
               />
             </div>
@@ -1039,12 +1066,17 @@ void loadConnections();
               <Label for="model-max-output-tokens">{{ $t("Maximum output tokens") }}</Label>
               <Input
                 id="model-max-output-tokens"
-                v-model="modelMaxOutputTokensValue"
+                :model-value="modelMaxOutputTokensValue"
                 type="number"
-                min="0"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                min="1"
                 step="1"
                 :placeholder="$t('Use service default')"
                 :disabled="loading"
+                @keydown="preventNonNumericTokenInput"
+                @paste="preventNonNumericTokenPaste"
+                @update:model-value="updateTokenInput('max_output_tokens', $event)"
                 @change="updateModelTokenLimits"
               />
             </div>

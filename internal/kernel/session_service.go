@@ -130,6 +130,11 @@ func (b *Service) ForkSession(
 		b.cleanupFailedFork(ctx, forked.ID, artifactStore)
 		return nil, err
 	}
+	artifactStore, err = b.copyForkWorkspace(ctx, source, forked.ID, artifactStore)
+	if err != nil {
+		b.cleanupFailedFork(ctx, forked.ID, artifactStore)
+		return nil, err
+	}
 	if _, err := b.log.ImportMessages(
 		ctx,
 		forked.ID,
@@ -142,6 +147,29 @@ func (b *Service) ForkSession(
 	}
 
 	return forked, nil
+}
+
+func (b *Service) copyForkWorkspace(
+	ctx context.Context,
+	source *conversation.Session,
+	targetID string,
+	store artifact.Store,
+) (artifact.Store, error) {
+	if source.ProjectID != "" {
+		return store, nil
+	}
+	if store == nil {
+		b.mu.RLock()
+		store = b.artifacts
+		b.mu.RUnlock()
+	}
+	if store == nil {
+		return nil, nil
+	}
+	if err := store.CopyWorkspace(ctx, source.ID, targetID); err != nil {
+		return store, fmt.Errorf("copy fork workspace: %w", err)
+	}
+	return store, nil
 }
 
 func (b *Service) cleanupFailedFork(
@@ -221,26 +249,46 @@ func copyAttachmentRefs(
 	}
 	out := make([]conversation.AttachmentRef, 0, len(refs))
 	for _, ref := range refs {
-		if existing, ok := copied[ref.ID]; ok {
-			out = append(out, existing)
-			continue
-		}
-		data, canonical, err := store.Read(ctx, sourceID, ref.ID)
+		next, err := copyArtifactByID(ctx, store, sourceID, targetID, ref.ID, copied, commitIDs)
 		if err != nil {
-			return nil, fmt.Errorf("read fork source artifact %q: %w", ref.ID, err)
+			return nil, err
 		}
-		if canonical.Kind != "image" {
-			return nil, fmt.Errorf("unsupported fork artifact kind %q", canonical.Kind)
-		}
-		next, err := store.PutImage(ctx, targetID, canonical.Name, bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("write fork artifact %q: %w", ref.ID, err)
-		}
-		copied[ref.ID] = next
-		*commitIDs = append(*commitIDs, next.ID)
 		out = append(out, next)
 	}
 	return out, nil
+}
+
+func copyArtifactByID(
+	ctx context.Context,
+	store artifact.Store,
+	sourceID string,
+	targetID string,
+	artifactID string,
+	copied map[string]conversation.AttachmentRef,
+	commitIDs *[]string,
+) (conversation.AttachmentRef, error) {
+	if existing, ok := copied[artifactID]; ok {
+		return existing, nil
+	}
+	data, canonical, err := store.Read(ctx, sourceID, artifactID)
+	if err != nil {
+		return conversation.AttachmentRef{}, fmt.Errorf("read fork source artifact %q: %w", artifactID, err)
+	}
+	var next conversation.AttachmentRef
+	switch canonical.Kind {
+	case "image":
+		next, err = store.PutImage(ctx, targetID, canonical.Name, bytes.NewReader(data))
+	case "file":
+		next, err = store.PutFile(ctx, targetID, canonical.Name, canonical.MediaType, bytes.NewReader(data))
+	default:
+		return conversation.AttachmentRef{}, fmt.Errorf("unsupported fork artifact kind %q for artifact %q", canonical.Kind, artifactID)
+	}
+	if err != nil {
+		return conversation.AttachmentRef{}, fmt.Errorf("write fork artifact %q: %w", artifactID, err)
+	}
+	copied[artifactID] = next
+	*commitIDs = append(*commitIDs, next.ID)
+	return next, nil
 }
 
 func forkThroughSeq(history []conversation.Message) conversation.Seq {

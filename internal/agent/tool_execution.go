@@ -164,8 +164,15 @@ func (e *Engine) executeToolCalls(
 		if postHook.Halt {
 			item.terminate = true
 		}
+		attachments, persistErr := e.persistToolArtifacts(toolCtx, sessionID, item.call.Name, result)
+		if persistErr != nil {
+			result = tool.Result{IsError: true, Content: []tool.ContentPart{{
+				Type: "text",
+				Text: "Tool artifact persistence failed: " + persistErr.Error(),
+			}}}
+		}
 		item.output = resultText(result)
-		item.attachments = e.persistToolImages(toolCtx, sessionID, item.call.Name, result)
+		item.attachments = attachments
 		item.isErr = result.IsError
 		item.diff = result.Diff
 		item.fileChange = result.FileChange
