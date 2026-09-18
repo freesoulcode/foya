@@ -86,6 +86,7 @@ const {
   revealToolCommandForSession,
   stopBackgroundCommandForSession,
   updateSession,
+  forkSession,
   editQueuedMessageForSession,
   reorderQueuedMessageForSession,
   deleteQueuedMessageForSession,
@@ -189,6 +190,12 @@ function createSideChatFromMessage(messageSeq: number) {
   emit("create-side-chat", props.sessionId, messageSeq);
 }
 
+function forkAtMessage(messageSeq: number) {
+  void forkSession(props.sessionId, messageSeq).catch((error) => {
+    console.error("Failed to fork chat from this message:", error);
+  });
+}
+
 function listWorkspaceFiles(): Promise<WorkspaceEntry[]> {
   return api.listWorkspaceFiles(props.sessionId);
 }
@@ -288,7 +295,8 @@ function onOpenWorkflowFile(path: string) {
         :editable="queuedMessages.length === 0"
         :empty-hint="$t('Side chats disappear when closed.')"
         @rewind-message="rewindSentMessageForSession(sessionId, $event)"
-        @fork-message="createSideChatFromMessage"
+        @fork-message="forkAtMessage"
+        @side-chat-message="createSideChatFromMessage"
         @open-diff="onOpenDiff"
         @open-artifact="emit('open-artifact', $event)"
         @cancel-tool="cancelToolForSession(sessionId, $event)"

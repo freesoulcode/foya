@@ -8,6 +8,7 @@ import {
   CheckIcon,
   Undo2Icon,
   ChevronRightIcon,
+  GitForkIcon,
   MessageSquarePlusIcon,
   BrainIcon,
   FileTextIcon,
@@ -81,6 +82,7 @@ onBeforeUnmount(() => {
 const emit = defineEmits<{
   (e: "rewind", messageSeq: number): void;
   (e: "fork", messageSeq: number): void;
+  (e: "side-chat", messageSeq: number): void;
   (e: "open-diff", diff: string): void;
   (e: "cancel-tool", toolCallId: string): void;
   (e: "background-tool", toolCallId: string): void;
@@ -282,6 +284,11 @@ async function copyAll() {
 function forkAtMessage() {
   if (!props.message.event_seq || !props.editable) return;
   emit("fork", props.message.event_seq);
+}
+
+function sideChatAtMessage() {
+  if (!props.message.event_seq || !props.editable) return;
+  emit("side-chat", props.message.event_seq);
 }
 
 function rewindMessage() {
@@ -516,9 +523,20 @@ function rewindMessage() {
           type="button"
           class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
           :disabled="!editable"
+          :title="$t('Fork chat from here')"
+          :aria-label="$t('Fork chat from here')"
+          @click="forkAtMessage"
+        >
+          <GitForkIcon class="size-3.5" />
+        </button>
+        <button
+          v-if="message.event_seq"
+          type="button"
+          class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+          :disabled="!editable"
           :title="$t('Side chat from here')"
           :aria-label="$t('Side chat from here')"
-          @click="forkAtMessage"
+          @click="sideChatAtMessage"
         >
           <MessageSquarePlusIcon class="size-3.5" />
         </button>

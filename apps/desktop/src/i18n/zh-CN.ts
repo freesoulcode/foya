@@ -271,6 +271,7 @@ export const zhCN: Record<string, string> = {
   "Task completed in {duration}": "任务耗时 {duration}",
   "Thinking": "正在思考…",
   "Thought deeply": "已深度思考",
+  "Fork chat from here": "从此处复制会话",
   "Side chat from here": "从此处开启侧边聊天",
   "Side chats disappear when closed.": "侧边聊天是临时聊天，关闭后会消失。",
   "Copy response": "复制回复",
