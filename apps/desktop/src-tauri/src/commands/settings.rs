@@ -50,6 +50,19 @@ pub(crate) async fn list_connection_models(
     kernel::request("GET", &path, None).await
 }
 
+/// Discover models using unsaved connection settings.
+#[tauri::command]
+pub(crate) async fn discover_connection_models(
+    config: serde_json::Value,
+) -> Result<String, String> {
+    kernel::request(
+        "POST",
+        "/connections/discover-models",
+        Some(&config.to_string()),
+    )
+    .await
+}
+
 #[tauri::command]
 pub(crate) async fn get_default_models() -> Result<String, String> {
     kernel::request("GET", "/settings/default-models", None).await

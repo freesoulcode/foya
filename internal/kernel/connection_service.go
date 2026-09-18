@@ -130,6 +130,67 @@ func (b *Service) ListModels(ctx context.Context, connectionID string, refresh b
 	return models, nil
 }
 
+// DiscoverModels queries a provider using draft connection settings without
+// adding the connection to the persisted catalog.
+func (b *Service) DiscoverModels(ctx context.Context, draft config.Connection) ([]model.ModelInfo, error) {
+	if draft.ID != "" {
+		current, exists := b.Connection(draft.ID)
+		if !exists {
+			return nil, fmt.Errorf("%w: %q", ErrConnectionNotFound, draft.ID)
+		}
+		if draft.APIKey == "" {
+			draft.APIKey = current.APIKey
+		}
+		if draft.BaseURL == "" {
+			draft.BaseURL = current.BaseURL
+		}
+		if draft.Kind == "" {
+			draft.Kind = current.Kind
+		}
+		if draft.AuthKind == "" {
+			draft.AuthKind = current.AuthKind
+		}
+		if draft.Type == "" {
+			draft.Type = current.Type
+			draft.VideoProtocol = current.VideoProtocol
+		}
+	}
+	if draft.Type == "" {
+		draft.Type = config.ConnectionTypeLanguage
+	}
+	if draft.Kind == "" {
+		draft.Kind = "openai"
+	}
+	if draft.AuthKind == "" {
+		draft.AuthKind = "api_key"
+	}
+	if draft.AuthKind != "api_key" {
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedAuth, draft.AuthKind)
+	}
+	if err := validateConnectionType(draft.Type); err != nil {
+		return nil, err
+	}
+	if err := validateVideoProtocol(draft.Type, draft.VideoProtocol); err != nil {
+		return nil, err
+	}
+	if draft.Type == config.ConnectionTypeVideo &&
+		draft.VideoProtocol == config.VideoProtocolMiniMaxH3 {
+		return []model.ModelInfo{
+			{ID: "MiniMax-H3"},
+			{ID: "MiniMax-H3-Max"},
+		}, nil
+	}
+	if b.buildProvider == nil {
+		return nil, errors.New("model provider is unavailable")
+	}
+	provider, _ := b.buildProvider(draft.Provider())
+	lister, ok := provider.(model.ModelLister)
+	if !ok {
+		return nil, errors.New("connection does not support model discovery")
+	}
+	return lister.ListModels(ctx)
+}
+
 // Usage returns token usage for the latest model request.
 func (b *Service) Usage(ctx context.Context, sessionID string) (*model.Usage, error) {
 	if _, ok := b.sessions.Get(sessionID); !ok {

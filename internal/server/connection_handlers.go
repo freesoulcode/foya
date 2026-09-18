@@ -168,6 +168,43 @@ func (s *Server) handleListConnectionModels(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleDiscoverConnectionModels(w http.ResponseWriter, r *http.Request) {
+	var input ConnectionConfig
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	models, err := s.service.DiscoverModels(r.Context(), toConnection(input))
+	if err != nil {
+		switch {
+		case errors.Is(err, kernel.ErrConnectionNotFound):
+			writeErr(w, http.StatusNotFound, "connection_not_found", err.Error())
+		case errors.Is(err, kernel.ErrUnsupportedAuth):
+			writeErr(w, http.StatusBadRequest, "unsupported_auth_kind", err.Error())
+		default:
+			writeErr(w, http.StatusBadGateway, "models_failed", err.Error())
+		}
+		return
+	}
+	ids := make([]string, 0, len(models))
+	contextWindows := make(map[string]int64)
+	capabilities := make(map[string]model.ModelCapabilities)
+	for _, model := range models {
+		ids = append(ids, model.ID)
+		if model.ContextWindow > 0 {
+			contextWindows[model.ID] = model.ContextWindow
+		}
+		if model.Capabilities.ImageInput != nil {
+			capabilities[model.ID] = model.Capabilities
+		}
+	}
+	writeJSON(w, http.StatusOK, ConnectionModelsResponse{
+		Models:         ids,
+		ContextWindows: contextWindows,
+		Capabilities:   capabilities,
+	})
+}
+
 func (s *Server) handleGetDefaultModels(w http.ResponseWriter, _ *http.Request) {
 	defaults, err := s.service.DefaultModels()
 	if err != nil {
