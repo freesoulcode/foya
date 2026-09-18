@@ -22,6 +22,13 @@ import {
 } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 import { diffFileName, diffStats } from "@/lib/diff";
+import {
+  commandOutput,
+  commandText,
+  formatToolInput,
+  isBackgroundCommandEnvelope,
+  parseToolPayload,
+} from "@/lib/toolDisplay";
 import type { AttachmentRef, ToolCallView } from "@/lib/api";
 import ArtifactAttachmentList from "./ArtifactAttachmentList.vue";
 import SubAgentActivity from "./SubAgentActivity.vue";
@@ -179,24 +186,16 @@ function isGeneratedFileTool(tool: ToolCallView): boolean {
 function toolTargetPath(tool: ToolCallView): string {
   for (const raw of [tool.input, tool.output]) {
     if (!raw) continue;
-    try {
-      const value = JSON.parse(raw) as { path?: unknown };
-      if (typeof value.path === "string" && value.path.trim()) return value.path.trim();
-    } catch {
-      // Non-JSON output is not a structured file result.
-    }
+    const value = parseToolPayload(raw);
+    if (typeof value?.path === "string" && value.path.trim()) return value.path.trim();
   }
   return "";
 }
 
 function toolTargetKind(tool: ToolCallView): string {
   if (!tool.output) return "";
-  try {
-    const value = JSON.parse(tool.output) as { kind?: unknown };
-    return typeof value.kind === "string" ? value.kind : "";
-  } catch {
-    return "";
-  }
+  const value = parseToolPayload(tool.output);
+  return typeof value?.kind === "string" ? value.kind : "";
 }
 
 function toolTargetName(tool: ToolCallView): string {
@@ -205,6 +204,7 @@ function toolTargetName(tool: ToolCallView): string {
 }
 
 function showRawDetails(tool: ToolCallView): boolean {
+  if (tool.name === "bash") return false;
   return !isFileChangeTool(tool) || tool.status === "error";
 }
 
@@ -217,7 +217,7 @@ function toolLabel(tool: ToolCallView): string {
   if (tool.status === "error") {
     return t("{action} (failed)", { action: t(meta.done, values) + agentSuffix });
   }
-  if (tool.name === "bash" && tool.output?.includes('"running_in_background"')) {
+  if (tool.name === "bash" && isBackgroundCommandEnvelope(tool.output)) {
     return t("Command moved to background");
   }
   if (tool.name === "delete") {
@@ -249,13 +249,6 @@ function isToolExpanded(tool: ToolCallView): boolean {
   return expandedTools.value.has(tool.id);
 }
 
-function formatInput(input: string): string {
-  try {
-    return JSON.stringify(JSON.parse(input), null, 2);
-  } catch {
-    return input;
-  }
-}
 </script>
 
 <template>
@@ -263,18 +256,23 @@ function formatInput(input: string): string {
     <button
       v-if="isBatch"
       type="button"
-      class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+      class="group/tool-summary flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
       :aria-expanded="batchExpanded"
       @click="batchExpanded = !batchExpanded"
     >
-      <ChevronRightIcon
-        :class="cn('size-3.5 shrink-0 transition-transform', batchExpanded && 'rotate-90')"
-      />
       <LoaderCircleIcon
         v-if="runningCount > 0"
         class="size-3.5 shrink-0 animate-spin text-primary"
       />
-      <span>{{ batchTitle }}</span>
+      <span class="min-w-0 truncate">{{ batchTitle }}</span>
+      <ChevronRightIcon
+        :class="
+          cn(
+            'size-3.5 shrink-0 text-muted-foreground/70 opacity-0 transition-[opacity,transform] group-hover/tool-summary:opacity-100 group-focus-visible/tool-summary:opacity-100',
+            batchExpanded && 'rotate-90',
+          )
+        "
+      />
     </button>
 
     <div
@@ -285,18 +283,25 @@ function formatInput(input: string): string {
         <div class="flex min-w-0 items-center">
           <button
             type="button"
-            class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+            class="group/tool-row flex min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
             :title="toolLabel(tool)"
+            :aria-expanded="isToolExpanded(tool)"
             @click="toggleTool(tool)"
           >
-            <ChevronRightIcon
-              :class="cn('size-3.5 shrink-0 transition-transform', isToolExpanded(tool) && 'rotate-90')"
-            />
             <component
               :is="toolIcon(tool)"
               :class="cn('size-3.5 shrink-0', tool.status === 'running' && 'animate-pulse text-primary')"
             />
-            <span class="min-w-0 flex-1 truncate">{{ toolLabel(tool) }}</span>
+            <span class="min-w-0 truncate">{{ toolLabel(tool) }}</span>
+            <ChevronRightIcon
+              :class="
+                cn(
+                  'size-3.5 shrink-0 text-muted-foreground/70 opacity-0 transition-[opacity,transform] group-hover/tool-row:opacity-100 group-focus-visible/tool-row:opacity-100',
+                  isToolExpanded(tool) && 'rotate-90',
+                )
+              "
+            />
+            <span class="min-w-0 flex-1" aria-hidden="true" />
             <LoaderCircleIcon
               v-if="tool.status === 'running'"
               class="size-3.5 shrink-0 animate-spin text-primary"
@@ -349,9 +354,33 @@ function formatInput(input: string): string {
               :run="tool.agent_run"
               :messages="tool.child_messages"
             />
+            <div
+              v-if="tool.name === 'bash' && (tool.input || commandOutput(tool))"
+              class="mb-2 overflow-hidden rounded-md border border-border bg-muted/30 font-mono text-[11px]"
+            >
+              <div
+                v-if="tool.input"
+                class="flex min-w-0 items-start gap-2 px-2.5 py-2"
+              >
+                <span class="shrink-0 select-none text-primary">$</span>
+                <pre class="min-w-0 overflow-x-auto whitespace-pre-wrap break-words text-foreground/85">{{ commandText(tool) }}</pre>
+              </div>
+              <pre
+                v-if="commandOutput(tool)"
+                :class="
+                  cn(
+                    'max-h-64 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2',
+                    tool.input && 'border-t border-border',
+                    tool.status === 'error'
+                      ? 'text-destructive'
+                      : 'text-foreground/70',
+                  )
+                "
+              >{{ commandOutput(tool) }}</pre>
+            </div>
             <div v-if="showRawDetails(tool) && tool.input" class="mb-2">
               <div class="mb-1 text-[10px] uppercase text-muted-foreground">{{ $t("Arguments") }}</div>
-              <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatInput(tool.input) }}</pre>
+              <pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ formatToolInput(tool.input) }}</pre>
             </div>
             <div v-if="showRawDetails(tool) && tool.output">
               <div class="mb-1 text-[10px] uppercase text-muted-foreground">{{ $t("Output") }}</div>
