@@ -9,14 +9,51 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      desktop: ${{ steps.filter.outputs.desktop }}
+      site: ${{ steps.filter.outputs.site }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Detect affected modules
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            go:
+              - ".github/workflows/ci.yml"
+              - ".github/actions/**"
+              - "Makefile"
+              - "go.mod"
+              - "go.sum"
+              - "cmd/**"
+              - "internal/**"
+            desktop:
+              - ".github/workflows/ci.yml"
+              - ".github/actions/**"
+              - "apps/desktop/**"
+            site:
+              - ".github/workflows/ci.yml"
+              - ".github/actions/**"
+              - "apps/site/**"
+
   go:
     name: Go
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -47,23 +84,15 @@ jobs:
       - name: Build
         run: go build ./cmd/foya
 
-  frontend:
-    name: ${{ matrix.name }}
+  desktop:
+    name: Desktop frontend
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Desktop frontend
-            directory: apps/desktop
-            lockfile: apps/desktop/pnpm-lock.yaml
-          - name: Website and docs
-            directory: apps/site
-            lockfile: apps/site/pnpm-lock.yaml
     defaults:
       run:
-        working-directory: ${{ matrix.directory }}
+        working-directory: apps/desktop
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -78,14 +107,44 @@ jobs:
         with:
           node-version: 22.12
           cache: pnpm
-          cache-dependency-path: ${{ matrix.lockfile }}
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Test
-        if: matrix.directory == 'apps/desktop'
         run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  site:
+    name: Website and docs
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/site
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.12
+          cache: pnpm
+          cache-dependency-path: apps/site/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build
