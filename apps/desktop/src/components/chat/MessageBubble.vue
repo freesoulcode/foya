@@ -19,6 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { AttachmentRef, ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
+import { formatFullTime, formatMessageTime } from "@/lib/dateTime";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 import TaskArtifacts from "./TaskArtifacts.vue";
@@ -30,7 +31,13 @@ const props = defineProps<{
   streaming?: boolean;
   editable?: boolean;
 }>();
-const { t } = useI18n();
+const { locale, t } = useI18n();
+const messageTime = computed(() =>
+  formatMessageTime(props.message.created_at, locale.value),
+);
+const messageFullTime = computed(() =>
+  formatFullTime(props.message.created_at, locale.value),
+);
 
 const attachmentURLs = ref<Record<string, string>>({});
 let attachmentLoad = 0;
@@ -521,38 +528,50 @@ function rewindMessage() {
 
     <div
       v-if="isUser"
-      class="flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+      class="flex items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
     >
-      <button
-        type="button"
-        class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        :title="copiedAll ? $t('Copied') : $t('Copy message')"
-        @click="copyAll"
+      <time
+        v-if="messageTime"
+        :datetime="message.created_at"
+        :title="messageFullTime"
+        class="mr-0.5 text-[11px] text-muted-foreground/70"
       >
-        <CheckIcon v-if="copiedAll" class="size-3.5" />
-        <CopyIcon v-else class="size-3.5" />
-      </button>
-      <button
-        v-if="message.event_seq"
-        type="button"
-        class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-        :disabled="!editable || rewindUnsupported"
-        :title="
-          rewindUnsupported
-            ? $t('Messages with attachments, browser context, or commands cannot be rewound')
-            : editable
-              ? $t('Rewind to composer')
-              : $t('Cannot rewind while the chat is running')
-        "
-        :aria-label="
-          rewindUnsupported
-            ? $t('Messages with attachments, browser context, or commands cannot be rewound')
-            : $t('Rewind to composer')
-        "
-        @click="rewindMessage"
+        {{ messageTime }}
+      </time>
+      <span
+        class="flex items-center gap-0.5"
       >
-        <Undo2Icon class="size-3.5" />
-      </button>
+        <button
+          type="button"
+          class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          :title="copiedAll ? $t('Copied') : $t('Copy message')"
+          @click="copyAll"
+        >
+          <CheckIcon v-if="copiedAll" class="size-3.5" />
+          <CopyIcon v-else class="size-3.5" />
+        </button>
+        <button
+          v-if="message.event_seq"
+          type="button"
+          class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+          :disabled="!editable || rewindUnsupported"
+          :title="
+            rewindUnsupported
+              ? $t('Messages with attachments, browser context, or commands cannot be rewound')
+              : editable
+                ? $t('Rewind to composer')
+                : $t('Cannot rewind while the chat is running')
+          "
+          :aria-label="
+            rewindUnsupported
+              ? $t('Messages with attachments, browser context, or commands cannot be rewound')
+              : $t('Rewind to composer')
+          "
+          @click="rewindMessage"
+        >
+          <Undo2Icon class="size-3.5" />
+        </button>
+      </span>
     </div>
   </div>
 </template>

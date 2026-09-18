@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   CircleAlertIcon,
@@ -15,6 +15,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import type { Session } from "@/lib/api";
+import { formatFullTime, formatSessionTime } from "@/lib/dateTime";
 
 const props = defineProps<{
   session: Session;
@@ -23,7 +24,16 @@ const props = defineProps<{
   unread?: boolean;
   needsAttention?: boolean;
 }>();
-const { t } = useI18n();
+const { locale, t } = useI18n();
+const sessionTime = computed(() =>
+  formatSessionTime(props.session.updated_at, locale.value, new Date(), {
+    yesterday: t("Yesterday"),
+    dayBeforeYesterday: t("Day before yesterday"),
+  }),
+);
+const sessionFullTime = computed(() =>
+  formatFullTime(props.session.updated_at, locale.value),
+);
 
 const emit = defineEmits<{
   (event: "select", id: string): void;
@@ -104,20 +114,28 @@ function requestDelete(event: Event) {
         >
           {{ title() }}
         </span>
+        <time
+          v-if="sessionTime && !editing"
+          :datetime="session.updated_at"
+          :title="sessionFullTime"
+          class="shrink-0 text-[11px] font-normal text-sidebar-foreground/50 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
+        >
+          {{ sessionTime }}
+        </time>
         <CircleAlertIcon
           v-if="needsAttention && !editing"
-          class="ml-auto size-3.5 shrink-0 text-amber-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
+          class="size-3.5 shrink-0 text-amber-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
           :aria-label="$t('Needs attention')"
           :title="$t('Needs attention')"
         />
         <Loader2Icon
           v-else-if="running && !editing"
-          class="ml-auto size-3.5 shrink-0 animate-spin text-primary group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
+          class="size-3.5 shrink-0 animate-spin text-primary group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
           :aria-label="$t('AI is running')"
         />
         <span
           v-else-if="unread && !editing"
-          class="ml-auto size-2 shrink-0 rounded-full bg-emerald-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
+          class="size-2 shrink-0 rounded-full bg-emerald-500 group-hover/menu-item:hidden group-focus-within/menu-item:hidden"
           :aria-label="$t('Unread result')"
           :title="$t('Unread result')"
         />

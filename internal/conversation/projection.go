@@ -79,15 +79,24 @@ func activeMessageEvents(events []Event) []Event {
 }
 
 func messageFromEvent(ev Event) (Message, bool) {
+	var item Message
 	switch value := ev.Payload.(type) {
 	case Message:
-		return value, true
+		item = value
 	case *Message:
 		if value != nil {
-			return *value, true
+			item = *value
+		} else {
+			return Message{}, false
 		}
+	default:
+		return Message{}, false
 	}
-	return Message{}, false
+	if item.CreatedAt == nil && !ev.Time.IsZero() {
+		createdAt := ev.Time
+		item.CreatedAt = &createdAt
+	}
+	return item, true
 }
 
 func historyRewindFromPayload(payload any) (HistoryRewound, bool) {

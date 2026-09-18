@@ -2,7 +2,6 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  ChevronDownIcon,
   ChevronRightIcon,
   Clock3Icon,
   EllipsisIcon,
@@ -49,6 +48,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { ProjectInfo, Session } from "@/lib/api";
 import SessionSidebarItem from "@/components/chat/SessionSidebarItem.vue";
+import {
+  buildChatSidebarGroups,
+  type ProjectGroup,
+} from "./chatSidebarGroups";
 
 const props = defineProps<{
   isMac: boolean;
@@ -148,32 +151,26 @@ async function revealProject(project: ProjectInfo) {
   }
 }
 
-function sortSessions(items: Session[]): Session[] {
-  return [...items].sort((a, b) => {
-    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
-    const aTime = a.pinned ? a.pinned_at ?? a.updated_at : a.updated_at;
-    const bTime = b.pinned ? b.pinned_at ?? b.updated_at : b.updated_at;
-    return bTime.localeCompare(aTime);
-  });
-}
-
-const ungroupedSessions = computed(() =>
-  sortSessions(
-    props.sessions.filter(
-      (session) =>
-        !session.project_id ||
-        !props.projects.some((project) => project.id === session.project_id)
-    )
-  )
+const sidebarGroups = computed(() =>
+  buildChatSidebarGroups(props.sessions, props.projects),
 );
+const pinnedSessions = computed(() => sidebarGroups.value.pinnedSessions);
+const ungroupedSessions = computed(
+  () => sidebarGroups.value.ungroupedSessions,
+);
+const projectGroups = computed(() => sidebarGroups.value.projectGroups);
 
-interface ProjectGroup {
-  project: ProjectInfo;
-  sessions: Session[];
-  updatedAt: string;
-}
+type SidebarSection = "pinned" | "chats" | "projects";
 
+const collapsedSections = ref<Set<SidebarSection>>(new Set());
 const collapsedProjects = ref<Set<string>>(new Set());
+
+function toggleSection(section: SidebarSection) {
+  const next = new Set(collapsedSections.value);
+  if (next.has(section)) next.delete(section);
+  else next.add(section);
+  collapsedSections.value = next;
+}
 
 function toggleProject(projectID: string) {
   const next = new Set(collapsedProjects.value);
@@ -193,45 +190,10 @@ function projectIsActive(project: ProjectGroup): boolean {
   return project.sessions.some((session) => session.id === props.activeId);
 }
 
-const projectGroups = computed<ProjectGroup[]>(() => {
-  const grouped = new Map<string, Session[]>(
-    props.projects.map((project) => [project.id, []])
-  );
-  for (const session of props.sessions) {
-    const projectID = session.project_id;
-    if (!projectID || !grouped.has(projectID)) continue;
-    const items = grouped.get(projectID) ?? [];
-    items.push(session);
-    grouped.set(projectID, items);
-  }
+function sectionIsCollapsed(section: SidebarSection): boolean {
+  return collapsedSections.value.has(section);
+}
 
-  return props.projects
-    .map((project) => {
-      const items = grouped.get(project.id) ?? [];
-      const sorted = sortSessions(items);
-      return {
-        project,
-        sessions: sorted,
-        updatedAt: sorted.reduce(
-          (latest, session) =>
-            session.updated_at > latest ? session.updated_at : latest,
-          project.updated_at
-        ),
-      };
-    })
-    .sort((a, b) => {
-      if (Boolean(a.project.pinned) !== Boolean(b.project.pinned)) {
-        return a.project.pinned ? -1 : 1;
-      }
-      const aTime = a.project.pinned
-        ? a.project.pinned_at ?? a.updatedAt
-        : a.updatedAt;
-      const bTime = b.project.pinned
-        ? b.project.pinned_at ?? b.updatedAt
-        : b.updatedAt;
-      return bTime.localeCompare(aTime);
-    });
-});
 </script>
 
 <template>
@@ -298,40 +260,137 @@ const projectGroups = computed<ProjectGroup[]>(() => {
         </SidebarGroupContent>
       </SidebarGroup>
 
-      <SidebarGroup v-if="ungroupedSessions.length" class="gap-1 p-2 pt-3">
-        <SidebarGroupLabel class="h-6 px-2 text-[11px]">
-          {{ $t("Chats") }}
+      <SidebarGroup v-if="pinnedSessions.length" class="gap-1 p-2 pt-3">
+        <SidebarGroupLabel
+          as="button"
+          type="button"
+          class="group/section relative h-6 w-full px-2 text-[11px] transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+          :aria-expanded="!sectionIsCollapsed('pinned')"
+          @click="toggleSection('pinned')"
+        >
+          <span>{{ $t("Pinned") }}</span>
+          <ChevronRightIcon
+            :class="[
+              'absolute right-2 transition-all duration-200 ease-out',
+              sectionIsCollapsed('pinned')
+                ? 'rotate-0 opacity-100'
+                : 'rotate-90 opacity-0 group-hover/section:opacity-100 group-focus-visible/section:opacity-100',
+            ]"
+          />
         </SidebarGroupLabel>
-        <SidebarGroupContent>
-          <SidebarMenu>
-            <SessionSidebarItem
-              v-for="session in ungroupedSessions"
-              :key="session.id"
-              :session="session"
-              :active="session.id === activeId"
-              :running="isRunning(session.id)"
-              :unread="isUnread(session.id)"
-              :needs-attention="needsAttention(session.id)"
-              @select="emit('select', $event)"
-              @rename="(id, value) => emit('rename', id, value)"
-              @pin="(id, value) => emit('pin', id, value)"
-              @fork="(item) => emit('fork', item.id)"
-              @delete="onDelete"
-            />
-          </SidebarMenu>
-        </SidebarGroupContent>
+        <div
+          :class="[
+            'grid overflow-hidden transition-all duration-200 ease-out',
+            sectionIsCollapsed('pinned')
+              ? 'grid-rows-[0fr] -translate-y-1 opacity-0'
+              : 'grid-rows-[1fr] translate-y-0 opacity-100',
+          ]"
+        >
+          <div class="min-h-0 overflow-hidden">
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SessionSidebarItem
+                  v-for="session in pinnedSessions"
+                  :key="session.id"
+                  :session="session"
+                  :active="session.id === activeId"
+                  :running="isRunning(session.id)"
+                  :unread="isUnread(session.id)"
+                  :needs-attention="needsAttention(session.id)"
+                  @select="emit('select', $event)"
+                  @rename="(id, value) => emit('rename', id, value)"
+                  @pin="(id, value) => emit('pin', id, value)"
+                  @fork="(item) => emit('fork', item.id)"
+                  @delete="onDelete"
+                />
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </div>
+        </div>
+      </SidebarGroup>
+
+      <SidebarGroup v-if="ungroupedSessions.length" class="gap-1 p-2 pt-3">
+        <SidebarGroupLabel
+          as="button"
+          type="button"
+          class="group/section relative h-6 w-full px-2 text-[11px] transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+          :aria-expanded="!sectionIsCollapsed('chats')"
+          @click="toggleSection('chats')"
+        >
+          <span>{{ $t("Chats") }}</span>
+          <ChevronRightIcon
+            :class="[
+              'absolute right-2 transition-all duration-200 ease-out',
+              sectionIsCollapsed('chats')
+                ? 'rotate-0 opacity-100'
+                : 'rotate-90 opacity-0 group-hover/section:opacity-100 group-focus-visible/section:opacity-100',
+            ]"
+          />
+        </SidebarGroupLabel>
+        <div
+          :class="[
+            'grid overflow-hidden transition-all duration-200 ease-out',
+            sectionIsCollapsed('chats')
+              ? 'grid-rows-[0fr] -translate-y-1 opacity-0'
+              : 'grid-rows-[1fr] translate-y-0 opacity-100',
+          ]"
+        >
+          <div class="min-h-0 overflow-hidden">
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SessionSidebarItem
+                  v-for="session in ungroupedSessions"
+                  :key="session.id"
+                  :session="session"
+                  :active="session.id === activeId"
+                  :running="isRunning(session.id)"
+                  :unread="isUnread(session.id)"
+                  :needs-attention="needsAttention(session.id)"
+                  @select="emit('select', $event)"
+                  @rename="(id, value) => emit('rename', id, value)"
+                  @pin="(id, value) => emit('pin', id, value)"
+                  @fork="(item) => emit('fork', item.id)"
+                  @delete="onDelete"
+                />
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </div>
+        </div>
       </SidebarGroup>
 
       <SidebarGroup v-if="projectGroups.length" class="gap-1 p-2 pt-3">
-        <SidebarGroupLabel class="h-6 px-2 text-[11px]">
-          {{ $t("Projects") }}
+        <SidebarGroupLabel
+          as="button"
+          type="button"
+          class="group/section relative h-6 w-full px-2 text-[11px] transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+          :aria-expanded="!sectionIsCollapsed('projects')"
+          @click="toggleSection('projects')"
+        >
+          <span>{{ $t("Projects") }}</span>
+          <ChevronRightIcon
+            :class="[
+              'absolute right-2 transition-all duration-200 ease-out',
+              sectionIsCollapsed('projects')
+                ? 'rotate-0 opacity-100'
+                : 'rotate-90 opacity-0 group-hover/section:opacity-100 group-focus-visible/section:opacity-100',
+            ]"
+          />
         </SidebarGroupLabel>
-        <SidebarGroupContent class="space-y-2">
-          <div
-            v-for="project in projectGroups"
-            :key="project.project.id"
-            class="min-w-0"
-          >
+        <div
+          :class="[
+            'grid overflow-hidden transition-all duration-200 ease-out',
+            sectionIsCollapsed('projects')
+              ? 'grid-rows-[0fr] -translate-y-1 opacity-0'
+              : 'grid-rows-[1fr] translate-y-0 opacity-100',
+          ]"
+        >
+          <div class="min-h-0 overflow-hidden">
+            <SidebarGroupContent class="space-y-2">
+              <div
+                v-for="project in projectGroups"
+                :key="project.project.id"
+                class="min-w-0"
+              >
             <div
               :class="[
                 'group/project flex h-8 min-w-0 items-center rounded-md transition-colors',
@@ -348,12 +407,10 @@ const projectGroups = computed<ProjectGroup[]>(() => {
                 @click="toggleProject(project.project.id)"
               >
                 <ChevronRightIcon
-                  v-if="collapsedProjects.has(project.project.id)"
-                  class="size-3.5 shrink-0 text-sidebar-foreground/60"
-                />
-                <ChevronDownIcon
-                  v-else
-                  class="size-3.5 shrink-0 text-sidebar-foreground/60"
+                  :class="[
+                    'size-3.5 shrink-0 text-sidebar-foreground/60 transition-transform duration-200 ease-out',
+                    !collapsedProjects.has(project.project.id) && 'rotate-90',
+                  ]"
                 />
                 <FolderOpenIcon class="size-4 shrink-0" />
                 <span class="truncate">{{ project.project.name }}</span>
@@ -418,28 +475,38 @@ const projectGroups = computed<ProjectGroup[]>(() => {
             </div>
 
             <div
-              v-if="!collapsedProjects.has(project.project.id)"
-              class="ml-[18px] border-l border-sidebar-border pb-1 pl-2 pt-1"
+              :class="[
+                'grid overflow-hidden transition-all duration-200 ease-out',
+                collapsedProjects.has(project.project.id)
+                  ? 'grid-rows-[0fr] -translate-y-1 opacity-0'
+                  : 'grid-rows-[1fr] translate-y-0 opacity-100',
+              ]"
             >
-              <SidebarMenu>
-                <SessionSidebarItem
-                  v-for="session in project.sessions"
-                  :key="session.id"
-                  :session="session"
-                  :active="session.id === activeId"
-                  :running="isRunning(session.id)"
-                  :unread="isUnread(session.id)"
-                  :needs-attention="needsAttention(session.id)"
-                  @select="emit('select', $event)"
-                  @rename="(id, value) => emit('rename', id, value)"
-                  @pin="(id, value) => emit('pin', id, value)"
-                  @fork="(item) => emit('fork', item.id)"
-                  @delete="onDelete"
-                />
-              </SidebarMenu>
+              <div class="min-h-0 overflow-hidden">
+                <div class="ml-[18px] border-l border-sidebar-border pb-1 pl-2 pt-1">
+                  <SidebarMenu>
+                    <SessionSidebarItem
+                      v-for="session in project.sessions"
+                      :key="session.id"
+                      :session="session"
+                      :active="session.id === activeId"
+                      :running="isRunning(session.id)"
+                      :unread="isUnread(session.id)"
+                      :needs-attention="needsAttention(session.id)"
+                      @select="emit('select', $event)"
+                      @rename="(id, value) => emit('rename', id, value)"
+                      @pin="(id, value) => emit('pin', id, value)"
+                      @fork="(item) => emit('fork', item.id)"
+                      @delete="onDelete"
+                    />
+                  </SidebarMenu>
+                </div>
+              </div>
             </div>
+              </div>
+            </SidebarGroupContent>
           </div>
-        </SidebarGroupContent>
+        </div>
       </SidebarGroup>
       <p
         v-if="sessions.length === 0"

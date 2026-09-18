@@ -27,6 +27,8 @@ export const zhCN: Record<string, string> = {
   "Unpin": "取消置顶",
   "Delete": "删除",
   "Pinned": "已置顶",
+  "Yesterday": "昨天",
+  "Day before yesterday": "前天",
   "Project actions": "{project} 项目操作",
   "Rename": "重命名",
   "Reveal in Finder": "在访达中打开",
