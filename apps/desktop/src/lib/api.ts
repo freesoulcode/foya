@@ -1042,6 +1042,27 @@ function parseMcpConfig(raw: string): McpConfig {
   };
 }
 
+function serializeToolInput(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (input == null) return "";
+  try {
+    return JSON.stringify(input) ?? "";
+  } catch {
+    return String(input);
+  }
+}
+
+function parseChatHistory(raw: string): ChatMessage[] {
+  const messages = (JSON.parse(raw) as ChatMessage[]) ?? [];
+  return messages.map((message) => ({
+    ...message,
+    tool_calls: message.tool_calls?.map((tool) => ({
+      ...tool,
+      input: serializeToolInput(tool.input),
+    })),
+  }));
+}
+
 export const api = {
   getKernelConnection: () =>
     invoke<string>("get_kernel_connection").then(
@@ -1170,7 +1191,7 @@ export const api = {
 
   loadHistory: (sessionId: string) =>
     invoke<string>("load_history", { sessionId }).then(
-      (r) => (JSON.parse(r) as ChatMessage[]) ?? []
+      (r) => parseChatHistory(r)
     ),
 
   loadUsage: (sessionId: string) =>

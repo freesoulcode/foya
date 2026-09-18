@@ -441,14 +441,20 @@ function rewindMessage() {
             <div v-if="seg.kind === 'reasoning'" class="mb-2">
               <button
                 type="button"
-                class="flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+                class="group/reasoning-row flex w-full items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+                :aria-expanded="isReasoningExpanded(i)"
                 @click="toggleReasoning(i)"
               >
-                <ChevronRightIcon
-                  :class="cn('size-3.5 shrink-0 transition-transform', isReasoningExpanded(i) && 'rotate-90')"
-                />
                 <BrainIcon :class="cn('size-3.5 shrink-0', isReasoningStreaming(i) && 'animate-pulse')" />
-                <span>{{ isReasoningStreaming(i) ? $t("Thinking") : $t("Thought deeply") }}</span>
+                <span class="min-w-0 truncate">{{ isReasoningStreaming(i) ? $t("Thinking") : $t("Thought deeply") }}</span>
+                <ChevronRightIcon
+                  :class="
+                    cn(
+                      'size-3.5 shrink-0 text-muted-foreground/70 opacity-0 transition-[opacity,transform] group-hover/reasoning-row:opacity-100 group-focus-visible/reasoning-row:opacity-100',
+                      isReasoningExpanded(i) && 'rotate-90',
+                    )
+                  "
+                />
               </button>
               <div
                 v-if="isReasoningExpanded(i)"
