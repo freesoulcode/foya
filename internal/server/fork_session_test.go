@@ -23,6 +23,29 @@ func TestForkSessionRoute(t *testing.T) {
 	}
 }
 
+func TestForkSessionRouteCreatesSideChat(t *testing.T) {
+	handler, sourceID := newQueueTestServer(t)
+
+	var forked conversation.Session
+	status := requestJSON(
+		t,
+		handler,
+		http.MethodPost,
+		"/sessions/"+sourceID+"/fork",
+		map[string]bool{"side_chat": true},
+		&forked,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", status, http.StatusOK)
+	}
+	if !forked.Temporary || forked.ParentID != "" {
+		t.Fatalf("forked side chat metadata = %#v", forked)
+	}
+	if forked.Title != "Side chat" {
+		t.Fatalf("forked side chat title = %q", forked.Title)
+	}
+}
+
 func TestForkSessionRouteRejectsUnknownThroughSeq(t *testing.T) {
 	handler, sourceID := newQueueTestServer(t)
 

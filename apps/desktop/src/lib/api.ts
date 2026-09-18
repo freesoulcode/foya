@@ -76,6 +76,7 @@ export interface Session {
   model: string;
   reasoning_effort?: ReasoningEffort;
   project_id?: string;
+  temporary?: boolean;
   approval_mode?: ApprovalMode;
   title?: string;
   title_is_manual?: boolean;
@@ -108,6 +109,7 @@ export interface CreateSessionOptions {
 export interface ForkSessionOptions {
   title?: string;
   through_seq?: number;
+  side_chat?: boolean;
 }
 
 // Partial session update. Undefined leaves a field unchanged.

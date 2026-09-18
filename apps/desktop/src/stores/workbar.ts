@@ -3,7 +3,12 @@ import { defineStore } from "pinia";
 import type { AttachmentRef } from "@/lib/api";
 
 export type WorkbarLaunchKind = "terminal" | "browser";
-export type WorkbarTabKind = "file" | "artifact" | "background-command" | WorkbarLaunchKind;
+export type WorkbarTabKind =
+  | "file"
+  | "artifact"
+  | "background-command"
+  | "side-chat"
+  | WorkbarLaunchKind;
 
 export interface WorkbarItem {
   kind: WorkbarLaunchKind;
@@ -57,6 +62,7 @@ const nextInstance = {
   terminal: 0,
   browser: 0,
 };
+let nextSideChat = 0;
 
 function sessionKey(sessionId: string) {
   return sessionId || DRAFT_SESSION_KEY;
@@ -141,9 +147,12 @@ function addTab(kind: WorkbarLaunchKind) {
   session.open = true;
 }
 
-function openBrowser(url: string) {
-  const sessionId = activeSessionId.value;
-  const session = ensureSessionState(sessionId);
+function openBrowser(
+  url: string,
+  sessionId = activeSessionId.value,
+  ownerSessionId = activeSessionId.value,
+) {
+  const session = ensureSessionState(ownerSessionId);
   const instance = ++nextInstance.browser;
   let title = "Browser";
   try {
@@ -163,8 +172,12 @@ function openBrowser(url: string) {
   session.open = true;
 }
 
-function openAgentBrowser(sessionId: string, browserId: string) {
-  const session = ensureSessionState(sessionId);
+function openAgentBrowser(
+  ownerSessionId: string,
+  browserId: string,
+  sessionId = ownerSessionId,
+) {
+  const session = ensureSessionState(ownerSessionId);
   const existing = session.tabs.find(
       (tab) => tab.id === browserId && tab.kind === "browser",
   );
@@ -174,10 +187,29 @@ function openAgentBrowser(sessionId: string, browserId: string) {
       kind: "browser",
       title: "",
       titleKey: "Agent browser",
-      sessionId,
+      sessionId: sessionId || undefined,
     });
   }
   session.activeTabId = browserId;
+  session.open = true;
+}
+
+function openSideChat(ownerSessionId: string, sideSessionId: string) {
+  const session = ensureSessionState(ownerSessionId);
+  const id = `side-chat:${sideSessionId}`;
+  const existing = session.tabs.find((tab) => tab.id === id);
+  if (!existing) {
+    nextSideChat++;
+    session.tabs.push({
+      id,
+      kind: "side-chat",
+      title: "",
+      titleKey: "Side chat",
+      titleNumber: nextSideChat > 1 ? nextSideChat : undefined,
+      sessionId: sideSessionId,
+    });
+  }
+  session.activeTabId = id;
   session.open = true;
 }
 
@@ -239,8 +271,12 @@ function openFile(
   session.open = true;
 }
 
-function openArtifact(sessionId: string, attachment: AttachmentRef) {
-  const session = ensureSessionState(sessionId);
+function openArtifact(
+  sessionId: string,
+  attachment: AttachmentRef,
+  ownerSessionId = sessionId,
+) {
+  const session = ensureSessionState(ownerSessionId);
   const id = `artifact:${attachment.id}`;
   const title = attachment.name || "";
   const existing = session.tabs.find((tab) => tab.id === id);
@@ -265,9 +301,10 @@ function openArtifact(sessionId: string, attachment: AttachmentRef) {
 function openBackgroundCommand(
   sessionId: string,
   commandId: string,
-    command: string,
+  command: string,
+  ownerSessionId = sessionId,
 ) {
-  const session = ensureSessionState(sessionId);
+  const session = ensureSessionState(ownerSessionId);
   const id = `background-command:${commandId}`;
   const existing = session.tabs.find((tab) => tab.id === id);
   if (existing) {
@@ -304,14 +341,15 @@ function setTabTitle(tabId: string, title: string) {
   tab.titleNumber = undefined;
 }
 
-function closeTab(tabId: string) {
+function closeTab(tabId: string): WorkbarTab | undefined {
   const session = currentSession.value;
   const index = session.tabs.findIndex((tab) => tab.id === tabId);
-  if (index < 0) return;
-  session.tabs.splice(index, 1);
-  if (session.activeTabId !== tabId) return;
+  if (index < 0) return undefined;
+  const [removed] = session.tabs.splice(index, 1);
+  if (session.activeTabId !== tabId) return removed;
   session.activeTabId =
     session.tabs[index]?.id ?? session.tabs[index - 1]?.id ?? null;
+  return removed;
 }
 
 function closeFileTabs() {
@@ -384,8 +422,28 @@ function resetDeletedEntryTab(
   tab.diff = undefined;
 }
 
+function ownerSessionForContentSession(sessionId: string): string | undefined {
+  for (const [ownerSessionId, session] of Object.entries(sessions)) {
+    if (session.tabs.some((tab) => tab.sessionId === sessionId)) {
+      return ownerSessionId === DRAFT_SESSION_KEY ? "" : ownerSessionId;
+    }
+  }
+  return undefined;
+}
+
 function removeSession(sessionId: string) {
   delete sessions[sessionKey(sessionId)];
+  for (const session of Object.values(sessions)) {
+    const removedActive = session.activeTabId
+      ? session.tabs.some(
+          (tab) => tab.id === session.activeTabId && tab.sessionId === sessionId,
+        )
+      : false;
+    session.tabs = session.tabs.filter((tab) => tab.sessionId !== sessionId);
+    if (removedActive) {
+      session.activeTabId = session.tabs[0]?.id ?? null;
+    }
+  }
 }
 
   return {
@@ -405,6 +463,7 @@ function removeSession(sessionId: string) {
     addTab,
     openBrowser,
     openAgentBrowser,
+    openSideChat,
     openFiles,
     openFile,
     openArtifact,
@@ -415,6 +474,7 @@ function removeSession(sessionId: string) {
     closeFileTabs,
     renameEntryTabs,
     resetDeletedEntryTab,
+    ownerSessionForContentSession,
     removeSession,
   };
 });

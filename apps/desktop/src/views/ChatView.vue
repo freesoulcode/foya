@@ -46,7 +46,7 @@ const {
   keepAllFileChanges,
   undoAllFileChanges,
   toggleFileReviewForceFile,
-  forkSession,
+  createSideChat,
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
@@ -93,9 +93,7 @@ function updateQuestionPanelExpanded(value: boolean) {
 
 function forkAtMessage(messageSeq: number) {
   if (!activeId.value) return;
-  void forkSession(activeId.value, messageSeq).catch((error) => {
-    console.error("Failed to fork chat from this message:", error);
-  });
+  createSideChat(activeId.value, messageSeq);
 }
 </script>
 

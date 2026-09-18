@@ -30,22 +30,23 @@ export function buildChatSidebarGroups(
   sessions: Session[],
   projects: ProjectInfo[],
 ): ChatSidebarGroups {
+  const persistentSessions = sessions.filter((session) => !session.temporary);
   const projectIDs = new Set(projects.map((project) => project.id));
   const sessionsByProject = new Map<string, Session[]>(
     projects.map((project) => [project.id, []]),
   );
 
-  for (const session of sessions) {
+  for (const session of persistentSessions) {
     if (session.project_id && projectIDs.has(session.project_id)) {
       sessionsByProject.get(session.project_id)?.push(session);
     }
   }
 
   const pinnedSessions = sortPinnedSessions(
-    sessions.filter((session) => session.pinned),
+    persistentSessions.filter((session) => session.pinned),
   );
   const ungroupedSessions = sortSessionsByUpdatedAt(
-    sessions.filter(
+    persistentSessions.filter(
       (session) =>
         !session.pinned &&
         (!session.project_id || !projectIDs.has(session.project_id)),

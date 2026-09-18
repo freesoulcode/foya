@@ -90,6 +90,7 @@ func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.service.ForkSession(r.Context(), id, kernel.ForkSessionOptions{
 		Title:      req.Title,
 		ThroughSeq: conversation.Seq(req.ThroughSeq),
+		SideChat:   req.SideChat,
 	})
 	if err != nil {
 		switch {

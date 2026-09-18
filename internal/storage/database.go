@@ -82,8 +82,57 @@ func (db *Database) applySchema() error {
 	if _, err := tx.Exec(schema); err != nil {
 		return fmt.Errorf("apply sqlite schema: %w", err)
 	}
+	if err := applyMigrations(tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite schema: %w", err)
+	}
+	return nil
+}
+
+func applyMigrations(tx *sql.Tx) error {
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"temporary", "temporary INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureColumn(tx, "sessions", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureColumn(tx *sql.Tx, table, column, definition string) error {
+	rows, err := tx.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal any
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+	if _, err := tx.Exec("ALTER TABLE " + table + " ADD COLUMN " + definition); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -103,6 +152,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT NOT NULL DEFAULT '',
     reasoning_effort TEXT NOT NULL DEFAULT '',
     project_id TEXT NOT NULL DEFAULT '',
+    temporary INTEGER NOT NULL DEFAULT 0,
     approval_mode TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL DEFAULT '',
     title_is_manual INTEGER NOT NULL DEFAULT 0,

@@ -257,8 +257,11 @@ const slashCommands = computed<SlashOption[]>(() =>
     description: commandDescription(command),
   }))
 );
+const composerAvailableSkills = computed(() =>
+  availableSkills.value.filter((skill) => !isSideChatSkill(skill))
+);
 const slashSkills = computed<SlashOption[]>(() =>
-  availableSkills.value
+  composerAvailableSkills.value
     .filter((skill) => skill.enabled)
     .map((skill) => ({
       kind: "skill",
@@ -284,6 +287,17 @@ function commandDescription(command: CommandInfo): string {
   if (command.name === "spec") return t("Create a reviewable technical specification");
   if (command.name === "goal") return t("Define a durable completion goal");
   return command.description || t("Custom prompt command");
+}
+
+function normalizedSkillIdentifier(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function isSideChatSkill(skill: SkillInfo): boolean {
+  const names = [skill.name, skill.ref.split(":").pop() ?? ""].map(
+    normalizedSkillIdentifier
+  );
+  return names.includes("sidechat") || names.includes("\u4fa7\u8fb9\u804a\u5929");
 }
 
 function skillScopeLabel(scope?: SkillInfo["scope"]): string {
@@ -388,7 +402,12 @@ async function loadSkills() {
     availableSkills.value = items;
     if (
       selectedSkill.value &&
-      !items.some((item) => item.ref === selectedSkill.value?.ref && item.enabled)
+      !items.some(
+        (item) =>
+          item.ref === selectedSkill.value?.ref &&
+          item.enabled &&
+          !isSideChatSkill(item)
+      )
     ) {
       selectedSkill.value = null;
     }

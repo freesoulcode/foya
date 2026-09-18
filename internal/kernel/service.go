@@ -44,6 +44,7 @@ var (
 type ForkSessionOptions struct {
 	Title      string
 	ThroughSeq conversation.Seq
+	SideChat   bool
 }
 
 // ProviderBuilder creates a provider and its default model from configuration.

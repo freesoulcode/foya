@@ -82,4 +82,29 @@ describe("buildChatSidebarGroups", () => {
     ]);
     expect(groups.projectGroups[0].sessions).toEqual([]);
   });
+
+  it("excludes temporary side chats from all sidebar groups", () => {
+    const groups = buildChatSidebarGroups(
+      [
+        session("temporary-pinned", "2026-09-18T10:00:00Z", {
+          pinned: true,
+          project_id: "project-1",
+          temporary: true,
+        }),
+        session("temporary-loose", "2026-09-18T09:00:00Z", {
+          temporary: true,
+        }),
+        session("persistent", "2026-09-18T08:00:00Z", {
+          project_id: "project-1",
+        }),
+      ],
+      [project("project-1", "2026-09-01T00:00:00Z")],
+    );
+
+    expect(groups.pinnedSessions).toEqual([]);
+    expect(groups.ungroupedSessions).toEqual([]);
+    expect(groups.projectGroups[0].sessions.map((item) => item.id)).toEqual([
+      "persistent",
+    ]);
+  });
 });

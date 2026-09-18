@@ -93,6 +93,7 @@ export interface ChatWorkspaceContext extends ConversationBindings {
   onViewToolInWorkbar: (toolCallId: string) => Promise<void>;
   onOpenLink: (url: string) => Promise<void>;
   onOpenBackgroundCommand: (command: BackgroundCommand) => void;
+  createSideChat: (sessionId: string, throughSeq?: number) => void;
   executeComposerCommand: (
     name: string,
     args: string,
@@ -105,7 +106,7 @@ export interface ChatWorkspaceContext extends ConversationBindings {
     reasoningEffort: ReasoningEffort;
   }) => void;
   onProjectChange: (value: string) => void;
-  onAddProject: () => void;
+  onAddProject: (sessionId?: string) => void;
   onApprovalChange: (value: ApprovalMode) => void;
   removeBrowserElement: (index: number) => void;
   clearBrowserElements: () => void;

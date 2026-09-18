@@ -113,6 +113,31 @@ const activeBackgroundCommands = computed<BackgroundCommand[]>(
 const activeFileReview = computed<PendingFileReview | undefined>(
     () => fileReviewsBySession.value[activeId.value],
 );
+
+function sessionById(sessionId: string) {
+  return sessions.value.find((session) => session.id === sessionId);
+}
+
+function messagesForSession(sessionId: string): ChatMessage[] {
+  return messagesBySession.value[sessionId] ?? [];
+}
+
+function queuedMessagesForSession(sessionId: string): QueuedMessage[] {
+  return queuedBySession.value[sessionId] ?? [];
+}
+
+function contextUsageForSession(sessionId: string): ContextUsage | undefined {
+  return usageBySession.value[sessionId];
+}
+
+function backgroundCommandsForSession(sessionId: string): BackgroundCommand[] {
+  return backgroundCommandsBySession.value[sessionId] ?? [];
+}
+
+function fileReviewForSession(sessionId: string): PendingFileReview | undefined {
+  return fileReviewsBySession.value[sessionId];
+}
+
 function ensureBucket(id: string) {
   if (!messagesBySession.value[id]) messagesBySession.value[id] = [];
 }
@@ -752,10 +777,8 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
 }
 
 // Load history and subscribe the first time a chat is opened.
-async function select(id: string) {
-    sessionStore.setActive(id);
-  delete unreadSessions.value[id];
-  streaming.value = Boolean(runningSessions.value[id]);
+async function hydrateSession(id: string) {
+  if (!id) return;
     if (
       !messagesBySession.value[id] ||
       messagesBySession.value[id].length === 0
@@ -803,33 +826,58 @@ async function select(id: string) {
   await Promise.all(agentRuns.map((run) => hydrateAgentRun(id, run)));
 }
 
-async function forkSession(id: string, throughSeq?: number) {
+async function select(id: string) {
+  sessionStore.setActive(id);
+  delete unreadSessions.value[id];
+  streaming.value = Boolean(runningSessions.value[id]);
+  await hydrateSession(id);
+}
+
+async function forkSession(
+  id: string,
+  throughSeq?: number,
+  opts: { sideChat?: boolean; activate?: boolean } = {},
+) {
   const forked = await api.forkSession(
     id,
-      throughSeq ? { through_seq: throughSeq } : undefined,
+    throughSeq || opts.sideChat
+      ? {
+          through_seq: throughSeq,
+          side_chat: opts.sideChat,
+        }
+      : undefined,
   );
-    restoreSessionRuntime(forked.id);
-    sessionStore.upsertSession(forked, true);
-  const history = await api.loadHistory(forked.id);
-  messagesBySession.value[forked.id] = normalizeHistory(history);
-  await select(forked.id);
+  restoreSessionRuntime(forked.id);
+  sessionStore.upsertSession(forked, !forked.parent_id && !forked.temporary);
+  await hydrateSession(forked.id);
+  if (opts.activate ?? !opts.sideChat) {
+    await select(forked.id);
+  }
   return forked;
+}
+
+function sideChatSession(id: string, throughSeq?: number) {
+  return forkSession(id, throughSeq, { sideChat: true, activate: false });
 }
 
 // Remove local chat state and select another chat or enter draft state.
 function removeSession(id: string) {
-    deleteSessionRuntime(id);
-    sessionStore.removeSessionRecord(id);
-  delete messagesBySession.value[id];
-  delete queuedBySession.value[id];
-  delete usageBySession.value[id];
-  delete runningSessions.value[id];
-  delete unreadSessions.value[id];
-  delete compactingSessions.value[id];
-  delete backgroundCommandsBySession.value[id];
-  delete fileReviewsBySession.value[id];
-    interactionStore.clearSession(id);
-  if (activeId.value === id) {
+  const removeIDs = sessionStore.sessionTreeIds(id);
+  const activeRemoved = removeIDs.includes(activeId.value);
+  for (const sessionID of removeIDs) {
+    deleteSessionRuntime(sessionID);
+    delete messagesBySession.value[sessionID];
+    delete queuedBySession.value[sessionID];
+    delete usageBySession.value[sessionID];
+    delete runningSessions.value[sessionID];
+    delete unreadSessions.value[sessionID];
+    delete compactingSessions.value[sessionID];
+    delete backgroundCommandsBySession.value[sessionID];
+    delete fileReviewsBySession.value[sessionID];
+    interactionStore.clearSession(sessionID);
+  }
+  sessionStore.removeSessionRecord(id);
+  if (activeRemoved) {
     const next = sessions.value[0];
     if (next) {
       void select(next.id);
@@ -847,9 +895,7 @@ async function deleteSession(id: string) {
   removeSession(id);
 }
 
-// Stop the active turn while preserving and pausing its queued messages.
-async function cancelTurn() {
-  const id = activeId.value;
+async function cancelTurnForSession(id: string) {
   if (!id) return;
   try {
     await api.cancelTurn(id);
@@ -858,8 +904,12 @@ async function cancelTurn() {
   }
 }
 
-async function cancelTool(toolCallId: string) {
-  const id = activeId.value;
+// Stop the active turn while preserving and pausing its queued messages.
+function cancelTurn() {
+  return cancelTurnForSession(activeId.value);
+}
+
+async function cancelToolForSession(id: string, toolCallId: string) {
   if (!id) return;
   try {
     await api.cancelTool(id, toolCallId);
@@ -868,10 +918,14 @@ async function cancelTool(toolCallId: string) {
   }
 }
 
-async function backgroundTool(
-    toolCallId: string,
+function cancelTool(toolCallId: string) {
+  return cancelToolForSession(activeId.value, toolCallId);
+}
+
+async function backgroundToolForSession(
+  id: string,
+  toolCallId: string,
 ): Promise<BackgroundCommand | undefined> {
-  const id = activeId.value;
   if (!id) return undefined;
   const pendingId = `promoting:${toolCallId}`;
   const toolCall = matchingAgentTools(id, toolCallId)[0];
@@ -932,10 +986,16 @@ async function backgroundTool(
   }
 }
 
-async function revealToolCommand(
-    toolCallId: string,
+function backgroundTool(
+  toolCallId: string,
 ): Promise<BackgroundCommand | undefined> {
-  const id = activeId.value;
+  return backgroundToolForSession(activeId.value, toolCallId);
+}
+
+async function revealToolCommandForSession(
+  id: string,
+  toolCallId: string,
+): Promise<BackgroundCommand | undefined> {
   if (!id) return undefined;
   let lastError: unknown;
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -954,8 +1014,13 @@ async function revealToolCommand(
   return undefined;
 }
 
-async function stopBackgroundCommand(commandId: string) {
-  const id = activeId.value;
+function revealToolCommand(
+  toolCallId: string,
+): Promise<BackgroundCommand | undefined> {
+  return revealToolCommandForSession(activeId.value, toolCallId);
+}
+
+async function stopBackgroundCommandForSession(id: string, commandId: string) {
   if (!id) return;
   try {
     await api.stopBackgroundCommand(id, commandId);
@@ -965,6 +1030,10 @@ async function stopBackgroundCommand(commandId: string) {
   } catch (e) {
     console.error("Failed to stop background command:", e);
   }
+}
+
+function stopBackgroundCommand(commandId: string) {
+  return stopBackgroundCommandForSession(activeId.value, commandId);
 }
 
 // Persist a draft chat through one shared path for the workspace and composer.
@@ -986,31 +1055,30 @@ async function ensureSession(): Promise<string> {
   return s.id;
 }
 
-// Submit a message. The kernel atomically starts or queues it and projects state
-// through SSE so all clients remain consistent.
-async function send(
+async function sendToSession(
+  id: string,
   text: string,
   files: File[] = [],
   browserElements: BrowserElementSelection[] = [],
   workspaceFiles: string[] = [],
   skillRef = "",
-    restore?: () => void,
+  restore?: () => void,
 ) {
-    if (
-      !text.trim() &&
-      files.length === 0 &&
-      browserElements.length === 0 &&
-      workspaceFiles.length === 0
-    )
-      return;
+  if (
+    !text.trim() &&
+    files.length === 0 &&
+    browserElements.length === 0 &&
+    workspaceFiles.length === 0
+  ) {
+    return;
+  }
 
-  let id = activeId.value;
-    if (
-      text.trim() === "/compact" &&
-      files.length === 0 &&
-      browserElements.length === 0 &&
-      workspaceFiles.length === 0
-    ) {
+  if (
+    text.trim() === "/compact" &&
+    files.length === 0 &&
+    browserElements.length === 0 &&
+    workspaceFiles.length === 0
+  ) {
     if (!id) return;
     try {
       await api.compactSession(id);
@@ -1030,7 +1098,7 @@ async function send(
 
   const uploaded: AttachmentRef[] = [];
   try {
-    if (!id) id = await ensureSession();
+    if (!id) return;
     ensureBucket(id);
     for (const file of files) {
       uploaded.push(await api.uploadImage(id, file));
@@ -1068,9 +1136,41 @@ async function send(
   }
 }
 
-async function rewindSentMessage(messageSeq: number) {
-  const id = activeId.value;
-  if (!id || streaming.value) return;
+// Submit a message. The kernel atomically starts or queues it and projects state
+// through SSE so all clients remain consistent.
+async function send(
+  text: string,
+  files: File[] = [],
+  browserElements: BrowserElementSelection[] = [],
+  workspaceFiles: string[] = [],
+  skillRef = "",
+  restore?: () => void,
+) {
+  if (
+    !text.trim() &&
+    files.length === 0 &&
+    browserElements.length === 0 &&
+    workspaceFiles.length === 0
+  ) {
+    return;
+  }
+  const id = activeId.value || (await ensureSession());
+  await sendToSession(
+    id,
+    text,
+    files,
+    browserElements,
+    workspaceFiles,
+    skillRef,
+    restore,
+  );
+}
+
+async function rewindSentMessageForSession(
+  id: string,
+  messageSeq: number,
+) {
+  if (!id || runningSessions.value[id] || compactingSessions.value[id]) return;
   try {
     const result = await api.rewindTurn(id, messageSeq);
       interactionStore.setPendingHistoryRewind({
@@ -1096,6 +1196,10 @@ async function rewindSentMessage(messageSeq: number) {
   }
 }
 
+function rewindSentMessage(messageSeq: number) {
+  return rewindSentMessageForSession(activeId.value, messageSeq);
+}
+
 async function confirmHistoryRewind() {
   const pending = pendingHistoryRewind.value;
   if (!pending || pending.submitting) return;
@@ -1111,7 +1215,8 @@ async function confirmHistoryRewind() {
         pending.forceFileKeys,
     );
       interactionStore.setPendingHistoryRewind(null);
-    if (activeId.value !== pending.sessionId) {
+    const pendingSession = sessionById(pending.sessionId);
+    if (activeId.value !== pending.sessionId && !pendingSession?.temporary) {
       await select(pending.sessionId);
     }
       interactionStore.restoreComposer(
@@ -1138,8 +1243,8 @@ function consumeComposerRestore(nonce: number) {
     interactionStore.consumeComposerRestore(nonce);
   }
 
-function toggleFileReviewForceFile(key: string) {
-  const review = activeFileReview.value;
+function toggleFileReviewForceFileForSession(sessionId: string, key: string) {
+  const review = fileReviewsBySession.value[sessionId];
   if (!review || review.submitting) return;
   const selected = new Set(review.forceFileKeys);
   if (selected.has(key)) selected.delete(key);
@@ -1147,9 +1252,15 @@ function toggleFileReviewForceFile(key: string) {
   review.forceFileKeys = [...selected];
 }
 
-async function resolveActiveFileReview(action: "keep" | "undo") {
-  const sessionId = activeId.value;
-  const review = activeFileReview.value;
+function toggleFileReviewForceFile(key: string) {
+  return toggleFileReviewForceFileForSession(activeId.value, key);
+}
+
+async function resolveFileReviewForSession(
+  sessionId: string,
+  action: "keep" | "undo",
+) {
+  const review = fileReviewsBySession.value[sessionId];
     if (!sessionId || !review || review.submitting || review.files.length === 0)
       return;
 
@@ -1177,15 +1288,26 @@ async function resolveActiveFileReview(action: "keep" | "undo") {
 }
 
 function keepAllFileChanges() {
-  return resolveActiveFileReview("keep");
+  return resolveFileReviewForSession(activeId.value, "keep");
 }
 
 function undoAllFileChanges() {
-  return resolveActiveFileReview("undo");
+  return resolveFileReviewForSession(activeId.value, "undo");
 }
 
-async function editQueuedMessage(messageId: string, text: string) {
-  const id = activeId.value;
+function keepAllFileChangesForSession(sessionId: string) {
+  return resolveFileReviewForSession(sessionId, "keep");
+}
+
+function undoAllFileChangesForSession(sessionId: string) {
+  return resolveFileReviewForSession(sessionId, "undo");
+}
+
+async function editQueuedMessageForSession(
+  id: string,
+  messageId: string,
+  text: string,
+) {
   if (!id || !text.trim()) return;
   try {
     await api.updateQueuedMessage(id, messageId, { message: text });
@@ -1195,8 +1317,15 @@ async function editQueuedMessage(messageId: string, text: string) {
   }
 }
 
-async function reorderQueuedMessage(messageId: string, position: number) {
-  const id = activeId.value;
+function editQueuedMessage(messageId: string, text: string) {
+  return editQueuedMessageForSession(activeId.value, messageId, text);
+}
+
+async function reorderQueuedMessageForSession(
+  id: string,
+  messageId: string,
+  position: number,
+) {
   if (!id) return;
   const items = queuedBySession.value[id] ?? [];
   const index = items.findIndex((item) => item.id === messageId);
@@ -1209,8 +1338,11 @@ async function reorderQueuedMessage(messageId: string, position: number) {
   }
 }
 
-async function deleteQueuedMessage(messageId: string) {
-  const id = activeId.value;
+function reorderQueuedMessage(messageId: string, position: number) {
+  return reorderQueuedMessageForSession(activeId.value, messageId, position);
+}
+
+async function deleteQueuedMessageForSession(id: string, messageId: string) {
   if (!id) return;
   try {
     await api.deleteQueuedMessage(id, messageId);
@@ -1222,8 +1354,11 @@ async function deleteQueuedMessage(messageId: string) {
   }
 }
 
-async function dispatchQueuedMessage(messageId: string) {
-  const id = activeId.value;
+function deleteQueuedMessage(messageId: string) {
+  return deleteQueuedMessageForSession(activeId.value, messageId);
+}
+
+async function dispatchQueuedMessageForSession(id: string, messageId: string) {
   if (!id) return;
   try {
     await api.dispatchQueuedMessage(id, messageId);
@@ -1231,6 +1366,10 @@ async function dispatchQueuedMessage(messageId: string) {
   } catch (e) {
     console.error("Failed to send queued message immediately:", e);
   }
+}
+
+function dispatchQueuedMessage(messageId: string) {
+  return dispatchQueuedMessageForSession(activeId.value, messageId);
 }
 
 async function approveWorkflow(id: string) {
@@ -1277,6 +1416,12 @@ async function closeWorkflow(id: string) {
     backgroundCommands: activeBackgroundCommands,
     fileReview: activeFileReview,
     contextUsage: activeUsage,
+    sessionById,
+    messagesForSession,
+    queuedMessagesForSession,
+    contextUsageForSession,
+    backgroundCommandsForSession,
+    fileReviewForSession,
     agentRunsBySession,
     agentBudgetBySession,
     workflowsBySession,
@@ -1288,31 +1433,48 @@ async function closeWorkflow(id: string) {
     connect,
     newSession,
     select,
+    hydrateSession,
     send,
+    sendToSession,
     rewindSentMessage,
+    rewindSentMessageForSession,
     confirmHistoryRewind,
     cancelHistoryRewind,
     toggleHistoryRewindForceFile,
     consumeComposerRestore,
     keepAllFileChanges,
+    keepAllFileChangesForSession,
     undoAllFileChanges,
+    undoAllFileChangesForSession,
     toggleFileReviewForceFile,
+    toggleFileReviewForceFileForSession,
     refreshActiveFileReview,
+    refreshFileReview,
     cancelTurn,
+    cancelTurnForSession,
     cancelTool,
+    cancelToolForSession,
     backgroundTool,
+    backgroundToolForSession,
     revealToolCommand,
+    revealToolCommandForSession,
     stopBackgroundCommand,
+    stopBackgroundCommandForSession,
     ensureSession,
     updateSession: sessionStore.updateSession,
     renameSession: sessionStore.renameSession,
     pinSession: sessionStore.pinSession,
     forkSession,
+    sideChatSession,
     deleteSession,
     editQueuedMessage,
+    editQueuedMessageForSession,
     reorderQueuedMessage,
+    reorderQueuedMessageForSession,
     deleteQueuedMessage,
+    deleteQueuedMessageForSession,
     dispatchQueuedMessage,
+    dispatchQueuedMessageForSession,
     approveWorkflow,
     closeWorkflow,
     resolveApproval: interactionStore.resolveApproval,

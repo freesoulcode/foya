@@ -50,9 +50,11 @@ const {
   openArtifact: openWorkbarArtifact,
   openBrowser: openWorkbarBrowser,
   openAgentBrowser,
+  openSideChat,
   openBackgroundCommand: openWorkbarBackgroundCommand,
   setActiveSession: setActiveWorkbarSession,
   removeSession: removeWorkbarSession,
+  ownerSessionForContentSession,
 } = workbarStore;
 const { linkOpenMode } = useLinkPreference();
 const conversationStore = useConversationStore();
@@ -106,6 +108,7 @@ const {
   renameSession,
   pinSession,
   forkSession,
+  sideChatSession,
   deleteSession,
   editQueuedMessage,
   reorderQueuedMessage,
@@ -121,6 +124,7 @@ const {
 const projectCreateOpen = ref(false);
 const projectCreateBusy = ref(false);
 const projectCreateError = ref("");
+const projectCreateTargetSessionId = ref<string | null>(null);
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null);
 const activeTurn = ref(0);
 const questionPanelExpanded = ref(false);
@@ -437,6 +441,21 @@ function restoreBrowserElements(elements: BrowserElementSelection[]) {
 const openedBrowserRequests = new Set<string>();
 
 function workbarSessionFor(executionSessionId: string) {
+  const directOwner = ownerSessionForContentSession(executionSessionId);
+  if (directOwner !== undefined) return directOwner;
+  for (const runs of Object.values(agentRunsBySession.value)) {
+    const run = runs.find((item) => item.child_session_id === executionSessionId);
+    if (run?.root_session_id) {
+      return ownerSessionForContentSession(run.root_session_id) ?? run.root_session_id;
+    }
+  }
+  return executionSessionId;
+}
+
+function workbarContentSessionFor(executionSessionId: string) {
+  if (ownerSessionForContentSession(executionSessionId) !== undefined) {
+    return executionSessionId;
+  }
   for (const runs of Object.values(agentRunsBySession.value)) {
     const run = runs.find((item) => item.child_session_id === executionSessionId);
     if (run?.root_session_id) return run.root_session_id;
@@ -452,7 +471,8 @@ watch(
       openedBrowserRequests.add(action.id);
       openAgentBrowser(
         workbarSessionFor(action.session_id),
-        action.browser_id
+        action.browser_id,
+        workbarContentSessionFor(action.session_id)
       );
     }
   },
@@ -496,7 +516,8 @@ function onProjectChange(value: string) {
     void updateSession(activeId.value, { project_id: value });
 }
 
-function onAddProject() {
+function onAddProject(sessionId?: string) {
+  projectCreateTargetSessionId.value = sessionId ?? null;
   projectCreateError.value = "";
   projectCreateOpen.value = true;
 }
@@ -507,7 +528,14 @@ async function onCreateProject(input: { name: string; path: string }) {
   try {
     const project = await registerProject(input.path, input.name);
     projectCreateOpen.value = false;
-    onProjectChange(project.id);
+    if (projectCreateTargetSessionId.value) {
+      await updateSession(projectCreateTargetSessionId.value, {
+        project_id: project.id,
+      });
+    } else {
+      onProjectChange(project.id);
+    }
+    projectCreateTargetSessionId.value = null;
   } catch (error) {
     projectCreateError.value = String(error);
   } finally {
@@ -545,6 +573,23 @@ function onPin(id: string, pinned: boolean) {
 function onFork(id: string) {
   void forkSession(id).catch((error) => {
     console.error("Failed to fork chat:", error);
+  });
+}
+
+function onCreateSideChat(sourceId = activeId.value, throughSeq?: number) {
+  if (!sourceId) return;
+  const ownerSessionId =
+    ownerSessionForContentSession(sourceId) ?? activeId.value ?? sourceId;
+  void sideChatSession(sourceId, throughSeq).then((session) => {
+    openSideChat(ownerSessionId, session.id);
+  }).catch((error) => {
+    console.error("Failed to create side chat:", error);
+  });
+}
+
+function onCloseSideChat(sessionId: string) {
+  void deleteSession(sessionId).catch((error) => {
+    console.error("Failed to delete side chat:", error);
   });
 }
 
@@ -638,6 +683,7 @@ const viewContext: ChatWorkspaceContext = {
   undoAllFileChanges,
   toggleFileReviewForceFile,
   forkSession,
+  createSideChat: onCreateSideChat,
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
@@ -726,6 +772,10 @@ provideChatWorkspace(viewContext);
         @project-files-changed="refreshActiveFileReview"
         @browser-element-selected="onBrowserElementSelected"
         @browser-action-result="onBrowserActionResult"
+        @create-side-chat="onCreateSideChat"
+        @close-side-chat="onCloseSideChat"
+        @add-project="onAddProject"
+        @open-plugins="openPlugins"
       />
     </SidebarInset>
   </SidebarProvider>

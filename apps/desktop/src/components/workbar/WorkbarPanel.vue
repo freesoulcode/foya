@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   FileIcon,
   FolderIcon,
   GlobeIcon,
+  MessageSquarePlusIcon,
   PanelRightCloseIcon,
   PlusIcon,
   TerminalIcon,
@@ -13,8 +15,11 @@ import {
   type LucideIcon,
 } from "@lucide/vue";
 import WindowControls from "@/components/WindowControls.vue";
+import { useLinkPreference } from "@/composables/useLinkPreference";
 import { usePlatform } from "@/composables/usePlatform";
+import { diffFilePath } from "@/lib/diff";
 import type {
+  AttachmentRef,
   BrowserActionRequest,
   BrowserActionResult,
   BrowserElementSelection,
@@ -39,6 +44,7 @@ import TerminalPanel from "./TerminalPanel.vue";
 import BackgroundCommandTerminalPanel from "./BackgroundCommandTerminalPanel.vue";
 import BrowserPanel from "./BrowserPanel.vue";
 import ArtifactPreviewPanel from "./ArtifactPreviewPanel.vue";
+import SideChatPanel from "./SideChatPanel.vue";
 
 const props = defineProps<{
   sessionId?: string;
@@ -55,6 +61,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "browser-element-selected", element: BrowserElementSelection): void;
   (event: "project-files-changed", paths: string[]): void;
+  (event: "create-side-chat", sessionId?: string, throughSeq?: number): void;
+  (event: "close-side-chat", sessionId: string): void;
+  (event: "add-project", sessionId?: string): void;
+  (event: "open-plugins"): void;
   (
     event: "browser-action-result",
     request: BrowserActionRequest,
@@ -63,6 +73,7 @@ const emit = defineEmits<{
 }>();
 
 const { showCustomWindowControls } = usePlatform();
+const { linkOpenMode } = useLinkPreference();
 const { t } = useI18n();
 const workbarStore = useWorkbarStore();
 const {
@@ -74,23 +85,27 @@ const {
   activeTab,
 } = storeToRefs(workbarStore);
 const {
-  items,
   minWidth,
   setWidth,
   setOpen,
   addTab,
   openFiles,
   openFile,
+  openBrowser,
+  openArtifact,
+  openBackgroundCommand,
   selectTab,
   setTabTitle,
   closeTab,
   renameEntryTabs,
   resetDeletedEntryTab,
+  ownerSessionForContentSession,
 } = workbarStore;
 const resizing = ref(false);
 const addMenuOpen = ref(false);
 const focused = ref(false);
 const panel = ref<HTMLElement | null>(null);
+const sideChatBrowserElements = ref<Record<string, BrowserElementSelection[]>>({});
 const CHAT_MIN_WIDTH = 350;
 const CLOSE_VELOCITY_PX_PER_MS = 0.8;
 const VELOCITY_WINDOW_MS = 120;
@@ -122,9 +137,20 @@ const workspaceDisplayName = computed(() =>
     ? t("Workspace")
     : props.workspace?.name ?? ""
 );
+const sideChatTabs = computed(() =>
+  allTabs.value.filter((tab) => tab.kind === "side-chat")
+);
+const sideChatSessionIds = computed(
+  () =>
+    new Set(
+      sideChatTabs.value
+        .map((tab) => tab.sessionId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+);
 
 function isCurrentSessionTab(tab: WorkbarTab) {
-  return (tab.sessionId ?? "") === (props.sessionId ?? "");
+  return tabs.value.includes(tab);
 }
 
 function isActiveWorkbarTab(tab: WorkbarTab) {
@@ -142,15 +168,44 @@ const icons: Record<WorkbarTabKind, LucideIcon> = {
   terminal: TerminalIcon,
   browser: GlobeIcon,
   "background-command": TerminalIcon,
+  "side-chat": MessageSquarePlusIcon,
 };
 const launcherItems = computed<
   Array<{
-    kind: "files" | WorkbarLaunchKind;
+    kind: "files" | "side-chat" | WorkbarLaunchKind;
     title: string;
     icon: LucideIcon;
   }>
 >(() => [
   { kind: "files", title: "Files", icon: FolderIcon },
+  ...(props.sessionId
+    ? [
+        {
+          kind: "side-chat" as const,
+          title: "Side chat",
+          icon: MessageSquarePlusIcon,
+        },
+      ]
+    : []),
+  { kind: "browser", title: "Browser", icon: GlobeIcon },
+  { kind: "terminal", title: "Terminal", icon: TerminalIcon },
+]);
+const newTabItems = computed<
+  Array<{
+    kind: "side-chat" | WorkbarLaunchKind;
+    title: string;
+    icon: LucideIcon;
+  }>
+>(() => [
+  ...(props.sessionId
+    ? [
+        {
+          kind: "side-chat" as const,
+          title: "Side chat",
+          icon: MessageSquarePlusIcon,
+        },
+      ]
+    : []),
   { kind: "browser", title: "Browser", icon: GlobeIcon },
   { kind: "terminal", title: "Terminal", icon: TerminalIcon },
 ]);
@@ -161,15 +216,138 @@ function tabTitle(tab: WorkbarTab): string {
     : tab.title;
 }
 
+function browserElementKey(element: BrowserElementSelection) {
+  return `${element.page_url}\n${element.selector}`;
+}
+
+function browserElementsForSession(sessionId?: string) {
+  return sessionId ? sideChatBrowserElements.value[sessionId] ?? [] : [];
+}
+
+function setBrowserElementsForSession(
+  sessionId: string,
+  elements: BrowserElementSelection[],
+) {
+  sideChatBrowserElements.value = {
+    ...sideChatBrowserElements.value,
+    [sessionId]: elements,
+  };
+}
+
+function addBrowserElementForSession(
+  sessionId: string,
+  element: BrowserElementSelection,
+) {
+  const current = browserElementsForSession(sessionId);
+  const key = browserElementKey(element);
+  if (
+    current.some((item) => browserElementKey(item) === key) ||
+    current.length >= 8
+  ) {
+    return;
+  }
+  setBrowserElementsForSession(sessionId, [...current, element]);
+}
+
+function removeBrowserElementForSession(sessionId: string, index: number) {
+  setBrowserElementsForSession(
+    sessionId,
+    browserElementsForSession(sessionId).filter(
+      (_, itemIndex) => itemIndex !== index,
+    ),
+  );
+}
+
+function clearBrowserElementsForSession(sessionId: string) {
+  setBrowserElementsForSession(sessionId, []);
+}
+
+function isSideChatSession(sessionId?: string) {
+  return Boolean(sessionId && sideChatSessionIds.value.has(sessionId));
+}
+
+function ownerSessionForSideChat(tab: WorkbarTab) {
+  if (!tab.sessionId) return props.sessionId ?? "";
+  return ownerSessionForContentSession(tab.sessionId) ?? props.sessionId ?? "";
+}
+
+function handleBrowserElementSelected(
+  tab: WorkbarTab,
+  element: BrowserElementSelection,
+) {
+  if (tab.sessionId && isSideChatSession(tab.sessionId)) {
+    addBrowserElementForSession(tab.sessionId, element);
+    return;
+  }
+  emit("browser-element-selected", element);
+}
+
+function openSideChatFile(
+  projectPath: string,
+  path: string,
+  view: "file" | "diff" = "file",
+  diff?: string,
+) {
+  if (!projectPath || path.startsWith("/")) return;
+  openFile(projectPath, path, view, diff);
+}
+
+function openSideChatDiff(projectPath: string, diff: string) {
+  if (!projectPath) return;
+  const path = diffFilePath(diff, projectPath);
+  if (path) openFile(projectPath, path, "diff", diff);
+}
+
+function openSideChatWorkflowFile(projectPath: string, path: string) {
+  const root = projectPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const target = path.replace(/\\/g, "/");
+  if (!root || !target.startsWith(`${root}/`)) return;
+  openFile(projectPath, target.slice(root.length + 1));
+}
+
+function openSideChatArtifact(tab: WorkbarTab, attachment: AttachmentRef) {
+  if (!tab.sessionId) return;
+  openArtifact(tab.sessionId, attachment, ownerSessionForSideChat(tab));
+}
+
+function openSideChatBackgroundCommand(
+  tab: WorkbarTab,
+  command: BackgroundCommand,
+) {
+  openBackgroundCommand(
+    command.session_id,
+    command.command_id,
+    command.command,
+    ownerSessionForSideChat(tab),
+  );
+}
+
+async function openSideChatLink(tab: WorkbarTab, url: string) {
+  if (linkOpenMode.value === "system") {
+    try {
+      await openUrl(url);
+    } catch (error) {
+      console.error("Failed to open link in system browser:", error);
+    }
+    return;
+  }
+  openBrowser(url, tab.sessionId, ownerSessionForSideChat(tab));
+}
+
 async function addFeature(kind: WorkbarLaunchKind) {
   addTab(kind);
   addMenuOpen.value = false;
 }
 
-async function launchFeature(kind: "files" | WorkbarLaunchKind) {
+async function launchFeature(kind: "files" | "side-chat" | WorkbarLaunchKind) {
   if (kind === "files") {
     const workspace = props.workspace ?? await props.ensureWorkspace();
     openFiles(workspace.path);
+    return;
+  }
+  if (kind === "side-chat") {
+    emit("create-side-chat");
+    addMenuOpen.value = false;
     return;
   }
   await addFeature(kind);
@@ -190,8 +368,26 @@ function activateTab(tab: WorkbarTab) {
 }
 
 function closeWorkbarTab(tab: WorkbarTab) {
-  closeTab(tab.id);
+  const removed = closeTab(tab.id);
+  if (removed?.kind === "side-chat" && removed.sessionId) {
+    const next = { ...sideChatBrowserElements.value };
+    delete next[removed.sessionId];
+    sideChatBrowserElements.value = next;
+    emit("close-side-chat", removed.sessionId);
+  }
 }
+
+watch(
+  sideChatSessionIds,
+  (ids) => {
+    const next = { ...sideChatBrowserElements.value };
+    for (const id of Object.keys(next)) {
+      if (!ids.has(id)) delete next[id];
+    }
+    sideChatBrowserElements.value = next;
+  },
+  { immediate: true },
+);
 
 function entryRenamed(oldPath: string, newPath: string, isDirectory: boolean) {
   if (activeFileWorkspacePath.value) {
@@ -351,19 +547,19 @@ onBeforeUnmount(() => stopResize?.());
               class="w-40 gap-0.5 rounded-md p-1 shadow-md"
             >
               <Button
-                v-for="item in items"
+                v-for="item in newTabItems"
                 :key="item.kind"
                 type="button"
                 size="sm"
                 variant="ghost"
                 class="w-full justify-start gap-2 px-2 font-normal"
-                @click="addFeature(item.kind)"
+                @click="launchFeature(item.kind)"
               >
                 <component
-                  :is="icons[item.kind]"
+                  :is="item.icon"
                   class="size-3.5 shrink-0 text-muted-foreground"
                 />
-                <span>{{ $t(item.titleKey) }}</span>
+                <span>{{ $t(item.title) }}</span>
               </Button>
             </PopoverContent>
           </Popover>
@@ -477,6 +673,36 @@ onBeforeUnmount(() => stopResize?.());
             :active="isActiveWorkbarTab(tab)"
           />
         </template>
+        <template v-for="tab in sideChatTabs" :key="tab.id">
+          <SideChatPanel
+            v-if="tab.sessionId"
+            v-show="isActiveWorkbarTab(tab)"
+            class="absolute inset-0"
+            :session-id="tab.sessionId"
+            :owner-session-id="ownerSessionForSideChat(tab)"
+            :active="isActiveWorkbarTab(tab)"
+            :browser-elements="browserElementsForSession(tab.sessionId)"
+            @open-diff="openSideChatDiff"
+            @open-review-file="openSideChatFile"
+            @open-workflow-file="openSideChatWorkflowFile"
+            @open-artifact="openSideChatArtifact(tab, $event)"
+            @open-link="openSideChatLink(tab, $event)"
+            @open-background-command="openSideChatBackgroundCommand(tab, $event)"
+            @add-project="emit('add-project', tab.sessionId)"
+            @open-plugins="emit('open-plugins')"
+            @remove-browser-element="
+              removeBrowserElementForSession(tab.sessionId, $event)
+            "
+            @clear-browser-elements="clearBrowserElementsForSession(tab.sessionId)"
+            @restore-browser-elements="
+              setBrowserElementsForSession(tab.sessionId, $event)
+            "
+            @create-side-chat="
+              (sessionId, throughSeq) =>
+                emit('create-side-chat', sessionId, throughSeq)
+            "
+          />
+        </template>
         <BrowserPanel
           v-for="tab in browserTabs"
           :key="tab.id"
@@ -490,7 +716,7 @@ onBeforeUnmount(() => stopResize?.());
             browserActions?.find((action) => action.browser_id === tab.id)
           "
           @title-change="setTabTitle(tab.id, $event)"
-          @element-selected="emit('browser-element-selected', $event)"
+          @element-selected="handleBrowserElementSelected(tab, $event)"
           @agent-action-result="
             (request, result) =>
               emit('browser-action-result', request, result)
