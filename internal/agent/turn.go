@@ -411,6 +411,9 @@ func (e *Engine) runTurn(
 						titleSource = element.PageURL
 					}
 				}
+				if strings.TrimSpace(titleSource) == "" && len(input.WorkspaceFiles) > 0 {
+					titleSource = "Files: " + strings.Join(input.WorkspaceFiles, ", ")
+				}
 				detached := context.WithoutCancel(ctx)
 				go e.generateTitle(detached, sessionID, titleSource)
 			}
@@ -432,6 +435,7 @@ func (e *Engine) runTurn(
 		SkillRef:             input.SkillRef,
 		Attachments:          append([]conversation.AttachmentRef(nil), input.Attachments...),
 		BrowserElements:      append([]conversation.BrowserElement(nil), input.BrowserElements...),
+		WorkspaceFiles:       append([]string(nil), input.WorkspaceFiles...),
 	}
 	e.emit(context.WithoutCancel(ctx), sessionID, conversation.KindMessageEnd, userMsg, true)
 	e.emit(context.WithoutCancel(ctx), sessionID, conversation.KindTurnStarted, turnStartedPayload{

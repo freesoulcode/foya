@@ -22,12 +22,56 @@ pub(crate) fn update_session(
 }
 
 #[tauri::command]
+pub(crate) fn get_session_workspace(_session_id: String) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn list_workspace_files(_session_id: String) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn read_workspace_file(_session_id: String, _path: String) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn create_workspace_entry(
+    _session_id: String,
+    _path: String,
+    _kind: String,
+) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn rename_workspace_entry(
+    _session_id: String,
+    _path: String,
+    _new_name: String,
+) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn delete_workspace_entry(_session_id: String, _path: String) -> Result<(), String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
+pub(crate) fn resolve_workspace_path(_session_id: String, _path: String) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
 pub(crate) fn submit_turn(
     _session_id: String,
     _message: String,
     _skill_ref: Option<String>,
     _attachments: Option<Vec<serde_json::Value>>,
     _browser_elements: Option<Vec<serde_json::Value>>,
+    _workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
     Err("Windows transport is not implemented yet".into())
 }
@@ -167,6 +211,7 @@ pub(crate) fn enqueue_message(
     _skill_ref: Option<String>,
     _attachments: Option<Vec<serde_json::Value>>,
     _browser_elements: Option<Vec<serde_json::Value>>,
+    _workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
     Err("Windows transport is not implemented yet".into())
 }
@@ -581,6 +626,7 @@ pub(crate) async fn execute_command(
     _session_id: String,
     _name: String,
     _args: String,
+    _workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
     Err("Windows transport is not implemented".into())
 }

@@ -56,6 +56,7 @@ type UserInput struct {
 	SkillRef        string           `json:"skill_ref,omitempty"`
 	Attachments     []AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []BrowserElement `json:"browser_elements,omitempty"`
+	WorkspaceFiles  []string         `json:"workspace_files,omitempty"`
 }
 
 // FileChange references the content-addressed states around one text-file write.
@@ -82,6 +83,7 @@ type Message struct {
 	SkillRef             string           `json:"skill_ref,omitempty"`
 	Attachments          []AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements      []BrowserElement `json:"browser_elements,omitempty"`
+	WorkspaceFiles       []string         `json:"workspace_files,omitempty"`
 	EventSeq             uint64           `json:"event_seq,omitempty"`  // Stable projection ID; not sent to the model.
 	CreatedAt            *time.Time       `json:"created_at,omitempty"` // Event time used by clients; not sent to the model.
 	Reasoning            string           `json:"reasoning,omitempty"`  // Display-only assistant reasoning.

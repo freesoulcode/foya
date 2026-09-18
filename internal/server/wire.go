@@ -33,6 +33,7 @@ type SubmitTurnRequest struct {
 	SkillRef        string                        `json:"skill_ref,omitempty"`
 	Attachments     []conversation.AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []conversation.BrowserElement `json:"browser_elements,omitempty"`
+	WorkspaceFiles  []string                      `json:"workspace_files,omitempty"`
 }
 
 type ArtifactResponse struct {
@@ -117,6 +118,7 @@ type QueueMessageRequest struct {
 	SkillRef        string                        `json:"skill_ref,omitempty"`
 	Attachments     []conversation.AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []conversation.BrowserElement `json:"browser_elements,omitempty"`
+	WorkspaceFiles  []string                      `json:"workspace_files,omitempty"`
 }
 
 // UpdateQueuedMessageRequest changes queued message content or position.
@@ -207,6 +209,16 @@ type TerminalInputRequest struct {
 type TerminalResizeRequest struct {
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`
+}
+
+type CreateWorkspaceEntryRequest struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+type RenameWorkspaceEntryRequest struct {
+	Path    string `json:"path"`
+	NewName string `json:"new_name"`
 }
 
 // ApprovalDecisionRequest resolves an approval request.

@@ -22,6 +22,13 @@ func modelMessage(item conversation.Message) model.InputMessage {
 				string(data),
 		})
 	}
+	for _, path := range item.WorkspaceFiles {
+		parts = append(parts, model.InputPart{
+			Type: "text",
+			Text: "[User-selected workspace file. Use workspace tools to read it when relevant: " +
+				path + "]",
+		})
+	}
 	return model.InputMessage{
 		Role:       item.Role,
 		Parts:      parts,

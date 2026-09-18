@@ -158,6 +158,16 @@ func (b *Service) ExecuteCommand(
 	ctx context.Context,
 	sessionID, name, args string,
 ) (CommandExecution, error) {
+	return b.ExecuteCommandInput(ctx, sessionID, name, args, nil)
+}
+
+// ExecuteCommandInput executes a command with the same structured workspace
+// references accepted by a regular composer submission.
+func (b *Service) ExecuteCommandInput(
+	ctx context.Context,
+	sessionID, name, args string,
+	workspaceFiles []string,
+) (CommandExecution, error) {
 	s, ok := b.sessions.Get(sessionID)
 	if !ok {
 		return CommandExecution{}, conversation.ErrNotFound
@@ -174,10 +184,18 @@ func (b *Service) ExecuteCommand(
 	if err != nil {
 		return CommandExecution{}, err
 	}
+	workspaceFiles, err = b.normalizeWorkspaceFiles(ctx, sessionID, workspaceFiles)
+	if err != nil {
+		return CommandExecution{}, err
+	}
 
 	switch item.Kind {
 	case workflow.KindPrompt:
-		submission, err := b.SubmitTurn(ctx, sessionID, workflow.Expand(item.Body, args))
+		submission, err := b.SubmitInput(ctx, sessionID, conversation.UserInput{
+			Text:           workflow.Expand(item.Body, args),
+			Command:        item.Name,
+			WorkspaceFiles: workspaceFiles,
+		})
 		if err != nil {
 			return CommandExecution{}, err
 		}
@@ -207,7 +225,11 @@ func (b *Service) ExecuteCommand(
 		if record.Kind == workflow.KindGoal {
 			prompt = "Define a durable, measurable goal with constraints and success criteria. Do not implement code.\n\nObjective:\n" + args
 		}
-		submission, err := b.SubmitInput(ctx, sessionID, conversation.UserInput{Text: prompt, Command: item.Name})
+		submission, err := b.SubmitInput(ctx, sessionID, conversation.UserInput{
+			Text:           prompt,
+			Command:        item.Name,
+			WorkspaceFiles: workspaceFiles,
+		})
 		if err != nil {
 			return CommandExecution{}, err
 		}

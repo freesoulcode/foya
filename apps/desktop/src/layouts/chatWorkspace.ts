@@ -18,6 +18,7 @@ import type {
   QueuedMessage,
   ReasoningEffort,
   Session,
+  WorkspaceEntry,
   WorkflowRecord,
 } from "@/lib/api";
 import type { useConversationStore } from "@/stores/conversation";
@@ -87,11 +88,17 @@ export interface ChatWorkspaceContext extends ConversationBindings {
   onOpenDiff: (diff: string) => void;
   onOpenReviewFile: (path: string, diff: string) => void;
   onOpenWorkflowFile: (path: string) => void;
+  listActiveWorkspaceFiles: () => Promise<WorkspaceEntry[]>;
   onOpenArtifact: (attachment: AttachmentRef) => void;
   onViewToolInWorkbar: (toolCallId: string) => Promise<void>;
   onOpenLink: (url: string) => Promise<void>;
   onOpenBackgroundCommand: (command: BackgroundCommand) => void;
-  executeComposerCommand: (name: string, args: string) => Promise<void>;
+  executeComposerCommand: (
+    name: string,
+    args: string,
+    workspaceFiles?: string[]
+  ) => Promise<void>;
+  openPlugins: () => void;
   onModelConfigChange: (value: {
     connectionID: string;
     model: string;

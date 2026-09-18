@@ -16,6 +16,7 @@ type QueuedMessage struct {
 	SkillRef        string           `json:"skill_ref,omitempty"`
 	Attachments     []AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements []BrowserElement `json:"browser_elements,omitempty"`
+	WorkspaceFiles  []string         `json:"workspace_files,omitempty"`
 	Position        int              `json:"position"`
 	CreatedAt       time.Time        `json:"created_at"`
 	UpdatedAt       time.Time        `json:"updated_at"`
@@ -37,6 +38,7 @@ func NewQueuedMessage(sessionID string, input UserInput, position int) QueuedMes
 		SkillRef:        input.SkillRef,
 		Attachments:     append([]AttachmentRef(nil), input.Attachments...),
 		BrowserElements: append([]BrowserElement(nil), input.BrowserElements...),
+		WorkspaceFiles:  append([]string(nil), input.WorkspaceFiles...),
 		Position:        position,
 		CreatedAt:       now,
 		UpdatedAt:       now,

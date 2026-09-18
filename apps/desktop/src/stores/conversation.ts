@@ -992,17 +992,24 @@ async function send(
   text: string,
   files: File[] = [],
   browserElements: BrowserElementSelection[] = [],
+  workspaceFiles: string[] = [],
   skillRef = "",
     restore?: () => void,
 ) {
-    if (!text.trim() && files.length === 0 && browserElements.length === 0)
+    if (
+      !text.trim() &&
+      files.length === 0 &&
+      browserElements.length === 0 &&
+      workspaceFiles.length === 0
+    )
       return;
 
   let id = activeId.value;
     if (
       text.trim() === "/compact" &&
       files.length === 0 &&
-      browserElements.length === 0
+      browserElements.length === 0 &&
+      workspaceFiles.length === 0
     ) {
     if (!id) return;
     try {
@@ -1033,6 +1040,7 @@ async function send(
       text,
       uploaded,
       browserElements,
+      workspaceFiles,
         skillRef,
     );
     if (result.status === "queued" && result.queued) {

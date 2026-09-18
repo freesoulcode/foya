@@ -219,6 +219,34 @@ func TestEnqueueInputPreservesBrowserElement(t *testing.T) {
 	}
 }
 
+func TestEnqueueInputCanonicalizesWorkspaceFiles(t *testing.T) {
+	ctx := context.Background()
+	be, sessionID, _ := newQueueTestBackend(t)
+	if _, err := be.CreateWorkspaceEntry(ctx, sessionID, "notes.txt", false); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := be.EnqueueInput(ctx, sessionID, conversation.UserInput{
+		WorkspaceFiles: []string{"./notes.txt", "notes.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.WorkspaceFiles) != 1 || item.WorkspaceFiles[0] != "notes.txt" {
+		t.Fatalf("queued workspace files = %#v", item.WorkspaceFiles)
+	}
+}
+
+func TestEnqueueInputRejectsInvalidWorkspaceFile(t *testing.T) {
+	be, sessionID, _ := newQueueTestBackend(t)
+	_, err := be.EnqueueInput(context.Background(), sessionID, conversation.UserInput{
+		WorkspaceFiles: []string{"../outside.txt"},
+	})
+	if err == nil {
+		t.Fatal("expected invalid workspace file to be rejected")
+	}
+}
+
 func TestEnqueueInputRejectsInvalidBrowserElementURL(t *testing.T) {
 	be, sessionID, _ := newQueueTestBackend(t)
 	_, err := be.EnqueueInput(context.Background(), sessionID, conversation.UserInput{

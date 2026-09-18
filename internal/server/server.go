@@ -90,6 +90,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /sessions/{id}", s.handleUpdateSession)
 	s.mux.HandleFunc("POST /sessions/{id}/fork", s.handleForkSession)
 	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
+	s.mux.HandleFunc("GET /sessions/{id}/workspace", s.handleSessionWorkspace)
+	s.mux.HandleFunc("GET /sessions/{id}/workspace/files", s.handleListWorkspaceFiles)
+	s.mux.HandleFunc("GET /sessions/{id}/workspace/file", s.handleReadWorkspaceFile)
+	s.mux.HandleFunc("POST /sessions/{id}/workspace/entries", s.handleCreateWorkspaceEntry)
+	s.mux.HandleFunc("PATCH /sessions/{id}/workspace/entries", s.handleRenameWorkspaceEntry)
+	s.mux.HandleFunc("DELETE /sessions/{id}/workspace/entries", s.handleDeleteWorkspaceEntry)
+	s.mux.HandleFunc("GET /sessions/{id}/workspace/path", s.handleResolveWorkspacePath)
 	s.mux.HandleFunc("GET /sessions/{id}/events", s.handleEvents)
 	s.mux.HandleFunc("GET /sessions/{id}/history", s.handleHistory)
 	s.mux.HandleFunc("POST /sessions/{id}/artifacts", s.handleUploadArtifact)
@@ -271,6 +278,7 @@ func writeQueueErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "queued_message_not_found", err.Error())
 	case errors.Is(err, kernel.ErrEmptyMessage),
 		errors.Is(err, kernel.ErrInvalidQueuePosition),
+		errors.Is(err, kernel.ErrInvalidWorkspaceFile),
 		errors.Is(err, artifact.ErrInvalidID),
 		errors.Is(err, artifact.ErrUnsupportedType):
 		writeErr(w, http.StatusBadRequest, "invalid_queue_message", err.Error())

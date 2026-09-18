@@ -61,7 +61,8 @@ type commandUpdateRequest struct {
 }
 
 type commandExecuteRequest struct {
-	Args string `json:"args,omitempty"`
+	Args           string   `json:"args,omitempty"`
+	WorkspaceFiles []string `json:"workspace_files,omitempty"`
 }
 
 func (s *Server) handleListCommands(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +142,13 @@ func (s *Server) handleExecuteCommand(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	result, err := s.service.ExecuteCommand(r.Context(), r.PathValue("id"), r.PathValue("name"), input.Args)
+	result, err := s.service.ExecuteCommandInput(
+		r.Context(),
+		r.PathValue("id"),
+		r.PathValue("name"),
+		input.Args,
+		input.WorkspaceFiles,
+	)
 	if err != nil {
 		writeCommandErr(w, err)
 		return

@@ -634,25 +634,17 @@ func (b *Service) CancelQuestions(sessionID, batchID string) error {
 	return gateway.Cancel(sessionID, batchID)
 }
 
-// StartTerminal starts an interactive shell in the session project.
+// StartTerminal starts an interactive shell in the session workspace.
 func (b *Service) StartTerminal(
 	ctx context.Context,
 	sessionID string,
 	cols, rows uint16,
 ) (terminal.Snapshot, error) {
-	s, ok := b.sessions.Get(sessionID)
-	if !ok {
-		return terminal.Snapshot{}, conversation.ErrNotFound
+	workspacePath, err := b.sessionWorkspacePath(ctx, sessionID)
+	if err != nil {
+		return terminal.Snapshot{}, err
 	}
-	projectPath := ""
-	if s.ProjectID != "" {
-		item, err := b.Project(s.ProjectID)
-		if err != nil {
-			return terminal.Snapshot{}, err
-		}
-		projectPath = item.Path
-	}
-	return b.terminal.Start(ctx, sessionID, projectPath, cols, rows)
+	return b.terminal.Start(ctx, sessionID, workspacePath, cols, rows)
 }
 
 // AttachTerminal returns the current recoverable terminal snapshot.
