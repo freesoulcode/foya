@@ -8,7 +8,7 @@ import {
   CheckIcon,
   Undo2Icon,
   ChevronRightIcon,
-  GitForkIcon,
+  MessageSquarePlusIcon,
   BrainIcon,
   FileTextIcon,
   MousePointer2Icon,
@@ -516,11 +516,11 @@ function rewindMessage() {
           type="button"
           class="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
           :disabled="!editable"
-          :title="$t('Fork chat from here')"
-          :aria-label="$t('Fork chat from here')"
+          :title="$t('Side chat from here')"
+          :aria-label="$t('Side chat from here')"
           @click="forkAtMessage"
         >
-          <GitForkIcon class="size-3.5" />
+          <MessageSquarePlusIcon class="size-3.5" />
         </button>
         <button
           v-if="message.content"

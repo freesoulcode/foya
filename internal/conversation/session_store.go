@@ -47,6 +47,7 @@ func (m *manager) Create(opts CreateOptions) (*Session, error) {
 		Model:             opts.Model,
 		ReasoningEffort:   opts.ReasoningEffort,
 		ProjectID:         opts.ProjectID,
+		Temporary:         opts.Temporary,
 		ApprovalMode:      opts.ApprovalMode,
 		Title:             opts.Title,
 		TitleIsManual:     opts.TitleIsManual,
@@ -286,9 +287,9 @@ type sessionExecer interface {
 const sessionColumns = `
 	id, parent_id, spawned_by_json, agent_ref, agent_name, agent_digest,
 	phase, agent_mode, pre_plan_mode, connection_id, model,
-	reasoning_effort, project_id, approval_mode, title, title_is_manual,
-	pinned, pinned_at_ns, tasks_json, created_at_ns, updated_at_ns,
-	agent_instructions, allowed_tools_json, agent_max_turns
+	reasoning_effort, project_id, temporary, approval_mode, title,
+	title_is_manual, pinned, pinned_at_ns, tasks_json, created_at_ns,
+	updated_at_ns, agent_instructions, allowed_tools_json, agent_max_turns
 `
 
 func readSession(
@@ -316,6 +317,7 @@ func scanSession(scanner sessionScanner) (*Session, error) {
 		agentMode        string
 		prePlanMode      string
 		reasoningEffort  string
+		temporary        int
 		titleIsManual    int
 		pinned           int
 		pinnedAt         sql.NullInt64
@@ -328,8 +330,8 @@ func scanSession(scanner sessionScanner) (*Session, error) {
 		&item.ID, &item.ParentID, &spawnedByJSON, &item.AgentRef,
 		&item.AgentName, &item.AgentDigest, &phase, &agentMode,
 		&prePlanMode, &item.ConnectionID, &item.Model, &reasoningEffort,
-		&item.ProjectID, &item.ApprovalMode, &item.Title, &titleIsManual,
-		&pinned, &pinnedAt, &tasksJSON, &createdAt, &updatedAt,
+		&item.ProjectID, &temporary, &item.ApprovalMode, &item.Title,
+		&titleIsManual, &pinned, &pinnedAt, &tasksJSON, &createdAt, &updatedAt,
 		&item.AgentInstructions, &allowedToolsJSON, &item.AgentMaxTurns,
 	)
 	if err != nil {
@@ -350,6 +352,7 @@ func scanSession(scanner sessionScanner) (*Session, error) {
 	item.AgentMode = AgentMode(agentMode)
 	item.PrePlanMode = AgentMode(prePlanMode)
 	item.ReasoningEffort = ReasoningEffort(reasoningEffort)
+	item.Temporary = temporary != 0
 	item.TitleIsManual = titleIsManual != 0
 	item.Pinned = pinned != 0
 	if pinnedAt.Valid {
@@ -374,11 +377,11 @@ func insertSession(
 		INSERT INTO sessions(
 			id, parent_id, spawned_by_json, agent_ref, agent_name, agent_digest,
 			phase, agent_mode, pre_plan_mode, connection_id, model,
-			reasoning_effort, project_id, approval_mode, title, title_is_manual,
-			pinned, pinned_at_ns, tasks_json, created_at_ns, updated_at_ns,
-			agent_instructions, allowed_tools_json, agent_max_turns
+			reasoning_effort, project_id, temporary, approval_mode, title,
+			title_is_manual, pinned, pinned_at_ns, tasks_json, created_at_ns,
+			updated_at_ns, agent_instructions, allowed_tools_json, agent_max_turns
 		) VALUES (
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		)
 	`, values...)
 	if err != nil {
@@ -402,10 +405,11 @@ func updateSession(
 			parent_id = ?, spawned_by_json = ?, agent_ref = ?,
 			agent_name = ?, agent_digest = ?, phase = ?, agent_mode = ?,
 			pre_plan_mode = ?, connection_id = ?, model = ?,
-			reasoning_effort = ?, project_id = ?, approval_mode = ?,
-			title = ?, title_is_manual = ?, pinned = ?, pinned_at_ns = ?,
-			tasks_json = ?, created_at_ns = ?, updated_at_ns = ?,
-			agent_instructions = ?, allowed_tools_json = ?, agent_max_turns = ?
+			reasoning_effort = ?, project_id = ?, temporary = ?,
+			approval_mode = ?, title = ?, title_is_manual = ?, pinned = ?,
+			pinned_at_ns = ?, tasks_json = ?, created_at_ns = ?,
+			updated_at_ns = ?, agent_instructions = ?, allowed_tools_json = ?,
+			agent_max_turns = ?
 		WHERE id = ?
 	`, values...)
 	if err != nil {
@@ -442,8 +446,8 @@ func encodeSession(item *Session) ([]any, error) {
 		item.ID, item.ParentID, spawnedBy, item.AgentRef, item.AgentName,
 		item.AgentDigest, string(item.Phase), string(item.AgentMode),
 		string(item.PrePlanMode), item.ConnectionID, item.Model,
-		string(item.ReasoningEffort), item.ProjectID, item.ApprovalMode,
-		item.Title, boolInt(item.TitleIsManual), boolInt(item.Pinned), pinnedAt,
+		string(item.ReasoningEffort), item.ProjectID, boolInt(item.Temporary),
+		item.ApprovalMode, item.Title, boolInt(item.TitleIsManual), boolInt(item.Pinned), pinnedAt,
 		tasks, item.CreatedAt.UnixNano(), item.UpdatedAt.UnixNano(),
 		item.AgentInstructions, allowedTools, item.AgentMaxTurns,
 	}, nil

@@ -65,8 +65,8 @@ func (b *Service) CreateSession(opts conversation.CreateOptions) (*conversation.
 }
 
 // ForkSession copies the current active message history into a new top-level
-// session. Runtime state such as queues, approvals and in-flight turns is not
-// copied.
+// session. Side chats are empty temporary sessions that inherit the source
+// configuration without attaching to the durable conversation tree.
 func (b *Service) ForkSession(
 	ctx context.Context,
 	sourceID string,
@@ -82,13 +82,29 @@ func (b *Service) ForkSession(
 	if _, deleted := b.turns.deleted[sourceID]; deleted {
 		return nil, conversation.ErrNotFound
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if opts.SideChat {
+		title := strings.TrimSpace(opts.Title)
+		if title == "" {
+			title = "Side chat"
+		}
+		return b.sessions.Create(conversation.CreateOptions{
+			ConnectionID:    source.ConnectionID,
+			Model:           source.Model,
+			ReasoningEffort: source.ReasoningEffort,
+			ProjectID:       source.ProjectID,
+			Temporary:       true,
+			ApprovalMode:    source.ApprovalMode,
+			Title:           title,
+			TitleIsManual:   true,
+		})
+	}
 	if b.turns.runners[sourceID] != nil ||
 		b.turns.compacting[sourceID] ||
 		len(b.turns.queues[sourceID]) > 0 {
 		return nil, ErrSessionBusy
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
 	}
 
 	history, err := b.log.History(ctx, sourceID)
@@ -464,6 +480,18 @@ func (b *Service) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+func (b *Service) DeleteTemporarySessions(ctx context.Context) error {
+	for _, item := range b.sessions.List() {
+		if !item.Temporary {
+			continue
+		}
+		if err := b.DeleteSession(ctx, item.ID); err != nil && !errors.Is(err, conversation.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
 // broadcastSession persists and publishes the current chat state.
 func (b *Service) broadcastSession(ctx context.Context, s *conversation.Session) {
 	ev := conversation.Event{Kind: conversation.KindSessionUpdated, Session: s.ID, Time: time.Now(), Payload: s}
@@ -477,7 +505,7 @@ func (b *Service) ListSessions() []*conversation.Session {
 	all := b.sessions.List()
 	out := make([]*conversation.Session, 0, len(all))
 	for _, item := range all {
-		if item.ParentID == "" {
+		if item.ParentID == "" && !item.Temporary {
 			out = append(out, item)
 		}
 	}

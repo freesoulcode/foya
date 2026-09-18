@@ -103,9 +103,28 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
+  function sessionTreeIds(id: string): string[] {
+    const remove = new Set([id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const session of sessions.value) {
+        if (
+          session.parent_id &&
+          remove.has(session.parent_id) &&
+          !remove.has(session.id)
+        ) {
+          remove.add(session.id);
+          changed = true;
+        }
+      }
+    }
+    return Array.from(remove);
+  }
+
   function removeSessionRecord(id: string) {
-    const index = sessions.value.findIndex((session) => session.id === id);
-    if (index >= 0) sessions.value.splice(index, 1);
+    const remove = new Set(sessionTreeIds(id));
+    sessions.value = sessions.value.filter((session) => !remove.has(session.id));
   }
 
   async function loadInitialData() {
@@ -242,6 +261,7 @@ export const useSessionStore = defineStore("session", () => {
     replaceSessions,
     upsertSession,
     mergeSession,
+    sessionTreeIds,
     removeSessionRecord,
     loadInitialData,
     refreshConnections,

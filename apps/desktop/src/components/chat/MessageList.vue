@@ -9,6 +9,7 @@ const props = defineProps<{
   projectPath?: string;
   messages: ChatMessage[];
   streaming: boolean;
+  emptyHint?: string;
   compacting?: boolean;
   editable?: boolean;
   activeTurn?: number;
@@ -175,7 +176,9 @@ onBeforeUnmount(() => {
         </div>
         <div class="text-center">
           <p class="text-base font-medium">{{ $t("How can I help?") }}</p>
-          <p class="mt-1 text-sm text-muted-foreground">{{ $t("Enter a message to start a chat") }}</p>
+          <p class="mt-1 text-sm text-muted-foreground">
+            {{ emptyHint || $t("Enter a message to start a chat") }}
+          </p>
         </div>
       </div>
 

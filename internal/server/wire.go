@@ -52,6 +52,7 @@ type CreateSessionRequest struct {
 type ForkSessionRequest struct {
 	Title      string `json:"title,omitempty"`
 	ThroughSeq uint64 `json:"through_seq,omitempty"`
+	SideChat   bool   `json:"side_chat,omitempty"`
 }
 
 // UpdateSessionRequest partially updates chat settings.

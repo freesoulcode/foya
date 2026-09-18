@@ -384,6 +384,9 @@ func New(cfg config.Config) (*App, error) {
 	service.SetQuestionGateway(questions)
 	service.SetBrowserController(browserController)
 	service.SetBackgroundCommandManager(backgroundCommands)
+	if err := service.DeleteTemporarySessions(context.Background()); err != nil {
+		return nil, fmt.Errorf("delete temporary sessions: %w", err)
+	}
 	engine.SetWorkflowCompletionHandler(service.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
 	feishuManager, err := feishu.NewManager(

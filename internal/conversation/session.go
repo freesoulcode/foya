@@ -102,6 +102,7 @@ type Session struct {
 	Model           string          `json:"model"`
 	ReasoningEffort ReasoningEffort `json:"reasoning_effort,omitempty"`
 	ProjectID       string          `json:"project_id,omitempty"`
+	Temporary       bool            `json:"temporary,omitempty"`
 	ApprovalMode    string          `json:"approval_mode,omitempty"`
 	Title           string          `json:"title,omitempty"`
 	TitleIsManual   bool            `json:"title_is_manual,omitempty"`
@@ -133,6 +134,7 @@ type CreateOptions struct {
 	Model             string
 	ReasoningEffort   ReasoningEffort
 	ProjectID         string
+	Temporary         bool
 	ApprovalMode      string
 	Title             string
 	TitleIsManual     bool

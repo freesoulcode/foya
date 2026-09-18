@@ -514,6 +514,68 @@ func TestForkSessionCopiesCustomTitle(t *testing.T) {
 	}
 }
 
+func TestForkSessionSideChatCreatesTemporarySession(t *testing.T) {
+	ctx := context.Background()
+	be, sourceID, _ := newQueueTestBackend(t)
+	appendHistoryMessage(t, be, sourceID, conversation.Message{
+		Role: conversation.RoleUser, Content: "inspect state",
+	})
+	appendHistoryMessage(t, be, sourceID, conversation.Message{
+		Role: conversation.RoleAssistant, Content: "done",
+	})
+
+	side, err := be.ForkSession(ctx, sourceID, ForkSessionOptions{SideChat: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !side.Temporary || side.ParentID != "" {
+		t.Fatalf("side chat session metadata = %#v", side)
+	}
+	if side.Title != "Side chat" {
+		t.Fatalf("side chat title = %q", side.Title)
+	}
+	roots := be.ListSessions()
+	if len(roots) != 1 || roots[0].ID != sourceID {
+		t.Fatalf("root sessions = %#v", roots)
+	}
+	history, err := be.History(ctx, side.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("temporary side chat history = %#v", history)
+	}
+}
+
+func TestForkSessionSideChatAllowsBusySource(t *testing.T) {
+	ctx := context.Background()
+	be, sourceID, prov := newQueueTestBackend(t)
+	if _, err := be.SubmitTurn(ctx, sourceID, "slow"); err != nil {
+		t.Fatal(err)
+	}
+	awaitStarted(t, prov, "slow")
+
+	side, err := be.ForkSession(ctx, sourceID, ForkSessionOptions{SideChat: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !side.Temporary || side.ParentID != "" {
+		t.Fatalf("side chat session metadata = %#v", side)
+	}
+	history, err := be.History(ctx, side.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("temporary side chat history = %#v", history)
+	}
+
+	be.CancelTurn(sourceID)
+	awaitEventSnapshot(t, be, sourceID, func(events []conversation.Event) bool {
+		return lastEvent(events, conversation.KindTurnComplete) != nil
+	})
+}
+
 func messageContents(messages []conversation.Message) []string {
 	out := make([]string, 0, len(messages))
 	for _, item := range messages {
