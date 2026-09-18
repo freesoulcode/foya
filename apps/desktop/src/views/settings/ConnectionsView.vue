@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircleIcon,
@@ -8,16 +8,15 @@ import {
   EyeIcon,
   EyeOffIcon,
   FilmIcon,
-  GlobeIcon,
   GripVerticalIcon,
   ImagePlusIcon,
+  PencilIcon,
   PlusIcon,
   PlugZapIcon,
   RefreshCwIcon,
   SearchIcon,
-  Settings2Icon,
   Trash2Icon,
-  WrenchIcon,
+  XIcon,
 } from "@lucide/vue";
 import {
   api,
@@ -33,11 +32,18 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -46,10 +52,10 @@ import {
   type TokenLimitValue,
 } from "@/views/settings/modelTokenLimits";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+  addConfiguredModels,
+  normalizeModelID,
+  removeConfiguredModel,
+} from "@/views/settings/connectionModels";
 
 interface DragPreview {
   name: string;
@@ -73,14 +79,18 @@ const pendingImportedModels = ref<Set<string>>(new Set());
 const modelImportOpen = ref(false);
 const modelImportQuery = ref("");
 const modelImportLoading = ref(false);
+const modelImportError = ref("");
+const modelDiscoveryGeneration = ref(0);
+const manualModelID = ref("");
+const addingManualModel = ref(false);
 const modelContextWindowValue = ref<TokenLimitValue>(undefined);
 const modelMaxInputTokensValue = ref<TokenLimitValue>(undefined);
 const modelMaxOutputTokensValue = ref<TokenLimitValue>(undefined);
 const connectionModels = ref<Record<string, string[]>>({});
+const discoveredModelSettings = ref<Record<string, Partial<ModelSettings>>>({});
 const modelEditor = ref<string | null>(null);
 const showApiKey = ref(false);
 const apiKey = ref("");
-const connectionErrors = ref<Record<string, string>>({});
 const connectionEditorOpen = ref(false);
 const loading = ref(false);
 const saving = ref(false);
@@ -97,27 +107,23 @@ const modelQuery = ref("");
 const modelListEl = ref<HTMLElement | null>(null);
 const modelScrollTop = ref(0);
 const modelViewportHeight = ref(160);
-const MODEL_ROW_HEIGHT = 40;
+const savedFormSnapshot = ref("");
+const MODEL_ROW_HEIGHT = 48;
 const MODEL_OVERSCAN = 8;
 
 const selectedConnection = computed(
   () => connections.value.find((connection) => connection.id === selectedID.value) ?? null
 );
-const selectedConnectionError = computed(
-  () => connectionErrors.value[selectedID.value ?? ""] ?? ""
-);
 const isNewConnection = computed(() => selectedID.value === null);
 const availableConnectionModels = computed(() =>
-  selectedID.value ? connectionModels.value[selectedID.value] ?? [] : []
+  connectionModels.value[selectedID.value ?? "draft"] ?? []
 );
-const selectedConnectionModels = computed(() => {
-  const catalog = availableConnectionModels.value;
-  const imported = importedModels.value;
-  return [
-    ...catalog.filter((model) => imported.has(model)),
-    ...[...imported].filter((model) => !catalog.includes(model)),
-  ];
+const selectedConnectionModels = computed(() => [...importedModels.value]);
+const canAddManualModel = computed(() => {
+  const model = normalizeModelID(manualModelID.value);
+  return model !== "" && !importedModels.value.has(model);
 });
+const showModelSearch = computed(() => selectedConnectionModels.value.length > 5);
 const filteredConnections = computed(() => {
   const query = connectionQuery.value.trim().toLowerCase();
   if (!query) return connections.value;
@@ -145,6 +151,18 @@ const modelEndIndex = computed(() =>
 const visibleConnectionModels = computed(() =>
   filteredConnectionModels.value.slice(modelStartIndex.value, modelEndIndex.value)
 );
+const hasUnsavedChanges = computed(
+  () => connectionEditorOpen.value && serializeFormState() !== savedFormSnapshot.value
+);
+const discoveryEndpointLabel = computed(() => {
+  if (baseURL.value.trim()) return baseURL.value.trim();
+  if (connectionType.value === "video") {
+    return videoProtocol.value === "minimax_h3"
+      ? "https://api.minimax.io"
+      : "https://ark.cn-beijing.volces.com";
+  }
+  return "https://api.openai.com/v1";
+});
 
 const defaultModelSettings = (type = connectionType.value): ModelSettings => ({
   image_input: true,
@@ -163,6 +181,16 @@ function modelCapabilities(model: string): ModelSettings {
   };
 }
 
+function formatTokenLimit(value?: number) {
+  if (!value) return "";
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(value);
+}
+
 function connectionTypeLabel(type?: ConnectionType) {
   if (type === "language") return t("Language");
   if (type === "image") return t("Image");
@@ -170,11 +198,29 @@ function connectionTypeLabel(type?: ConnectionType) {
   return t("Type not set");
 }
 
+function serializeFormState() {
+  const models = [...importedModels.value];
+  return JSON.stringify({
+    name: name.value,
+    type: connectionType.value,
+    video_protocol: videoProtocol.value,
+    base_url: baseURL.value,
+    api_key: apiKey.value,
+    models,
+    model_settings: Object.fromEntries(
+      models.map((model) => [model, modelSettings.value[model] ?? defaultModelSettings()])
+    ),
+  });
+}
+
 const filteredImportModels = computed(() => {
   const query = modelImportQuery.value.trim().toLowerCase();
+  const available = availableConnectionModels.value.filter(
+    (model) => !importedModels.value.has(model)
+  );
   return query
-    ? availableConnectionModels.value.filter((model) => model.toLowerCase().includes(query))
-    : availableConnectionModels.value;
+    ? available.filter((model) => model.toLowerCase().includes(query))
+    : available;
 });
 const allImportModelsSelected = computed(
   () => filteredImportModels.value.length > 0 &&
@@ -198,24 +244,74 @@ function setAllModelsImported(checked: boolean | "indeterminate") {
 }
 
 async function openModelImporter() {
-  if (!selectedConnection.value) return;
+  const requestID = ++modelDiscoveryGeneration.value;
   modelImportLoading.value = true;
+  modelImportError.value = "";
   modelImportQuery.value = "";
-  pendingImportedModels.value = new Set(importedModels.value);
+  pendingImportedModels.value = new Set();
   modelImportOpen.value = true;
-  await checkConnection(selectedConnection.value, true);
-  modelImportLoading.value = false;
+  await discoverConnectionModels(requestID);
+  if (requestID === modelDiscoveryGeneration.value) {
+    modelImportLoading.value = false;
+  }
 }
 
-async function confirmModelImport() {
-  importedModels.value = new Set(pendingImportedModels.value);
-  const nextSettings: Record<string, ModelSettings> = {};
-  for (const model of importedModels.value) {
-    nextSettings[model] = modelSettings.value[model] ?? defaultModelSettings();
+function confirmModelImport() {
+  const configured = addConfiguredModels(
+    importedModels.value,
+    modelSettings.value,
+    pendingImportedModels.value,
+    () => defaultModelSettings(),
+  );
+  for (const model of pendingImportedModels.value) {
+    configured.settings[model] = {
+      ...configured.settings[model],
+      ...discoveredModelSettings.value[model],
+    };
   }
-  modelSettings.value = nextSettings;
+  importedModels.value = configured.models;
+  modelSettings.value = configured.settings;
+  pendingImportedModels.value = new Set();
   modelImportOpen.value = false;
-  await save();
+}
+
+function addManualModel() {
+  if (!canAddManualModel.value) return;
+  const configured = addConfiguredModels(
+    importedModels.value,
+    modelSettings.value,
+    [manualModelID.value],
+    defaultModelSettings,
+  );
+  importedModels.value = configured.models;
+  modelSettings.value = configured.settings;
+  manualModelID.value = "";
+  addingManualModel.value = false;
+}
+
+async function startAddingModel() {
+  addingManualModel.value = true;
+  await nextTick();
+  document.getElementById("connection-model-id")?.focus();
+}
+
+function cancelAddingModel() {
+  manualModelID.value = "";
+  addingManualModel.value = false;
+}
+
+function removeModel(model: string) {
+  if (modelEditor.value === model) modelEditor.value = null;
+  const configured = removeConfiguredModel(
+    importedModels.value,
+    modelSettings.value,
+    model,
+  );
+  importedModels.value = configured.models;
+  modelSettings.value = configured.settings;
+  const pending = new Set(pendingImportedModels.value);
+  pending.delete(model);
+  pendingImportedModels.value = pending;
 }
 
 function onModelListScroll(event: Event) {
@@ -225,6 +321,10 @@ function onModelListScroll(event: Event) {
 watch(modelQuery, () => {
   modelScrollTop.value = 0;
   modelListEl.value?.scrollTo({ top: 0 });
+});
+
+watch(showModelSearch, (visible) => {
+  if (!visible) modelQuery.value = "";
 });
 
 watch(
@@ -254,6 +354,8 @@ function resetForm(connection?: ConnectionConfig) {
   selectedID.value = connection?.id ?? null;
   modelEditor.value = null;
   modelQuery.value = "";
+  manualModelID.value = "";
+  addingManualModel.value = false;
   modelScrollTop.value = 0;
   modelListEl.value?.scrollTo({ top: 0 });
   showApiKey.value = false;
@@ -265,6 +367,7 @@ function resetForm(connection?: ConnectionConfig) {
   importedModels.value = new Set(connection?.models ?? []);
   apiKey.value = connection?.api_key ?? "";
   error.value = "";
+  savedFormSnapshot.value = serializeFormState();
 }
 
 function setModelCapability(model: string, checked: boolean | "indeterminate") {
@@ -334,6 +437,7 @@ function updateTokenInput(target: "context_window" | "max_input_tokens" | "max_o
   if (target === "context_window") modelContextWindowValue.value = normalized;
   else if (target === "max_input_tokens") modelMaxInputTokensValue.value = normalized;
   else modelMaxOutputTokensValue.value = normalized;
+  updateModelTokenLimits();
 }
 
 function preventNonNumericTokenInput(event: KeyboardEvent) {
@@ -350,40 +454,37 @@ function preventNonNumericTokenPaste(event: ClipboardEvent) {
   }
 }
 
-async function checkConnection(connection: ConnectionConfig, force = false) {
-  const id = connection.id ?? "";
-  if (!id) return;
-  if (!force && connection.models_cached) {
-    connectionModels.value = {
-      ...connectionModels.value,
-      [id]: connection.models ?? [],
-    };
-    connectionErrors.value = {
-      ...connectionErrors.value,
-      [id]: connection.models?.length ? "" : t("No available models found"),
-    };
-    return;
-  }
+async function discoverConnectionModels(requestID: number) {
+  const catalogKey = selectedID.value ?? "draft";
+  const payload = formPayload();
   try {
-    const catalog = await api.listConnectionModels(id, force);
-    connectionModels.value = {
-      ...connectionModels.value,
-      [id]: catalog.models,
-    };
-    connections.value = connections.value.map((item) =>
-      item.id === id
-        ? { ...item, models_cached: true }
-        : item
+    const catalog = await api.discoverConnectionModels(payload);
+    if (
+      requestID !== modelDiscoveryGeneration.value ||
+      catalogKey !== (selectedID.value ?? "draft")
+    ) return;
+    connectionModels.value = { ...connectionModels.value, [catalogKey]: catalog.models };
+    discoveredModelSettings.value = Object.fromEntries(
+      catalog.models.map((model) => [
+        model,
+        {
+          ...(catalog.context_windows[model]
+            ? { context_window: catalog.context_windows[model] }
+            : {}),
+          ...(catalog.capabilities?.[model]?.image_input !== undefined
+            ? { image_input: catalog.capabilities[model].image_input }
+            : {}),
+        },
+      ])
     );
-    connectionErrors.value = {
-      ...connectionErrors.value,
-      [id]: catalog.models.length === 0 ? t("No available models found") : "",
-    };
   } catch (cause) {
-    connectionErrors.value = {
-      ...connectionErrors.value,
-      [id]: String(cause),
-    };
+    if (
+      requestID !== modelDiscoveryGeneration.value ||
+      catalogKey !== (selectedID.value ?? "draft")
+    ) return;
+    connectionModels.value = { ...connectionModels.value, [catalogKey]: [] };
+    discoveredModelSettings.value = {};
+    modelImportError.value = String(cause);
   }
 }
 
@@ -392,8 +493,6 @@ async function loadConnections() {
   error.value = "";
   try {
     connections.value = await api.listConnections();
-    connectionErrors.value = {};
-    void Promise.all(connections.value.map((connection) => checkConnection(connection)));
     if (connectionEditorOpen.value) {
       const current = connections.value.find((connection) => connection.id === selectedID.value);
       if (current || selectedID.value) resetForm(current);
@@ -405,19 +504,9 @@ async function loadConnections() {
   }
 }
 
-watch(
-  () => selectedID.value,
-  () => {
-    if (!selectedID.value) return;
-    const connection = connections.value.find((item) => item.id === selectedID.value);
-    if (connection) void checkConnection(connection);
-  }
-);
-
 function selectConnection(connection: ConnectionConfig) {
   resetForm(connection);
   connectionEditorOpen.value = true;
-  void checkConnection(connection, true);
 }
 
 function openModelEditor(model: string) {
@@ -469,17 +558,18 @@ function updateVideoProtocol(value: unknown) {
 }
 
 function formPayload(): ConnectionConfig {
+  const type = connectionType.value || "language";
   const importedSettings = Object.fromEntries(
     [...importedModels.value].map((model) => [
       model,
-      modelSettings.value[model] ?? defaultModelSettings(),
+      modelSettings.value[model] ?? defaultModelSettings(type),
     ])
   );
   return {
     ...(selectedID.value ? { id: selectedID.value } : {}),
     name: name.value.trim() || t("Unnamed connection"),
-    type: connectionType.value,
-    video_protocol: connectionType.value === "video" ? videoProtocol.value || undefined : undefined,
+    type,
+    video_protocol: type === "video" ? videoProtocol.value || undefined : undefined,
     kind: "openai",
     auth_kind: "api_key",
     base_url: baseURL.value.trim(),
@@ -505,7 +595,6 @@ async function save() {
     else connections.value.push(saved);
     resetForm(saved);
     connectionEditorOpen.value = true;
-    await checkConnection(saved, true);
   } catch (cause) {
     error.value = String(cause);
   } finally {
@@ -610,9 +699,9 @@ async function remove() {
     await api.deleteConnection(selectedID.value);
     const removedID = selectedID.value;
     connections.value = connections.value.filter((connection) => connection.id !== selectedID.value);
-    const remainingErrors = { ...connectionErrors.value };
-    delete remainingErrors[removedID];
-    connectionErrors.value = remainingErrors;
+    const remainingModels = { ...connectionModels.value };
+    delete remainingModels[removedID];
+    connectionModels.value = remainingModels;
     connectionEditorOpen.value = false;
     resetForm();
   } catch (cause) {
@@ -627,8 +716,8 @@ void loadConnections();
 
 <template>
   <SettingsPage
-    :title="$t('Connections')"
-    :description="$t('Manage model service connections, API keys, and model capabilities.')"
+    :title="$t('Model settings')"
+    :description="$t('Manage model providers, API keys, and model capabilities.')"
     content-class="min-h-0 flex-1 overflow-hidden"
   >
     <template #actions>
@@ -644,20 +733,21 @@ void loadConnections();
       </Button>
     </template>
 
-    <div class="grid h-full min-h-0 lg:grid-cols-[248px_1px_minmax(0,1fr)]">
-      <section class="flex h-full min-h-0 flex-col overflow-hidden pr-6">
+    <div class="grid h-full min-h-0 grid-cols-[220px_minmax(0,1fr)] overflow-hidden rounded-md border border-border sm:grid-cols-[248px_minmax(0,1fr)]">
+      <section class="flex h-full min-h-0 flex-col overflow-hidden border-r border-border bg-muted/15 p-4">
+        <p class="mb-3 text-xs font-medium text-muted-foreground">{{ $t("Providers") }}</p>
         <div class="flex items-center gap-2">
           <div class="relative min-w-0 flex-1">
             <SearchIcon class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               v-model="connectionQuery"
               class="h-9 pl-8 text-sm"
-              :placeholder="$t('Search connections')"
-              :aria-label="$t('Search connections')"
+              :placeholder="$t('Search providers')"
+              :aria-label="$t('Search providers')"
             />
           </div>
         </div>
-        <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto pt-3">
+        <div class="model-settings-scrollbar min-h-0 flex-1 space-y-1.5 overflow-y-auto pt-3">
           <template v-for="(connection, index) in filteredConnections" :key="connection.id">
             <div
               v-if="!connectionQuery && dropPosition === index"
@@ -686,11 +776,6 @@ void loadConnections();
                   {{ connectionTypeLabel(connection.type) }} · {{ connection.base_url }}
                 </span>
               </span>
-              <span
-                class="size-2 shrink-0 rounded-full"
-                :class="connectionErrors[connection.id ?? ''] ? 'bg-destructive' : 'bg-emerald-500'"
-                :title="connectionErrors[connection.id ?? ''] ? $t('Connection failed') : $t('Connection available')"
-              />
             </button>
           </template>
           <div
@@ -705,7 +790,7 @@ void loadConnections();
           >
             <PlugZapIcon class="size-8 text-muted-foreground/50" />
             <p class="text-xs text-muted-foreground">
-              {{ connectionQuery ? $t("No matching connections") : $t("No model connections") }}
+              {{ connectionQuery ? $t("No matching providers") : $t("No model providers") }}
             </p>
           </div>
         </div>
@@ -717,15 +802,13 @@ void loadConnections();
           @click="startNewConnection"
         >
           <PlusIcon class="size-4" />
-          {{ $t("Add connection") }}
+          {{ $t("Add provider") }}
         </Button>
       </section>
 
-      <div class="hidden h-full w-px bg-border lg:block" />
-
       <section
         v-if="connectionEditorOpen"
-        class="flex min-h-0 min-w-0 flex-col overflow-hidden lg:pl-8"
+        class="flex min-h-0 min-w-0 flex-col overflow-hidden px-6"
       >
         <div class="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-1 pb-3">
           <div class="flex min-w-0 flex-1 items-center gap-3">
@@ -740,9 +823,18 @@ void loadConnections();
               <ArrowLeftIcon class="size-4" />
             </Button>
             <div class="min-w-0 flex-1">
-              <h3 class="truncate text-lg font-semibold tracking-normal">
-                {{ modelEditor ?? (isNewConnection ? $t("New connection") : selectedConnection?.name) }}
-              </h3>
+              <div class="flex min-w-0 items-center gap-2">
+                <h3 class="truncate text-lg font-semibold tracking-normal">
+                  {{ modelEditor ?? (isNewConnection ? $t("New provider") : selectedConnection?.name) }}
+                </h3>
+                <span
+                  v-if="hasUnsavedChanges"
+                  class="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground"
+                >
+                  <span class="size-1.5 rounded-full bg-amber-500" />
+                  {{ $t("Unsaved changes") }}
+                </span>
+              </div>
               <p v-if="!isNewConnection" class="truncate text-xs text-muted-foreground">
                 {{ selectedConnection?.base_url }}
               </p>
@@ -755,24 +847,27 @@ void loadConnections();
               size="icon-sm"
               :disabled="deleting || saving"
               class="text-muted-foreground hover:text-destructive"
-              :title="$t('Delete connection')"
-              :aria-label="$t('Delete connection')"
+              :title="$t('Delete provider')"
+              :aria-label="$t('Delete provider')"
               @click="remove"
             >
               <Trash2Icon class="size-4" />
             </Button>
-            <Button :disabled="saving || deleting || loading || (connectionType === 'video' && !videoProtocol)" @click="save">
-              {{ saving ? $t("Saving") : isNewConnection ? $t("Add connection") : $t("Save") }}
+            <Button
+              :disabled="saving || deleting || loading || (!isNewConnection && !hasUnsavedChanges) || (connectionType === 'video' && !videoProtocol)"
+              @click="save"
+            >
+              {{ saving ? $t("Saving") : isNewConnection ? $t("Add provider") : $t("Save") }}
             </Button>
           </div>
         </div>
-        <div v-if="!modelEditor" class="flex min-h-0 max-w-4xl flex-1 flex-col gap-5 overflow-hidden py-6">
-          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label for="connection-name" class="text-sm text-muted-foreground">{{ $t("Name") }}</Label>
+        <div v-if="!modelEditor" class="model-settings-scrollbar min-h-0 max-w-3xl flex-1 space-y-5 overflow-y-auto py-6 pr-2">
+          <div class="space-y-1.5">
+            <Label for="connection-name" class="text-sm">{{ $t("Name") }}</Label>
             <Input id="connection-name" v-model="name" class="h-9 text-sm" :placeholder="$t('For example: Personal OpenAI')" :disabled="loading" />
           </div>
-          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label class="text-sm text-muted-foreground">{{ $t("Connection type") }}</Label>
+          <div class="space-y-1.5">
+            <Label class="text-sm">{{ $t("Connection type") }}</Label>
             <Select :model-value="connectionType" @update:model-value="updateConnectionType">
               <SelectTrigger class="h-9 w-full">
                 <SelectValue :placeholder="$t('Select connection type')" />
@@ -784,8 +879,8 @@ void loadConnections();
               </SelectContent>
             </Select>
           </div>
-          <div v-if="connectionType === 'video'" class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label class="text-sm text-muted-foreground">{{ $t("Video protocol") }}</Label>
+          <div v-if="connectionType === 'video'" class="space-y-1.5">
+            <Label class="text-sm">{{ $t("Video protocol") }}</Label>
             <Select :model-value="videoProtocol" @update:model-value="updateVideoProtocol">
               <SelectTrigger class="h-9 w-full">
                 <SelectValue :placeholder="$t('Select video protocol')" />
@@ -796,8 +891,8 @@ void loadConnections();
               </SelectContent>
             </Select>
           </div>
-          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label for="connection-url" class="text-sm text-muted-foreground">Base URL</Label>
+          <div class="space-y-1.5">
+            <Label for="connection-url" class="text-sm">Base URL</Label>
             <Input
               id="connection-url"
               v-model="baseURL"
@@ -810,14 +905,16 @@ void loadConnections();
               :disabled="loading"
             />
           </div>
-          <div class="grid gap-2 sm:grid-cols-[112px_minmax(0,1fr)] sm:items-center">
-            <Label for="connection-key" class="text-sm text-muted-foreground">API Key</Label>
+          <div class="space-y-1.5">
+            <Label for="connection-key" class="text-sm">API Key</Label>
             <div class="relative">
               <Input
                 id="connection-key"
                 v-model="apiKey"
                 :type="showApiKey ? 'text' : 'password'"
-                :placeholder="$t('Enter API Key')"
+                :placeholder="selectedConnection?.has_api_key
+                  ? $t('Saved; leave blank to keep it')
+                  : $t('Enter API Key')"
                 class="h-9 pr-10 text-sm"
                 :disabled="loading"
               />
@@ -835,21 +932,51 @@ void loadConnections();
               </Button>
             </div>
           </div>
-          <div class="flex min-h-0 flex-1 flex-col space-y-2">
+          <div class="space-y-3 pt-1">
             <div class="flex items-center justify-between gap-3">
-              <p class="text-sm font-medium">{{ $t("Models") }}</p>
+              <Label class="text-sm">{{ $t("Model list") }}</Label>
               <Button
-                size="sm"
-                variant="outline"
-                :disabled="loading || saving || isNewConnection || (connectionType === 'video' && !videoProtocol)"
+                size="xs"
+                variant="ghost"
+                :disabled="loading || saving || (connectionType === 'video' && (!videoProtocol || (videoProtocol === 'seedance' && !baseURL.trim())))"
                 @click="openModelImporter"
               >
-                <PlusIcon class="size-4" />
-                {{ $t("Fetch and add models") }}
+                <RefreshCwIcon class="size-4" />
+                {{ $t("Discover models") }}
               </Button>
             </div>
+            <InputGroup v-if="addingManualModel">
+              <InputGroupInput
+                id="connection-model-id"
+                v-model="manualModelID"
+                class="font-mono text-sm"
+                :placeholder="$t('Enter model ID')"
+                :aria-label="$t('Model ID')"
+                :disabled="loading || saving"
+                @keydown.enter.prevent="addManualModel"
+              />
+              <InputGroupAddon align="inline-end">
+                <InputGroupButton
+                  size="icon-sm"
+                  :title="$t('Cancel')"
+                  :aria-label="$t('Cancel')"
+                  @click="cancelAddingModel"
+                >
+                  <XIcon class="size-4" />
+                </InputGroupButton>
+                <InputGroupButton
+                  size="icon-sm"
+                  :disabled="loading || saving || !canAddManualModel"
+                  :title="$t('Add model')"
+                  :aria-label="$t('Add model')"
+                  @click="addManualModel"
+                >
+                  <PlusIcon class="size-4" />
+                </InputGroupButton>
+              </InputGroupAddon>
+            </InputGroup>
             <div v-if="selectedConnectionModels.length" class="flex min-h-0 flex-1 flex-col gap-2">
-              <div class="relative">
+              <div v-if="showModelSearch" class="relative">
                 <SearchIcon class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   v-model="modelQuery"
@@ -860,7 +987,7 @@ void loadConnections();
               </div>
               <div
                 ref="modelListEl"
-                class="min-h-0 flex-1 overflow-y-auto pr-1"
+                class="model-settings-scrollbar min-h-0 max-h-72 overflow-y-auto rounded-md border border-border"
                 @scroll="onModelListScroll"
               >
                 <div
@@ -870,68 +997,36 @@ void loadConnections();
                   <div
                     v-for="(model, index) in visibleConnectionModels"
                     :key="model"
-                    class="absolute inset-x-0 flex h-10 items-center gap-3 px-2.5"
+                    class="absolute inset-x-0 flex h-12 items-center gap-2 border-b border-border px-3 last:border-b-0"
                     :style="{ top: `${(modelStartIndex + index) * MODEL_ROW_HEIGHT}px` }"
                   >
                     <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
-                    <div class="flex shrink-0 items-center gap-0.5 text-muted-foreground">
-                      <Tooltip v-if="modelCapabilities(model).image_input">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <EyeIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports image input") }}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip v-if="modelCapabilities(model).image_generation">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <ImagePlusIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports image generation") }}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip v-if="modelCapabilities(model).video_generation">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <FilmIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports video generation") }}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip v-if="modelCapabilities(model).audio_generation">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <AudioLinesIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports audio generation") }}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip v-if="modelCapabilities(model).tool_calling">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <WrenchIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports tool calls") }}</TooltipContent>
-                      </Tooltip>
-                      <Tooltip v-if="modelCapabilities(model).web_search">
-                        <TooltipTrigger as-child>
-                          <span class="flex size-6 items-center justify-center">
-                            <GlobeIcon class="size-3.5" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ $t("Supports web access") }}</TooltipContent>
-                      </Tooltip>
-                    </div>
+                    <span
+                      v-if="formatTokenLimit(modelCapabilities(model).context_window)"
+                      class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                    >
+                      {{ formatTokenLimit(modelCapabilities(model).context_window) }}
+                    </span>
                     <Button
                       size="icon-sm"
                       variant="ghost"
+                      class="text-muted-foreground"
                       :title="$t('Model settings')"
                       :aria-label="$t('{model} settings', { model })"
                       @click="openModelEditor(model)"
                     >
-                      <Settings2Icon class="size-4" />
+                      <PencilIcon class="size-4" />
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      class="text-muted-foreground hover:text-destructive"
+                      :disabled="saving"
+                      :title="$t('Remove model')"
+                      :aria-label="$t('Remove {model}', { model })"
+                      @click="removeModel(model)"
+                    >
+                      <Trash2Icon class="size-4" />
                     </Button>
                   </div>
                 </div>
@@ -940,12 +1035,23 @@ void loadConnections();
                 </p>
               </div>
             </div>
-            <div v-else class="grid min-h-32 flex-1 place-items-center text-xs text-muted-foreground">
-              {{ isNewConnection ? $t("Create the connection before fetching models") : $t("No models imported") }}
+            <div v-else class="grid min-h-24 place-items-center rounded-md border border-dashed border-border text-xs text-muted-foreground">
+              {{ $t("No models configured") }}
             </div>
+            <Button
+              v-if="!addingManualModel"
+              size="sm"
+              variant="secondary"
+              class="w-fit"
+              :disabled="loading || saving"
+              @click="startAddingModel"
+            >
+              <PlusIcon class="size-4" />
+              {{ $t("Add model") }}
+            </Button>
           </div>
         </div>
-        <div v-else class="max-w-4xl space-y-7 py-6">
+        <div v-else class="model-settings-scrollbar min-h-0 max-w-4xl flex-1 space-y-7 overflow-y-auto py-6 pr-2">
           <div>
             <h4 class="text-base font-semibold">{{ $t("Model settings") }}</h4>
           </div>
@@ -1085,24 +1191,17 @@ void loadConnections();
         <div class="mt-auto flex min-h-10 shrink-0 items-center justify-between gap-3 px-1">
           <div class="min-w-0">
             <p class="truncate text-sm text-destructive">{{ error }}</p>
-            <div
-              v-if="selectedConnectionError"
-              class="flex items-start gap-2 text-sm text-destructive"
-            >
-              <AlertCircleIcon class="mt-0.5 size-4 shrink-0" />
-              <span class="break-all">{{ selectedConnectionError }}</span>
-            </div>
           </div>
         </div>
       </section>
       <section
         v-else
-        class="flex min-h-0 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-background px-6 text-center lg:ml-8"
+        class="flex min-h-0 flex-col items-center justify-center bg-background px-6 text-center"
       >
         <PlugZapIcon class="size-10 text-muted-foreground/40" />
-        <p class="mt-3 text-sm font-medium">{{ $t("Select a model connection") }}</p>
+        <p class="mt-3 text-sm font-medium">{{ $t("Select a model provider") }}</p>
         <p class="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
-          {{ $t("Select a connection on the left to configure its API address, key, and model capabilities.") }}
+          {{ $t("Select a provider on the left to configure its API address, key, and model capabilities.") }}
         </p>
       </section>
     </div>
@@ -1111,7 +1210,10 @@ void loadConnections();
   <Dialog v-model:open="modelImportOpen">
     <DialogContent class="flex max-h-[78vh] max-w-2xl flex-col">
       <DialogHeader>
-        <DialogTitle>{{ $t("Import models") }}</DialogTitle>
+        <DialogTitle>{{ $t("Discover models") }}</DialogTitle>
+        <DialogDescription class="truncate font-mono text-xs">
+          {{ discoveryEndpointLabel }}
+        </DialogDescription>
       </DialogHeader>
       <div class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center gap-3">
@@ -1122,41 +1224,61 @@ void loadConnections();
               class="h-9 pl-8 text-sm"
               :placeholder="$t('Search provider models')"
               :aria-label="$t('Search provider models')"
+              :disabled="modelImportLoading || !!modelImportError"
             />
           </div>
           <label class="flex shrink-0 items-center gap-2 text-sm">
             <Checkbox
               :model-value="allImportModelsSelected"
-              :disabled="modelImportLoading"
+              :disabled="modelImportLoading || !!modelImportError || filteredImportModels.length === 0"
               @update:model-value="setAllModelsImported"
             />
             {{ $t("Select all") }}
           </label>
         </div>
-        <div class="min-h-64 flex-1 overflow-y-auto border-y border-border">
-          <label
-            v-for="model in filteredImportModels"
-            :key="model"
-            class="flex h-10 cursor-pointer items-center gap-3 px-2 hover:bg-muted/50"
-          >
-            <Checkbox
-              :model-value="pendingImportedModels.has(model)"
-              @update:model-value="setPendingModelImported(model, $event)"
-            />
-            <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
-          </label>
+        <div class="model-settings-scrollbar min-h-64 flex-1 overflow-y-auto border-y border-border">
           <div v-if="modelImportLoading" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
             {{ $t("Fetching model list") }}
           </div>
-          <div v-else-if="filteredImportModels.length === 0" class="grid min-h-32 place-items-center text-sm text-muted-foreground">
-            {{ $t("No models available to import") }}
+          <div
+            v-else-if="modelImportError"
+            class="flex min-h-40 flex-col items-center justify-center gap-3 px-6 text-center"
+          >
+            <AlertCircleIcon class="size-6 text-destructive" />
+            <p class="max-w-lg break-words text-sm text-destructive">{{ modelImportError }}</p>
+            <Button size="sm" variant="outline" @click="openModelImporter">
+              <RefreshCwIcon class="size-4" />
+              {{ $t("Retry") }}
+            </Button>
+          </div>
+          <template v-else>
+            <label
+              v-for="model in filteredImportModels"
+              :key="model"
+              class="flex h-10 cursor-pointer items-center gap-3 px-2 hover:bg-muted/50"
+            >
+              <Checkbox
+                :model-value="pendingImportedModels.has(model)"
+                @update:model-value="setPendingModelImported(model, $event)"
+              />
+              <span class="min-w-0 flex-1 truncate font-mono text-xs">{{ model }}</span>
+            </label>
+          </template>
+          <div
+            v-if="!modelImportLoading && !modelImportError && filteredImportModels.length === 0"
+            class="grid min-h-32 place-items-center text-sm text-muted-foreground"
+          >
+            {{ $t("No additional models found") }}
           </div>
         </div>
       </div>
       <DialogFooter>
         <Button variant="outline" @click="modelImportOpen = false">{{ $t("Cancel") }}</Button>
-        <Button :disabled="modelImportLoading" @click="confirmModelImport">
-          {{ $t("Import {count} models", { count: pendingImportedModels.size }) }}
+        <Button
+          :disabled="modelImportLoading || !!modelImportError || pendingImportedModels.size === 0"
+          @click="confirmModelImport"
+        >
+          {{ $t("Add {count} models", { count: pendingImportedModels.size }) }}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -1182,3 +1304,39 @@ void loadConnections();
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.model-settings-scrollbar {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.model-settings-scrollbar:hover {
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 28%, transparent) transparent;
+}
+
+.model-settings-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.model-settings-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.model-settings-scrollbar::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: padding-box;
+}
+
+.model-settings-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklch, var(--muted-foreground) 28%, transparent);
+}
+
+.model-settings-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--muted-foreground) 48%, transparent);
+}
+</style>

@@ -142,6 +142,7 @@ pub fn run() {
             update_connection,
             delete_connection,
             list_connection_models,
+            discover_connection_models,
             get_default_models,
             update_default_models,
             list_skills,

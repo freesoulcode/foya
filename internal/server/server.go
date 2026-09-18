@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /connections/{id}", s.handleUpdateConnection)
 	s.mux.HandleFunc("DELETE /connections/{id}", s.handleDeleteConnection)
 	s.mux.HandleFunc("GET /connections/{id}/models", s.handleListConnectionModels)
+	s.mux.HandleFunc("POST /connections/discover-models", s.handleDiscoverConnectionModels)
 	s.mux.HandleFunc("GET /settings/default-models", s.handleGetDefaultModels)
 	s.mux.HandleFunc("PUT /settings/default-models", s.handleUpdateDefaultModels)
 	s.mux.HandleFunc("GET /canvases", s.handleListCanvases)

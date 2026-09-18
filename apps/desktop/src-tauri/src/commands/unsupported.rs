@@ -321,6 +321,11 @@ pub(crate) fn list_connection_models(
 }
 
 #[tauri::command]
+pub(crate) fn discover_connection_models(_config: serde_json::Value) -> Result<String, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
 pub(crate) fn get_default_models() -> Result<String, String> {
     Err("Windows transport is not implemented yet".into())
 }

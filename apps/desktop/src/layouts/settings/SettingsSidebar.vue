@@ -39,7 +39,7 @@ const { isMac } = usePlatform();
 
 const sections: Array<{ id: SettingsSection; label: string; icon: typeof PlugZapIcon }> = [
   { id: "kernel", label: "Kernel", icon: ServerIcon },
-  { id: "connections", label: "Connections", icon: PlugZapIcon },
+  { id: "connections", label: "Model settings", icon: PlugZapIcon },
   { id: "default-models", label: "Default models", icon: GaugeIcon },
   { id: "rules", label: "Rules", icon: ScrollTextIcon },
   { id: "memory", label: "Memory", icon: BrainIcon },

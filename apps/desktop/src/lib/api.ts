@@ -12,6 +12,15 @@ function invoke<T>(
   );
 }
 
+function invokeWithDetails<T>(
+  command: string,
+  args?: Parameters<typeof tauriInvoke>[1]
+): Promise<T> {
+  return tauriInvoke<T>(command, args).catch((error) =>
+    Promise.reject(localizeError(error, true))
+  );
+}
+
 export interface KernelConnection {
   mode: "local" | "ssh" | "remote";
   url: string;
@@ -1472,6 +1481,18 @@ export const api = {
 
   listConnectionModels: (connectionId: string, refresh = false) =>
     invoke<string>("list_connection_models", { connectionId, refresh }).then(
+      (r) => {
+        const result = JSON.parse(r) as Partial<ConnectionModelCatalog>;
+        return {
+          models: result.models ?? [],
+          context_windows: result.context_windows ?? {},
+          capabilities: result.capabilities ?? {},
+        } satisfies ConnectionModelCatalog;
+      }
+    ),
+
+  discoverConnectionModels: (config: ConnectionConfig) =>
+    invokeWithDetails<string>("discover_connection_models", { config }).then(
       (r) => {
         const result = JSON.parse(r) as Partial<ConnectionModelCatalog>;
         return {

@@ -297,13 +297,13 @@ function errorPayload(raw: string): { code?: string; message?: string } | null {
   }
 }
 
-export function localizeError(error: unknown): string {
+export function localizeError(error: unknown, includeDetails = false): string {
   const raw = error instanceof Error ? error.message : String(error);
   const payload = errorPayload(raw);
   if (payload?.code) {
     const key = ERROR_KEYS[payload.code] ?? "Request failed";
     const summary = translate(key);
-    if (i18n.global.locale.value === "en-US" && payload.message) {
+    if ((includeDetails || i18n.global.locale.value === "en-US") && payload.message) {
       return `${summary}: ${payload.message}`;
     }
     return summary;
