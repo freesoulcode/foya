@@ -37,6 +37,23 @@ func TestTextMessageIncludesSelectedBrowserElementAsUntrustedContext(t *testing.
 	}
 }
 
+func TestTextMessageIncludesSelectedWorkspaceFiles(t *testing.T) {
+	input := modelMessage(conversation.Message{
+		Role:           conversation.RoleUser,
+		Content:        "Review these files",
+		WorkspaceFiles: []string{"src/main.ts", "README.md"},
+	})
+
+	if len(input.Parts) != 3 {
+		t.Fatalf("parts = %d, want 3", len(input.Parts))
+	}
+	for index, path := range []string{"src/main.ts", "README.md"} {
+		if !strings.Contains(input.Parts[index+1].Text, path) {
+			t.Fatalf("workspace context missing %q: %s", path, input.Parts[index+1].Text)
+		}
+	}
+}
+
 func TestTextMessagesSkipEmptyAssistantMessages(t *testing.T) {
 	messages := modelMessages([]conversation.Message{
 		{Role: conversation.RoleUser, Content: "stop"},

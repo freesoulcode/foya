@@ -50,6 +50,7 @@ const {
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
+  listActiveWorkspaceFiles,
   onOpenArtifact,
   cancelTool,
   backgroundTool,
@@ -61,6 +62,7 @@ const {
   closeWorkflow,
   send,
   executeComposerCommand,
+  openPlugins,
   cancelTurn,
   editQueuedMessage,
   reorderQueuedMessage,
@@ -175,6 +177,7 @@ function forkAtMessage(messageSeq: number) {
       :context-usage="composerContextUsage"
       :context-window="composerContextWindow"
       :supports-image="composerSupportsImage"
+      :load-workspace-files="listActiveWorkspaceFiles"
       :has-session="!isDraft"
       :session-id="activeId"
       :browser-elements="pendingBrowserElements"
@@ -185,6 +188,7 @@ function forkAtMessage(messageSeq: number) {
       @update:model-config="onModelConfigChange"
       @update:project-id="onProjectChange"
       @add-project="onAddProject"
+      @open-plugins="openPlugins"
       @update:approval="onApprovalChange"
       @refresh-models="refreshConnections"
       @remove-browser-element="removeBrowserElement"

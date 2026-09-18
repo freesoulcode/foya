@@ -45,7 +45,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type {
   ChatMessage,
-  ProjectEntry,
+  WorkspaceEntry,
   ToolCallView,
 } from "@/lib/api";
 import { api } from "@/lib/api";
@@ -61,7 +61,9 @@ import FileTypeIcon from "./FileTypeIcon.vue";
 const CodePreview = defineAsyncComponent(() => import("./CodePreview.vue"));
 
 const props = defineProps<{
-  projectPath?: string;
+  sessionId?: string;
+  workspacePath?: string;
+  workspaceName?: string;
   selectedPath?: string;
   selectedMode?: "file" | "diff";
   diff?: string;
@@ -103,7 +105,7 @@ function storedTreeWidth(): number {
 }
 
 const panelRoot = ref<HTMLElement | null>(null);
-const entries = ref<ProjectEntry[]>([]);
+const entries = ref<WorkspaceEntry[]>([]);
 const collapsed = ref<Set<string>>(new Set());
 const treeOpen = ref(true);
 const treeWidth = ref(storedTreeWidth());
@@ -118,12 +120,12 @@ const fileError = ref("");
 const previewMode = ref<"file" | "diff">("file");
 const editOpen = ref(false);
 const editKind = ref<EditKind>("create-file");
-const editTarget = ref<ProjectEntry>();
+const editTarget = ref<WorkspaceEntry>();
 const editDirectory = ref("");
 const editValue = ref("");
 const editError = ref("");
 const deleteOpen = ref(false);
-const deleteTarget = ref<ProjectEntry>();
+const deleteTarget = ref<WorkspaceEntry>();
 const deleteError = ref("");
 const operating = ref(false);
 const notice = ref("");
@@ -131,8 +133,8 @@ let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let filesystemRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let fileRequest = 0;
 let treeRequest = 0;
-let projectWatchGeneration = 0;
-let projectWatchID = "";
+let workspaceWatchGeneration = 0;
+let workspaceWatchID = "";
 let stopTreeResize: (() => void) | null = null;
 let pendingTreeRefresh = false;
 let pendingFileRefresh = false;
@@ -142,10 +144,11 @@ const menuItemClass =
   "relative flex h-8 cursor-default select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
 const dangerMenuItemClass = `${menuItemClass} text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive`;
 
-const projectName = computed(() => {
-  if (!props.projectPath) return "";
-  const parts = props.projectPath.replace(/\/+$/, "").split(/[\\/]/);
-  return parts[parts.length - 1] || props.projectPath;
+const workspaceName = computed(() => {
+  if (props.workspaceName) return props.workspaceName;
+  if (!props.workspacePath) return "";
+  const parts = props.workspacePath.replace(/\/+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || props.workspacePath;
 });
 
 const selectedEntry = computed(() =>
@@ -165,8 +168,8 @@ const editLabel = computed(() =>
 const editLocation = computed(() => {
   if (editKind.value === "rename") return editTarget.value?.path ?? "";
   return editDirectory.value
-    ? `${projectName.value}/${editDirectory.value}`
-    : projectName.value;
+    ? `${workspaceName.value}/${editDirectory.value}`
+    : workspaceName.value;
 });
 
 const markdownPreview = computed(() => renderMarkdown(content.value));
@@ -185,7 +188,7 @@ function collectToolCalls(message: ChatMessage): ToolCallView[] {
 }
 
 function diffPath(diff: string): string {
-  return diffFilePath(diff, props.projectPath ?? "");
+  return diffFilePath(diff, props.workspacePath ?? "");
 }
 
 function parseDiff(raw: string): FileDiff {
@@ -219,6 +222,13 @@ const selectedDiffLines = computed(() =>
 const diffSignature = computed(() =>
   Array.from(diffs.value.entries())
     .map(([path, diff]) => `${path}:${diff.raw.length}`)
+    .join("|")
+);
+const workspaceActivitySignature = computed(() =>
+  props.messages
+    .flatMap((message) => collectToolCalls(message))
+    .filter((tool) => ["bash", "write", "edit", "delete"].includes(tool.name))
+    .map((tool) => `${tool.id}:${tool.status}:${tool.output?.length ?? 0}`)
     .join("|")
 );
 
@@ -300,7 +310,7 @@ function joinPath(directory: string, name: string): string {
   return directory ? `${directory}/${name}` : name;
 }
 
-function directoryForEntry(entry?: ProjectEntry): string {
+function directoryForEntry(entry?: WorkspaceEntry): string {
   if (entry?.is_dir) return entry.path;
   if (entry) return parentPath(entry.path);
   if (props.selectedPath) return parentPath(props.selectedPath);
@@ -314,9 +324,8 @@ function toggleDirectory(path: string) {
   collapsed.value = next;
 }
 
-function selectTreeEntry(entry: ProjectEntry, event: MouseEvent) {
+function selectTreeEntry(entry: WorkspaceEntry) {
   treeSelection.value = entry.path;
-  if (event.detail > 1) return;
   if (entry.is_dir) toggleDirectory(entry.path);
   else emit("select", entry.path);
 }
@@ -369,7 +378,7 @@ function validateName(name: string): string | undefined {
 }
 
 async function submitEdit() {
-  if (!props.projectPath) return;
+  if (!props.sessionId) return;
   const name = editValue.value.trim();
   const validationError = validateName(name);
   if (validationError) {
@@ -382,8 +391,8 @@ async function submitEdit() {
   try {
     if (editKind.value === "rename" && editTarget.value) {
       const target = editTarget.value;
-      const newPath = await api.renameProjectEntry(
-        props.projectPath,
+      const newPath = await api.renameWorkspaceEntry(
+        props.sessionId,
         target.path,
         name
       );
@@ -401,8 +410,8 @@ async function submitEdit() {
       const path = joinPath(editDirectory.value, name);
       const createdPath =
         editKind.value === "create-directory"
-          ? await api.createProjectDirectory(props.projectPath, path)
-          : await api.createProjectFile(props.projectPath, path);
+          ? await api.createWorkspaceDirectory(props.sessionId, path)
+          : await api.createWorkspaceFile(props.sessionId, path);
       if (editDirectory.value) {
         const next = new Set(collapsed.value);
         next.delete(editDirectory.value);
@@ -421,12 +430,12 @@ async function submitEdit() {
 }
 
 async function confirmDelete() {
-  if (!props.projectPath || !deleteTarget.value) return;
+  if (!props.sessionId || !deleteTarget.value) return;
   const target = deleteTarget.value;
   operating.value = true;
   deleteError.value = "";
   try {
-    await api.deleteProjectEntry(props.projectPath, target.path);
+    await api.deleteWorkspaceEntry(props.sessionId, target.path);
     collapsed.value = new Set(
       Array.from(collapsed.value).filter(
         (path) =>
@@ -468,11 +477,11 @@ function copyText(text: string): Promise<void> {
 }
 
 async function copyEntryPath(entry = selectedEntry.value) {
-  if (!props.projectPath) return;
+  if (!props.sessionId) return;
   treeError.value = "";
   try {
-    const path = await api.resolveProjectPath(
-      props.projectPath,
+    const path = await api.resolveWorkspacePath(
+      props.sessionId,
       entry?.path ?? ""
     );
     await copyText(path);
@@ -483,11 +492,11 @@ async function copyEntryPath(entry = selectedEntry.value) {
 }
 
 async function revealEntry(entry = selectedEntry.value) {
-  if (!props.projectPath) return;
+  if (!props.sessionId) return;
   treeError.value = "";
   try {
-    const path = await api.resolveProjectPath(
-      props.projectPath,
+    const path = await api.resolveWorkspacePath(
+      props.sessionId,
       entry?.path ?? ""
     );
     await revealItemInDir(path);
@@ -520,8 +529,8 @@ async function onMarkdownClick(event: MouseEvent) {
 
 async function loadTree() {
   const request = ++treeRequest;
-  const projectPath = props.projectPath;
-  if (!projectPath) {
+  const sessionId = props.sessionId;
+  if (!sessionId) {
     entries.value = [];
     treeError.value = "";
     loadingTree.value = false;
@@ -530,7 +539,7 @@ async function loadTree() {
   loadingTree.value = true;
   treeError.value = "";
   try {
-    const next = await api.listProjectFiles(projectPath);
+    const next = await api.listWorkspaceFiles(sessionId);
     if (request !== treeRequest) return;
     entries.value = next;
     if (
@@ -550,9 +559,9 @@ async function loadTree() {
 
 async function loadFile() {
   const request = ++fileRequest;
-  const projectPath = props.projectPath;
+  const sessionId = props.sessionId;
   const selectedPath = props.selectedPath;
-  if (!projectPath || !selectedPath) {
+  if (!sessionId || !selectedPath) {
     content.value = "";
     fileError.value = "";
     loadingFile.value = false;
@@ -561,8 +570,8 @@ async function loadFile() {
   loadingFile.value = true;
   fileError.value = "";
   try {
-    const next = await api.readProjectFile(
-      projectPath,
+    const next = await api.readWorkspaceFile(
+      sessionId,
       selectedPath
     );
     if (request === fileRequest) content.value = next;
@@ -611,20 +620,20 @@ function scheduleFilesystemRefresh(
   }, 50);
 }
 
-async function replaceProjectWatcher(projectPath: string) {
-  const generation = ++projectWatchGeneration;
-  const previous = projectWatchID;
-  projectWatchID = "";
+async function replaceWorkspaceWatcher(workspacePath: string) {
+  const generation = ++workspaceWatchGeneration;
+  const previous = workspaceWatchID;
+  workspaceWatchID = "";
   if (previous) {
-    await api.unwatchProjectFiles(previous).catch(() => undefined);
+    await api.unwatchWorkspaceFiles(previous).catch(() => undefined);
   }
-  if (!projectPath) return;
+  if (!workspacePath) return;
 
   try {
-    const watchID = await api.watchProjectFiles(projectPath, (event) => {
+    const watchID = await api.watchWorkspaceFiles(workspacePath, (event) => {
       if (
-        generation !== projectWatchGeneration ||
-        props.projectPath !== projectPath
+        generation !== workspaceWatchGeneration ||
+        props.workspacePath !== workspacePath
       ) {
         return;
       }
@@ -640,30 +649,26 @@ async function replaceProjectWatcher(projectPath: string) {
       );
     });
     if (
-      generation !== projectWatchGeneration ||
-      props.projectPath !== projectPath
+      generation !== workspaceWatchGeneration ||
+      props.workspacePath !== workspacePath
     ) {
-      await api.unwatchProjectFiles(watchID).catch(() => undefined);
+      await api.unwatchWorkspaceFiles(watchID).catch(() => undefined);
       return;
     }
-    projectWatchID = watchID;
-  } catch (cause) {
-    if (generation === projectWatchGeneration) {
-      treeError.value = t("Unable to watch project files: {error}", {
-        error: String(cause),
-      });
-    }
+    workspaceWatchID = watchID;
+  } catch {
+    // Remote kernel paths cannot be watched by the desktop process.
   }
 }
 
 watch(
-  () => props.projectPath,
-  (projectPath) => {
+  () => [props.sessionId, props.workspacePath] as const,
+  ([, workspacePath]) => {
     collapsed.value = new Set();
     treeSelection.value = "";
     query.value = "";
     void loadTree();
-    void replaceProjectWatcher(projectPath ?? "");
+    void replaceWorkspaceWatcher(workspacePath ?? "");
   },
   { immediate: true }
 );
@@ -691,16 +696,20 @@ watch(diffSignature, (value, previous) => {
   if (value !== previous) void loadTree();
 });
 
+watch(workspaceActivitySignature, (value, previous) => {
+  if (value !== previous) scheduleFilesystemRefresh([], true, true);
+});
+
 useEventListener(window, "focus", () => {
-  if (!props.projectPath) return;
+  if (!props.workspacePath) return;
   scheduleFilesystemRefresh([], true, true);
 });
 
 onBeforeUnmount(() => {
-  projectWatchGeneration += 1;
-  if (projectWatchID) {
-    void api.unwatchProjectFiles(projectWatchID);
-    projectWatchID = "";
+  workspaceWatchGeneration += 1;
+  if (workspaceWatchID) {
+    void api.unwatchWorkspaceFiles(workspaceWatchID);
+    workspaceWatchID = "";
   }
   if (filesystemRefreshTimer) clearTimeout(filesystemRefreshTimer);
   if (noticeTimer) clearTimeout(noticeTimer);
@@ -712,7 +721,7 @@ onBeforeUnmount(() => {
   <div ref="panelRoot" class="relative flex h-full min-h-0 bg-background">
     <section class="relative flex min-w-0 flex-1 flex-col">
       <Button
-        v-if="projectPath && !treeOpen"
+        v-if="workspacePath && !treeOpen"
         size="icon"
         variant="ghost"
         class="absolute right-1.5 top-1.5 z-20 size-7"
@@ -818,13 +827,13 @@ onBeforeUnmount(() => {
     </section>
 
     <aside
-      v-if="projectPath && treeOpen"
+      v-if="workspacePath && treeOpen"
       :class="[
         'relative flex shrink-0 flex-col border-l border-border bg-muted/10',
         !treeResizing && 'transition-[width] duration-150',
       ]"
       :style="{ width: `${treeWidth}px` }"
-      :aria-label="$t('Project files')"
+      :aria-label="$t('Workspace files')"
     >
       <button
         type="button"
@@ -838,7 +847,7 @@ onBeforeUnmount(() => {
       </button>
       <div class="flex h-10 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
         <span class="min-w-0 flex-1 truncate pl-1 text-xs font-medium">
-          {{ projectName }}
+          {{ workspaceName }}
         </span>
         <Button
           size="icon"
@@ -898,7 +907,7 @@ onBeforeUnmount(() => {
                   treeSelection === entry.path && 'bg-muted text-foreground',
                 ]"
                 :style="{ paddingLeft: `${8 + (entry.path.split('/').length - 1) * 12}px` }"
-                @click="selectTreeEntry(entry, $event)"
+                @click="selectTreeEntry(entry)"
                 @contextmenu="treeSelection = entry.path"
               >
                 <template v-if="entry.is_dir">

@@ -235,7 +235,8 @@ const rewindUnsupported = computed(
     !!props.message.command ||
     !!props.message.skill_ref ||
     !!props.message.attachments?.length ||
-    !!props.message.browser_elements?.length
+    !!props.message.browser_elements?.length ||
+    !!props.message.workspace_files?.length
 );
 
 async function copyText(text: string) {
@@ -341,7 +342,7 @@ function rewindMessage() {
           :class="
             cn(
               'flex items-start gap-1.5',
-              (message.command || message.skill_ref || message.browser_elements?.length) && 'min-w-0'
+              (message.command || message.skill_ref || message.browser_elements?.length || message.workspace_files?.length) && 'min-w-0'
             )
           "
         >
@@ -363,6 +364,15 @@ function rewindMessage() {
             </span>
           </span>
           <span
+            v-for="path in message.workspace_files"
+            :key="path"
+            class="mt-0.5 inline-flex max-w-48 shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
+            :title="path"
+          >
+            <FileTextIcon class="size-3.5 shrink-0 text-muted-foreground" />
+            <span class="truncate font-mono">{{ path }}</span>
+          </span>
+          <span
             v-for="element in message.browser_elements"
             :key="`${element.page_url}:${element.selector}`"
             class="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background/70 px-1.5 py-0.5 text-xs font-medium text-foreground"
@@ -375,7 +385,7 @@ function rewindMessage() {
             :class="
               cn(
                 'min-w-0',
-                (message.command || message.skill_ref || message.browser_elements?.length) && 'flex-1'
+                (message.command || message.skill_ref || message.browser_elements?.length || message.workspace_files?.length) && 'flex-1'
               )
             "
           >
@@ -557,14 +567,14 @@ function rewindMessage() {
           :disabled="!editable || rewindUnsupported"
           :title="
             rewindUnsupported
-              ? $t('Messages with attachments, browser context, or commands cannot be rewound')
+              ? $t('Messages with attachments, workspace files, browser context, or commands cannot be rewound')
               : editable
                 ? $t('Rewind to composer')
                 : $t('Cannot rewind while the chat is running')
           "
           :aria-label="
             rewindUnsupported
-              ? $t('Messages with attachments, browser context, or commands cannot be rewound')
+              ? $t('Messages with attachments, workspace files, browser context, or commands cannot be rewound')
               : $t('Rewind to composer')
           "
           @click="rewindMessage"

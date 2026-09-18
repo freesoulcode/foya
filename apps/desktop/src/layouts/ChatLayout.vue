@@ -19,6 +19,7 @@ import {
   type BrowserActionResult,
   type BrowserElementSelection,
   type ReasoningEffort,
+  type SessionWorkspace,
   type UpdateSessionPatch,
 } from "@/lib/api";
 import { diffFilePath } from "@/lib/diff";
@@ -202,9 +203,13 @@ function onTurnSelect(i: number) {
   messageListRef.value?.scrollToTurn(i);
 }
 
-async function executeComposerCommand(name: string, args: string) {
+async function executeComposerCommand(
+  name: string,
+  args: string,
+  workspaceFiles: string[] = []
+) {
   const sessionID = activeId.value || await ensureSession();
-  await api.executeCommand(sessionID, name, args);
+  await api.executeCommand(sessionID, name, args, workspaceFiles);
 }
 
 // Draft settings come from draft state; existing chats use active session state.
@@ -224,6 +229,71 @@ const activeProjects = computed(() =>
   projects.value
 );
 const projectPath = computed(() => currentProject.value?.path ?? "");
+const activeWorkspace = ref<SessionWorkspace | null>(null);
+const activeWorkspaceSessionID = ref("");
+let workspaceRequest = 0;
+
+function draftProjectWorkspace(): SessionWorkspace | null {
+  const project = currentProject.value;
+  if (!project) return null;
+  return {
+    kind: "project",
+    name: project.name,
+    path: project.path,
+    project_id: project.id,
+  };
+}
+
+async function loadSessionWorkspace(sessionID: string): Promise<SessionWorkspace | null> {
+  const request = ++workspaceRequest;
+  if (!sessionID) {
+    activeWorkspace.value = draftProjectWorkspace();
+    activeWorkspaceSessionID.value = "";
+    return activeWorkspace.value;
+  }
+  try {
+    const workspace = await api.getSessionWorkspace(sessionID);
+    if (request === workspaceRequest && activeId.value === sessionID) {
+      activeWorkspace.value = workspace;
+      activeWorkspaceSessionID.value = sessionID;
+    }
+    return workspace;
+  } catch (error) {
+    if (request === workspaceRequest && activeId.value === sessionID) {
+      activeWorkspace.value = null;
+      activeWorkspaceSessionID.value = "";
+    }
+    throw error;
+  }
+}
+
+async function ensureActiveWorkspace(): Promise<SessionWorkspace> {
+  const sessionID = activeId.value || await ensureSession();
+  if (activeWorkspace.value && activeWorkspaceSessionID.value === sessionID) {
+    return activeWorkspace.value;
+  }
+  const workspace = await loadSessionWorkspace(sessionID);
+  if (!workspace) throw new Error(t("Unable to resolve workspace"));
+  return workspace;
+}
+
+watch(
+  () => [activeId.value, activeSession.value?.project_id, draft.projectID] as const,
+  ([sessionID]) => {
+    if (!sessionID) {
+      workspaceRequest += 1;
+      activeWorkspace.value = draftProjectWorkspace();
+      activeWorkspaceSessionID.value = "";
+      return;
+    }
+    activeWorkspace.value = null;
+    activeWorkspaceSessionID.value = "";
+    void loadSessionWorkspace(sessionID).catch((error) => {
+      console.error("Failed to resolve session workspace:", error);
+    });
+  },
+  { immediate: true }
+);
 const composerReasoningEffort = computed<ReasoningEffort>(
   () => (isDraft.value ? draft.reasoningEffort : activeSession.value?.reasoning_effort) ?? ""
 );
@@ -302,6 +372,12 @@ function onOpenWorkflowFile(path: string) {
   const target = path.replace(/\\/g, "/");
   if (!root || !target.startsWith(`${root}/`)) return;
   openWorkbarFile(projectPath.value, target.slice(root.length + 1));
+}
+
+async function listActiveWorkspaceFiles() {
+  const sessionID = activeId.value || await ensureSession();
+  await ensureActiveWorkspace();
+  return api.listWorkspaceFiles(sessionID);
 }
 
 function onOpenArtifact(attachment: AttachmentRef) {
@@ -565,6 +641,7 @@ const viewContext: ChatWorkspaceContext = {
   onOpenDiff,
   onOpenReviewFile,
   onOpenWorkflowFile,
+  listActiveWorkspaceFiles,
   onOpenArtifact,
   cancelTool,
   backgroundTool,
@@ -576,6 +653,7 @@ const viewContext: ChatWorkspaceContext = {
   closeWorkflow,
   send,
   executeComposerCommand,
+  openPlugins,
   cancelTurn,
   editQueuedMessage,
   reorderQueuedMessage,
@@ -637,13 +715,14 @@ provideChatWorkspace(viewContext);
       <WorkbarPanel
         v-show="!workspacePageActive && workbarOpen"
         :session-id="activeId || undefined"
-        :project-path="projectPath"
+        :workspace="activeWorkspace"
         :messages="messages"
         :background-commands="backgroundCommands"
         :browser-actions="Object.values(pendingBrowserActions)"
         :obscured="workbarObscured"
         :visible="!workspacePageActive && workbarOpen"
         :ensure-session="ensureSession"
+        :ensure-workspace="ensureActiveWorkspace"
         @project-files-changed="refreshActiveFileReview"
         @browser-element-selected="onBrowserElementSelected"
         @browser-action-result="onBrowserActionResult"

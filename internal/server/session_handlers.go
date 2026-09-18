@@ -64,6 +64,19 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sess)
 }
 
+func (s *Server) handleSessionWorkspace(w http.ResponseWriter, r *http.Request) {
+	workspace, err := s.service.SessionWorkspace(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, conversation.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "workspace_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, workspace)
+}
+
 func (s *Server) handleForkSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req ForkSessionRequest
@@ -413,6 +426,7 @@ func (s *Server) handleSubmitTurn(w http.ResponseWriter, r *http.Request) {
 		SkillRef:        req.SkillRef,
 		Attachments:     req.Attachments,
 		BrowserElements: req.BrowserElements,
+		WorkspaceFiles:  req.WorkspaceFiles,
 	})
 	if err != nil {
 		writeQueueErr(w, err)
@@ -659,6 +673,7 @@ func (s *Server) handleEnqueueMessage(w http.ResponseWriter, r *http.Request) {
 		SkillRef:        req.SkillRef,
 		Attachments:     req.Attachments,
 		BrowserElements: req.BrowserElements,
+		WorkspaceFiles:  req.WorkspaceFiles,
 	})
 	if err != nil {
 		writeQueueErr(w, err)

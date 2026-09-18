@@ -17,7 +17,7 @@ export interface WorkbarTab {
   titleKey?: string;
   titleNumber?: number;
   path?: string;
-  projectPath?: string;
+  workspacePath?: string;
   view?: "file" | "diff";
   diff?: string;
   artifact?: AttachmentRef;
@@ -181,13 +181,15 @@ function openAgentBrowser(sessionId: string, browserId: string) {
   session.open = true;
 }
 
-function openFiles(projectPath: string) {
+function openFiles(workspacePath: string) {
   const sessionId = activeSessionId.value;
   const session = ensureSessionState(sessionId);
-  const id = `file:${projectPath}`;
+  const id = `file:${workspacePath}`;
   const existing = session.tabs.find((tab) => tab.id === id);
   if (existing) {
+    existing.sessionId = sessionId || undefined;
     session.activeTabId = existing.id;
+    session.open = true;
     return;
   }
   session.tabs.push({
@@ -196,35 +198,38 @@ function openFiles(projectPath: string) {
     title: "",
     titleKey: "Files",
     sessionId: sessionId || undefined,
-    projectPath,
+    workspacePath,
   });
   session.activeTabId = id;
   session.open = true;
 }
 
 function openFile(
-  projectPath: string,
+  workspacePath: string,
   path: string,
   view: "file" | "diff" = "file",
     diff?: string,
 ) {
   const sessionId = activeSessionId.value;
   const session = ensureSessionState(sessionId);
-  const id = `file:${projectPath}`;
+  const id = `file:${workspacePath}`;
   const title = path.split("/").pop() || path;
   const existing = session.tabs.find((tab) => tab.id === id);
   if (existing) {
     existing.title = title;
+    existing.titleKey = undefined;
     existing.path = path;
+    existing.workspacePath = workspacePath;
     existing.view = view;
     existing.diff = diff;
+    existing.sessionId = sessionId || undefined;
   } else {
     session.tabs.push({
       id,
       kind: "file",
       title,
       path,
-      projectPath,
+      workspacePath,
       view,
       diff,
       sessionId: sessionId || undefined,
@@ -332,7 +337,7 @@ function closeFileTabs() {
 }
 
 function renameEntryTabs(
-  projectPath: string,
+  workspacePath: string,
   oldPath: string,
   newPath: string,
     isDirectory: boolean,
@@ -341,7 +346,7 @@ function renameEntryTabs(
   session.tabs = session.tabs.map((tab) => {
     if (
       tab.kind !== "file" ||
-      tab.projectPath !== projectPath ||
+      tab.workspacePath !== workspacePath ||
       !tab.path ||
       !entryContainsPath(oldPath, tab.path, isDirectory)
     ) {
@@ -359,14 +364,14 @@ function renameEntryTabs(
 }
 
 function resetDeletedEntryTab(
-  projectPath: string,
+  workspacePath: string,
   path: string,
     isDirectory: boolean,
 ) {
   const tab = currentSession.value.tabs.find(
     (candidate) =>
       candidate.kind === "file" &&
-      candidate.projectPath === projectPath &&
+      candidate.workspacePath === workspacePath &&
       Boolean(
         candidate.path &&
             entryContainsPath(path, candidate.path, isDirectory),

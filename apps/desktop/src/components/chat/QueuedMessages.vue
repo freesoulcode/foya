@@ -2,6 +2,7 @@
 import { ref, watch } from "vue";
 import {
   CheckIcon,
+  FileTextIcon,
   GripVerticalIcon,
   ImageIcon,
   MousePointer2Icon,
@@ -235,6 +236,15 @@ watch(
                 <ImageIcon class="size-3 shrink-0" />
                 <span class="truncate">
                   {{ item.attachments.map((attachment) => attachment.name).join($t(", ")) }}
+                </span>
+              </div>
+              <div
+                v-if="item.workspace_files?.length"
+                class="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground"
+              >
+                <FileTextIcon class="size-3 shrink-0" />
+                <span class="truncate">
+                  {{ item.workspace_files.join($t(", ")) }}
                 </span>
               </div>
               <div

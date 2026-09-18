@@ -85,6 +85,26 @@ describe("workbar store", () => {
     expect(store.activeTabId).toBe("artifact:artifact-1");
   });
 
+  it("reopens an existing workspace tab and selects files in it", () => {
+    const store = useWorkbarStore();
+    store.setActiveSession("session-1");
+    store.openFiles("/workspace");
+    store.setOpen(false);
+
+    store.openFiles("/workspace");
+    expect(store.open).toBe(true);
+
+    store.openFile("/workspace", "src/main.ts");
+    expect(store.activeTab).toMatchObject({
+      kind: "file",
+      title: "main.ts",
+      path: "src/main.ts",
+      workspacePath: "/workspace",
+      sessionId: "session-1",
+    });
+    expect(store.activeTab?.titleKey).toBeUndefined();
+  });
+
   it("clamps and persists panel width", () => {
     const store = useWorkbarStore();
 

@@ -20,6 +20,7 @@ import type {
   BrowserElementSelection,
   BackgroundCommand,
   ChatMessage,
+  SessionWorkspace,
 } from "@/lib/api";
 import {
   useWorkbarStore,
@@ -33,7 +34,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import ProjectFilesPanel from "./ProjectFilesPanel.vue";
+import WorkspaceFilesPanel from "./ProjectFilesPanel.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import BackgroundCommandTerminalPanel from "./BackgroundCommandTerminalPanel.vue";
 import BrowserPanel from "./BrowserPanel.vue";
@@ -41,13 +42,14 @@ import ArtifactPreviewPanel from "./ArtifactPreviewPanel.vue";
 
 const props = defineProps<{
   sessionId?: string;
-  projectPath?: string;
+  workspace?: SessionWorkspace | null;
   messages: ChatMessage[];
   backgroundCommands?: BackgroundCommand[];
   browserActions?: BrowserActionRequest[];
   obscured?: boolean;
   visible?: boolean;
   ensureSession: () => Promise<string>;
+  ensureWorkspace: () => Promise<SessionWorkspace>;
 }>();
 
 const emit = defineEmits<{
@@ -110,6 +112,16 @@ const backgroundCommandTabs = computed(() =>
 const artifactTabs = computed(() =>
   allTabs.value.filter((tab) => tab.kind === "artifact")
 );
+const activeFileWorkspacePath = computed(() =>
+  activeTab.value?.kind === "file"
+    ? activeTab.value.workspacePath ?? ""
+    : props.workspace?.path ?? ""
+);
+const workspaceDisplayName = computed(() =>
+  props.workspace?.kind === "managed"
+    ? t("Workspace")
+    : props.workspace?.name ?? ""
+);
 
 function isCurrentSessionTab(tab: WorkbarTab) {
   return (tab.sessionId ?? "") === (props.sessionId ?? "");
@@ -138,9 +150,7 @@ const launcherItems = computed<
     icon: LucideIcon;
   }>
 >(() => [
-  ...(props.projectPath
-    ? [{ kind: "files" as const, title: "Files", icon: FolderIcon }]
-    : []),
+  { kind: "files", title: "Files", icon: FolderIcon },
   { kind: "browser", title: "Browser", icon: GlobeIcon },
   { kind: "terminal", title: "Terminal", icon: TerminalIcon },
 ]);
@@ -156,17 +166,18 @@ async function addFeature(kind: WorkbarLaunchKind) {
   addMenuOpen.value = false;
 }
 
-function launchFeature(kind: "files" | WorkbarLaunchKind) {
+async function launchFeature(kind: "files" | WorkbarLaunchKind) {
   if (kind === "files") {
-    if (props.projectPath) openFiles(props.projectPath);
+    const workspace = props.workspace ?? await props.ensureWorkspace();
+    openFiles(workspace.path);
     return;
   }
-  addFeature(kind);
+  await addFeature(kind);
 }
 
 function selectFile(path: string) {
-  if (props.projectPath) {
-    openFile(props.projectPath, path);
+  if (activeFileWorkspacePath.value) {
+    openFile(activeFileWorkspacePath.value, path);
   }
 }
 
@@ -183,14 +194,14 @@ function closeWorkbarTab(tab: WorkbarTab) {
 }
 
 function entryRenamed(oldPath: string, newPath: string, isDirectory: boolean) {
-  if (props.projectPath) {
-    renameEntryTabs(props.projectPath, oldPath, newPath, isDirectory);
+  if (activeFileWorkspacePath.value) {
+    renameEntryTabs(activeFileWorkspacePath.value, oldPath, newPath, isDirectory);
   }
 }
 
 function entryDeleted(path: string, isDirectory: boolean) {
-  if (props.projectPath) {
-    resetDeletedEntryTab(props.projectPath, path, isDirectory);
+  if (activeFileWorkspacePath.value) {
+    resetDeletedEntryTab(activeFileWorkspacePath.value, path, isDirectory);
   }
 }
 
@@ -398,25 +409,27 @@ onBeforeUnmount(() => stopResize?.());
           </div>
         </div>
 
-        <ProjectFilesPanel
+        <WorkspaceFilesPanel
           v-show="
             !launcherVisible &&
             activeTab?.kind === 'file'
           "
           class="absolute inset-0"
-          :project-path="projectPath"
+          :session-id="sessionId"
+          :workspace-path="activeFileWorkspacePath"
+          :workspace-name="workspaceDisplayName"
           :selected-path="
-            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
+            activeTab?.kind === 'file' && activeTab.workspacePath === activeFileWorkspacePath
               ? activeTab.path
               : undefined
           "
           :selected-mode="
-            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
+            activeTab?.kind === 'file' && activeTab.workspacePath === activeFileWorkspacePath
               ? activeTab.view
               : undefined
           "
           :diff="
-            activeTab?.kind === 'file' && activeTab.projectPath === projectPath
+            activeTab?.kind === 'file' && activeTab.workspacePath === activeFileWorkspacePath
               ? activeTab.diff
               : undefined
           "

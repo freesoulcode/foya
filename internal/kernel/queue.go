@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +49,12 @@ var (
 	// ErrFileRewindFailed indicates that a verified file could not be restored.
 	ErrFileRewindFailed = errors.New("file rewind failed")
 	// ErrRewindContextUnsupported avoids silently dropping non-text user context.
-	ErrRewindContextUnsupported = errors.New("messages with attachments, browser context, commands or selected skills cannot be moved back to composer")
+	ErrRewindContextUnsupported = errors.New("messages with attachments, workspace files, browser context, commands or selected skills cannot be moved back to composer")
 	// ErrImageInputUnsupported rejects image input unless the selected connection
 	// explicitly declares visual input support.
 	ErrImageInputUnsupported = errors.New("selected model does not support image input")
+	// ErrInvalidWorkspaceFile rejects missing, unsafe, or non-file workspace references.
+	ErrInvalidWorkspaceFile = errors.New("invalid workspace file")
 	// ErrToolCallNotRunning means the requested tool has already completed or
 	// does not belong to the session.
 	ErrToolCallNotRunning = errors.New("tool call is not running")
@@ -68,6 +71,7 @@ const (
 	maxBrowserElements       = 8
 	maxBrowserElementBytes   = 40 * 1024
 	maxBrowserContextBytes   = 96 * 1024
+	maxWorkspaceFiles        = 16
 )
 
 // Submission describes whether a submitted message started or was queued.
@@ -144,7 +148,10 @@ func (b *Service) SubmitInput(
 		return Submission{}, conversation.ErrNotFound
 	}
 	input.Text = strings.TrimSpace(input.Text)
-	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
+	if input.Text == "" &&
+		len(input.Attachments) == 0 &&
+		len(input.BrowserElements) == 0 &&
+		len(input.WorkspaceFiles) == 0 {
 		return Submission{}, ErrEmptyMessage
 	}
 	skillRef, err := b.normalizeSelectedSkill(ctx, sessionID, input.SkillRef)
@@ -157,6 +164,11 @@ func (b *Service) SubmitInput(
 		return Submission{}, err
 	}
 	input.BrowserElements = browserElements
+	workspaceFiles, err := b.normalizeWorkspaceFiles(ctx, sessionID, input.WorkspaceFiles)
+	if err != nil {
+		return Submission{}, err
+	}
+	input.WorkspaceFiles = workspaceFiles
 	if err := b.validateImageInput(sessionID, input.Attachments); err != nil {
 		return Submission{}, err
 	}
@@ -240,6 +252,48 @@ func normalizeBrowserElements(
 	return out, nil
 }
 
+func (b *Service) normalizeWorkspaceFiles(
+	ctx context.Context,
+	sessionID string,
+	paths []string,
+) ([]string, error) {
+	if len(paths) > maxWorkspaceFiles {
+		return nil, fmt.Errorf("at most %d workspace files are allowed", maxWorkspaceFiles)
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	root, err := b.workspaceRoot(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		target, err := existingWorkspaceEntry(root, strings.TrimSpace(path))
+		if err != nil {
+			return nil, fmt.Errorf("%w %q: %v", ErrInvalidWorkspaceFile, path, err)
+		}
+		info, err := os.Stat(target)
+		if err != nil {
+			return nil, fmt.Errorf("%w %q: %v", ErrInvalidWorkspaceFile, path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w %q: entry is not a regular file", ErrInvalidWorkspaceFile, path)
+		}
+		canonical, err := workspaceRelative(root, target)
+		if err != nil {
+			return nil, fmt.Errorf("%w %q: %v", ErrInvalidWorkspaceFile, path, err)
+		}
+		if _, duplicate := seen[canonical]; duplicate {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
+	}
+	return out, nil
+}
+
 func (b *Service) resolveAttachments(
 	ctx context.Context,
 	sessionID string,
@@ -299,7 +353,10 @@ func (b *Service) EnqueueInput(
 		return conversation.QueuedMessage{}, conversation.ErrNotFound
 	}
 	input.Text = strings.TrimSpace(input.Text)
-	if input.Text == "" && len(input.Attachments) == 0 && len(input.BrowserElements) == 0 {
+	if input.Text == "" &&
+		len(input.Attachments) == 0 &&
+		len(input.BrowserElements) == 0 &&
+		len(input.WorkspaceFiles) == 0 {
 		return conversation.QueuedMessage{}, ErrEmptyMessage
 	}
 	skillRef, err := b.normalizeSelectedSkill(ctx, sessionID, input.SkillRef)
@@ -312,6 +369,11 @@ func (b *Service) EnqueueInput(
 		return conversation.QueuedMessage{}, err
 	}
 	input.BrowserElements = browserElements
+	workspaceFiles, err := b.normalizeWorkspaceFiles(ctx, sessionID, input.WorkspaceFiles)
+	if err != nil {
+		return conversation.QueuedMessage{}, err
+	}
+	input.WorkspaceFiles = workspaceFiles
 	if err := b.validateImageInput(sessionID, input.Attachments); err != nil {
 		return conversation.QueuedMessage{}, err
 	}
@@ -590,7 +652,8 @@ func (b *Service) RewindTurn(
 		if item.Command != "" ||
 			item.SkillRef != "" ||
 			len(item.Attachments) > 0 ||
-			len(item.BrowserElements) > 0 {
+			len(item.BrowserElements) > 0 ||
+			len(item.WorkspaceFiles) > 0 {
 			return RewindSubmission{}, ErrRewindContextUnsupported
 		}
 		break
@@ -823,6 +886,7 @@ func queueInput(item conversation.QueuedMessage) conversation.UserInput {
 		SkillRef:        item.SkillRef,
 		Attachments:     append([]conversation.AttachmentRef(nil), item.Attachments...),
 		BrowserElements: append([]conversation.BrowserElement(nil), item.BrowserElements...),
+		WorkspaceFiles:  append([]string(nil), item.WorkspaceFiles...),
 	}
 }
 
@@ -860,6 +924,17 @@ func (b *Service) broadcastQueueLocked(sessionID string) {
 func cloneQueue(items []conversation.QueuedMessage) []conversation.QueuedMessage {
 	out := make([]conversation.QueuedMessage, len(items))
 	copy(out, items)
+	for index := range out {
+		out[index].Attachments = append(
+			[]conversation.AttachmentRef(nil),
+			items[index].Attachments...,
+		)
+		out[index].BrowserElements = append(
+			[]conversation.BrowserElement(nil),
+			items[index].BrowserElements...,
+		)
+		out[index].WorkspaceFiles = append([]string(nil), items[index].WorkspaceFiles...)
+	}
 	return out
 }
 

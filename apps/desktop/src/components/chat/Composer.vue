@@ -9,14 +9,17 @@ import {
   ShieldIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
+  BlocksIcon,
+  BookOpenIcon,
+  CommandIcon,
   FolderIcon,
   FolderOpenIcon,
+  PackageIcon,
   XIcon,
   CheckIcon,
   RefreshCwIcon,
   PaperclipIcon,
   FileTextIcon,
-  PackageIcon,
   RouteIcon,
   TargetIcon,
 } from "@lucide/vue";
@@ -29,6 +32,16 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/components/ui/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Popover,
   PopoverContent,
@@ -43,6 +56,7 @@ import {
   type ProjectInfo,
   type SkillInfo,
   type BrowserElementSelection,
+  type WorkspaceEntry,
   api,
 } from "@/lib/api";
 import ContextUsage from "./ContextUsage.vue";
@@ -74,6 +88,7 @@ const props = withDefaults(
     projectLocked?: boolean;
     browserElements?: BrowserElementSelection[];
     supportsImage?: boolean;
+    loadWorkspaceFiles?: () => Promise<WorkspaceEntry[]>;
     restoreText?: RestoreTextSignal | null;
   }>(),
   {
@@ -95,6 +110,7 @@ const props = withDefaults(
     projectLocked: false,
     browserElements: () => [],
     supportsImage: false,
+    loadWorkspaceFiles: undefined,
     restoreText: null,
   }
 );
@@ -106,10 +122,11 @@ const emit = defineEmits<{
     text: string,
     files: File[],
     browserElements: BrowserElementSelection[],
+    workspaceFiles: string[],
     skillRef: string,
     restore: () => void
   ): void;
-  (e: "command", name: string, args: string): void;
+  (e: "command", name: string, args: string, workspaceFiles: string[]): void;
   (e: "stop"): void;
   (
     e: "update:model-config",
@@ -117,6 +134,7 @@ const emit = defineEmits<{
   ): void;
   (e: "update:project-id", value: string): void;
   (e: "add-project"): void;
+  (e: "open-plugins"): void;
   (e: "update:approval", value: ApprovalMode): void;
   (e: "refresh-models"): void;
   (e: "remove-browser-element", index: number): void;
@@ -132,7 +150,12 @@ const inputFocused = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const attachmentError = ref("");
 const pendingImages = ref<Array<{ file: File; url: string }>>([]);
+const selectedWorkspaceFiles = ref<string[]>([]);
+const workspaceEntries = ref<WorkspaceEntry[]>([]);
+const workspaceFilesLoading = ref(false);
+const workspaceFilesError = ref("");
 const lastRestoreNonce = ref(0);
+const MAX_WORKSPACE_FILES = 16;
 
 function clearPendingImages() {
   for (const item of pendingImages.value) URL.revokeObjectURL(item.url);
@@ -162,6 +185,12 @@ function addImages(files: File[]) {
 function removeImage(index: number) {
   const [removed] = pendingImages.value.splice(index, 1);
   if (removed) URL.revokeObjectURL(removed.url);
+}
+
+function removeWorkspaceFile(path: string) {
+  selectedWorkspaceFiles.value = selectedWorkspaceFiles.value.filter(
+    (item) => item !== path
+  );
 }
 
 function onFilesSelected(event: Event) {
@@ -239,6 +268,15 @@ const slashSkills = computed<SlashOption[]>(() =>
       description: skill.description || "Agent Skill",
       scope: skill.scope,
     }))
+);
+const composerSkills = computed(() =>
+  slashSkills.value.filter((option) => option.scope !== "plugin")
+);
+const composerPluginSkills = computed(() =>
+  slashSkills.value.filter((option) => option.scope === "plugin")
+);
+const workspaceFileOptions = computed(() =>
+  workspaceEntries.value.filter((entry) => !entry.is_dir)
 );
 
 function commandDescription(command: CommandInfo): string {
@@ -322,6 +360,7 @@ watch(
     commandMenuDismissed.value = true;
     attachmentError.value = "";
     clearPendingImages();
+    selectedWorkspaceFiles.value = [];
     emit("clear-browser-elements");
     input.value = signal.text;
     void nextTick(() => editorRef.value?.focus());
@@ -510,6 +549,51 @@ const selectedProject = computed(
 );
 
 const projectPickerOpen = ref(false);
+const composerAddOpen = ref(false);
+
+function openAttachmentPicker() {
+  composerAddOpen.value = false;
+  fileInputRef.value?.click();
+}
+
+async function loadComposerWorkspaceFiles() {
+  if (!props.loadWorkspaceFiles || workspaceFilesLoading.value) return;
+  workspaceFilesLoading.value = true;
+  workspaceFilesError.value = "";
+  try {
+    workspaceEntries.value = await props.loadWorkspaceFiles();
+  } catch (cause) {
+    workspaceEntries.value = [];
+    workspaceFilesError.value = String(cause);
+  } finally {
+    workspaceFilesLoading.value = false;
+  }
+}
+
+function selectWorkspaceFile(path: string) {
+  if (
+    !selectedWorkspaceFiles.value.includes(path) &&
+    selectedWorkspaceFiles.value.length < MAX_WORKSPACE_FILES
+  ) {
+    selectedWorkspaceFiles.value = [...selectedWorkspaceFiles.value, path];
+  }
+  composerAddOpen.value = false;
+  void nextTick(() => editorRef.value?.focus());
+}
+
+function selectComposerOption(option: SlashOption) {
+  completeOption(option);
+  composerAddOpen.value = false;
+}
+
+function openPlugins() {
+  composerAddOpen.value = false;
+  emit("open-plugins");
+}
+
+function onWorkspaceSubmenuOpen(open: boolean) {
+  if (open) void loadComposerWorkspaceFiles();
+}
 
 function selectProject(projectID: string) {
   emit("update:project-id", projectID);
@@ -540,7 +624,8 @@ async function submit() {
   if (
     (!text &&
       pendingImages.value.length === 0 &&
-      props.browserElements.length === 0) ||
+      props.browserElements.length === 0 &&
+      selectedWorkspaceFiles.value.length === 0) ||
     props.disabled
   ) {
     return;
@@ -550,8 +635,14 @@ async function submit() {
     pendingImages.value.length === 0 &&
     props.browserElements.length === 0
   ) {
-    emit("command", selectedSlashCommand.value.name, text);
+    emit(
+      "command",
+      selectedSlashCommand.value.name,
+      text,
+      [...selectedWorkspaceFiles.value]
+    );
     selectedSlashCommand.value = null;
+    selectedWorkspaceFiles.value = [];
     input.value = "";
     commandMenuDismissed.value = true;
     return;
@@ -559,14 +650,17 @@ async function submit() {
   const files = pendingImages.value.map((item) => item.file);
   const browserElements =
     editorRef.value?.orderedElements() ?? [...props.browserElements];
+  const workspaceFiles = [...selectedWorkspaceFiles.value];
   const submittedSkill = selectedSkill.value;
   input.value = "";
   selectedSkill.value = null;
+  selectedWorkspaceFiles.value = [];
   clearPendingImages();
   emit("clear-browser-elements");
-  emit("send", text, files, browserElements, submittedSkill?.ref ?? "", () => {
+  emit("send", text, files, browserElements, workspaceFiles, submittedSkill?.ref ?? "", () => {
     if (!input.value) input.value = text;
     if (!selectedSkill.value) selectedSkill.value = submittedSkill;
+    selectedWorkspaceFiles.value = workspaceFiles;
     addImages(files);
     emit("restore-browser-elements", browserElements);
   });
@@ -694,6 +788,23 @@ function onKeydown(e: KeyboardEvent) {
             </button>
           </div>
         </div>
+        <div
+          v-if="selectedWorkspaceFiles.length"
+          class="flex flex-wrap gap-1.5 px-3 pt-3"
+        >
+          <button
+            v-for="path in selectedWorkspaceFiles"
+            :key="path"
+            type="button"
+            class="inline-flex max-w-64 items-center gap-1 rounded-md border border-border bg-muted/60 py-1 pl-1.5 pr-1 text-xs text-foreground transition-colors hover:bg-muted"
+            :title="path"
+            @click="removeWorkspaceFile(path)"
+          >
+            <FileTextIcon class="size-3.5 shrink-0 text-muted-foreground" />
+            <span class="truncate font-mono">{{ path }}</span>
+            <XIcon class="size-3.5 shrink-0 text-muted-foreground" />
+          </button>
+        </div>
         <p v-if="commandError" class="px-4 pt-2 text-xs text-destructive">
           {{ commandError }}
         </p>
@@ -760,26 +871,180 @@ function onKeydown(e: KeyboardEvent) {
         <!-- Composer toolbar. -->
         <div class="flex min-w-0 items-center gap-2 px-2 pb-2">
           <div class="flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              :disabled="disabled || !supportsImage"
-              class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              :title="supportsImage ? $t('Add image') : $t('The current model does not support image input')"
-              @click="fileInputRef?.click()"
-            >
-              <PaperclipIcon class="size-4" />
-            </button>
-            <!-- Project binding. -->
-            <button
-              v-if="!projectLocked"
-              type="button"
-              :disabled="disabled"
-              class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              :title="$t('Add project')"
-              @click="emit('add-project')"
-            >
-              <PlusIcon class="size-4" />
-            </button>
+            <DropdownMenu v-model:open="composerAddOpen">
+              <DropdownMenuTrigger as-child>
+                <button
+                  type="button"
+                  :disabled="disabled"
+                  class="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  :title="$t('Add to composer')"
+                  :aria-label="$t('Add to composer')"
+                >
+                  <PlusIcon class="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="top"
+                align="start"
+                :side-offset="6"
+                class="w-56 max-w-[calc(100vw-2rem)]"
+              >
+                <DropdownMenuItem
+                  :disabled="!supportsImage"
+                  :title="supportsImage ? $t('Upload attachment') : $t('The current model does not support image input')"
+                  @select="openAttachmentPicker"
+                >
+                  <PaperclipIcon class="size-4 shrink-0 text-muted-foreground" />
+                  <span class="truncate">{{ $t("Upload attachment") }}</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSub @update:open="onWorkspaceSubmenuOpen">
+                  <DropdownMenuSubTrigger>
+                    <FolderOpenIcon class="size-4 text-muted-foreground" />
+                    <span>{{ $t("Current workspace files") }}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent class="w-80 p-0">
+                    <Command class="h-auto rounded-md p-0">
+                      <CommandInput :placeholder="$t('Search workspace files')" />
+                      <CommandList class="max-h-72">
+                        <CommandEmpty>
+                          {{
+                            workspaceFilesLoading
+                              ? $t("Loading workspace files")
+                              : workspaceFilesError || $t("No workspace files found")
+                          }}
+                        </CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            v-for="entry in workspaceFileOptions"
+                            :key="entry.path"
+                            :value="entry.path"
+                            :disabled="selectedWorkspaceFiles.includes(entry.path)"
+                            @select="selectWorkspaceFile(entry.path)"
+                          >
+                            <FileTextIcon class="size-4 text-muted-foreground" />
+                            <span class="min-w-0 flex-1 truncate font-mono text-xs">
+                              {{ entry.path }}
+                            </span>
+                          </CommandItem>
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <CommandIcon class="size-4 text-muted-foreground" />
+                    <span>{{ $t("Commands") }}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent class="w-80 p-0">
+                    <Command class="h-auto rounded-md p-0">
+                      <CommandInput :placeholder="$t('Search commands')" />
+                      <CommandList class="max-h-72">
+                        <CommandEmpty>{{ $t("No commands found") }}</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            v-for="option in slashCommands"
+                            :key="option.ref"
+                            :value="`${option.label} ${option.description} ${option.value}`"
+                            @select="selectComposerOption(option)"
+                          >
+                            <component
+                              :is="commandIcon(option)"
+                              class="size-4 text-muted-foreground"
+                            />
+                            <span class="min-w-0 flex-1">
+                              <span class="block truncate text-sm font-medium">
+                                {{ option.label }}
+                              </span>
+                              <span class="block truncate text-xs text-muted-foreground">
+                                {{ option.description }}
+                              </span>
+                            </span>
+                          </CommandItem>
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <BookOpenIcon class="size-4 text-muted-foreground" />
+                    <span>{{ $t("Skills") }}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent class="w-80 p-0">
+                    <Command class="h-auto rounded-md p-0">
+                      <CommandInput :placeholder="$t('Search skills')" />
+                      <CommandList class="max-h-72">
+                        <CommandEmpty>{{ $t("No skills found") }}</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            v-for="option in composerSkills"
+                            :key="option.ref"
+                            :value="`${option.label} ${option.description} ${option.ref}`"
+                            @select="selectComposerOption(option)"
+                          >
+                            <BookOpenIcon class="size-4 text-blue-600 dark:text-blue-400" />
+                            <span class="min-w-0 flex-1">
+                              <span class="block truncate text-sm font-medium">
+                                {{ option.label }}
+                              </span>
+                              <span class="block truncate text-xs text-muted-foreground">
+                                {{ option.description }}
+                              </span>
+                            </span>
+                          </CommandItem>
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <BlocksIcon class="size-4 text-muted-foreground" />
+                    <span>{{ $t("Plugins") }}</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent class="w-80 p-0">
+                    <Command class="h-auto rounded-md p-0">
+                      <CommandInput :placeholder="$t('Search plugin actions')" />
+                      <CommandList class="max-h-72">
+                        <CommandEmpty>{{ $t("No plugin actions found") }}</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            v-for="option in composerPluginSkills"
+                            :key="option.ref"
+                            :value="`${option.label} ${option.description} ${option.ref}`"
+                            @select="selectComposerOption(option)"
+                          >
+                            <BlocksIcon class="size-4 text-muted-foreground" />
+                            <span class="min-w-0 flex-1">
+                              <span class="block truncate text-sm font-medium">
+                                {{ option.label }}
+                              </span>
+                              <span class="block truncate text-xs text-muted-foreground">
+                                {{ option.description }}
+                              </span>
+                            </span>
+                          </CommandItem>
+                        </CommandGroup>
+                        <CommandSeparator />
+                        <CommandGroup>
+                          <CommandItem value="manage plugins" @select="openPlugins">
+                            <BlocksIcon class="size-4 text-muted-foreground" />
+                            <span>{{ $t("Manage plugins") }}</span>
+                          </CommandItem>
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             <!-- Approval mode picker. -->
             <div ref="approvalRef" class="relative">
@@ -985,7 +1250,8 @@ function onKeydown(e: KeyboardEvent) {
                 disabled ||
                 (!input.trim() &&
                   pendingImages.length === 0 &&
-                  browserElements.length === 0)
+                  browserElements.length === 0 &&
+                  selectedWorkspaceFiles.length === 0)
               "
               :title="streaming ? $t('Queue message') : $t('Send')"
               @click="submit"
@@ -1016,7 +1282,7 @@ function onKeydown(e: KeyboardEvent) {
                 {{
                   selectedProject
                     ? `${selectedProject.name} · ${selectedProject.path}`
-                    : $t("No project")
+                    : $t("Managed workspace")
                 }}
               </span>
               <ChevronDownIcon class="size-3.5 shrink-0 opacity-60" />
@@ -1064,7 +1330,7 @@ function onKeydown(e: KeyboardEvent) {
                   @click="selectProject('')"
                 >
                   <XIcon class="size-4 text-muted-foreground" />
-                  {{ $t("Work without a project") }}
+                  {{ $t("Use managed workspace") }}
                 </button>
               </div>
             </Command>
@@ -1075,7 +1341,7 @@ function onKeydown(e: KeyboardEvent) {
           class="min-w-0 flex-1 truncate text-[13px] text-muted-foreground"
           :title="selectedProject?.path"
         >
-          {{ selectedProject?.name ?? $t("No project") }}
+          {{ selectedProject?.name ?? $t("Managed workspace") }}
         </span>
       </div>
 

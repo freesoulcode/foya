@@ -37,6 +37,101 @@ pub(crate) async fn update_session(
     .await
 }
 
+#[tauri::command]
+pub(crate) async fn get_session_workspace(session_id: String) -> Result<String, String> {
+    kernel::request("GET", &format!("/sessions/{session_id}/workspace"), None).await
+}
+
+#[tauri::command]
+pub(crate) async fn list_workspace_files(session_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/sessions/{session_id}/workspace/files"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn read_workspace_file(
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let raw = kernel::request(
+        "GET",
+        &format!(
+            "/sessions/{session_id}/workspace/file?path={}",
+            super::encode_query_component(&path)
+        ),
+        None,
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn create_workspace_entry(
+    session_id: String,
+    path: String,
+    kind: String,
+) -> Result<String, String> {
+    let body = serde_json::json!({ "path": path, "kind": kind }).to_string();
+    let raw = kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/workspace/entries"),
+        Some(&body),
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn rename_workspace_entry(
+    session_id: String,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    let body = serde_json::json!({ "path": path, "new_name": new_name }).to_string();
+    let raw = kernel::request(
+        "PATCH",
+        &format!("/sessions/{session_id}/workspace/entries"),
+        Some(&body),
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn delete_workspace_entry(session_id: String, path: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!(
+            "/sessions/{session_id}/workspace/entries?path={}",
+            super::encode_query_component(&path)
+        ),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub(crate) async fn resolve_workspace_path(
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    let raw = kernel::request(
+        "GET",
+        &format!(
+            "/sessions/{session_id}/workspace/path?path={}",
+            super::encode_query_component(&path)
+        ),
+        None,
+    )
+    .await?;
+    serde_json::from_str(&raw).map_err(|error| error.to_string())
+}
+
 /// Submit one chat turn.
 #[tauri::command]
 pub(crate) async fn submit_turn(
@@ -45,12 +140,14 @@ pub(crate) async fn submit_turn(
     skill_ref: Option<String>,
     attachments: Option<Vec<serde_json::Value>>,
     browser_elements: Option<Vec<serde_json::Value>>,
+    workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
         "skill_ref": skill_ref.unwrap_or_default(),
         "attachments": attachments.unwrap_or_default(),
         "browser_elements": browser_elements.unwrap_or_default(),
+        "workspace_files": workspace_files.unwrap_or_default(),
     })
     .to_string();
     kernel::request(
@@ -208,12 +305,14 @@ pub(crate) async fn enqueue_message(
     skill_ref: Option<String>,
     attachments: Option<Vec<serde_json::Value>>,
     browser_elements: Option<Vec<serde_json::Value>>,
+    workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
     let body = serde_json::json!({
         "message": message,
         "skill_ref": skill_ref.unwrap_or_default(),
         "attachments": attachments.unwrap_or_default(),
         "browser_elements": browser_elements.unwrap_or_default(),
+        "workspace_files": workspace_files.unwrap_or_default(),
     })
     .to_string();
     kernel::request(

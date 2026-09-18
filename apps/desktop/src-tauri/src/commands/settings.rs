@@ -295,8 +295,13 @@ pub(crate) async fn execute_command(
     session_id: String,
     name: String,
     args: String,
+    workspace_files: Option<Vec<String>>,
 ) -> Result<String, String> {
-    let body = serde_json::json!({ "args": args }).to_string();
+    let body = serde_json::json!({
+        "args": args,
+        "workspace_files": workspace_files.unwrap_or_default(),
+    })
+    .to_string();
     kernel::request(
         "POST",
         &format!(

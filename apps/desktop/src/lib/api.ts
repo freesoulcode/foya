@@ -86,6 +86,13 @@ export interface Session {
   updated_at: string;
 }
 
+export interface SessionWorkspace {
+  kind: "project" | "managed";
+  name: string;
+  path: string;
+  project_id?: string;
+}
+
 // Reasoning effort aligned with session.ReasoningEffort. Empty uses the provider default.
 export type ReasoningEffort = "" | "low" | "medium" | "high";
 
@@ -122,6 +129,7 @@ export interface QueuedMessage {
   skill_ref?: string;
   attachments?: AttachmentRef[];
   browser_elements?: BrowserElementSelection[];
+  workspace_files?: string[];
   position: number;
   created_at: string;
   updated_at: string;
@@ -417,13 +425,13 @@ export interface BrowserActionResult {
   error?: string;
 }
 
-export interface ProjectEntry {
+export interface WorkspaceEntry {
   path: string;
   name: string;
   is_dir: boolean;
 }
 
-export interface ProjectFilesChanged {
+export interface WorkspaceFilesChanged {
   paths: string[];
   tree_changed: boolean;
   error?: string;
@@ -501,6 +509,7 @@ export interface ChatMessage {
   skill_ref?: string;
   attachments?: AttachmentRef[];
   browser_elements?: BrowserElementSelection[];
+  workspace_files?: string[];
   event_seq?: number;
   created_at?: string;
   reasoning?: string;
@@ -1071,6 +1080,11 @@ export const api = {
       (r) => JSON.parse(r) as Session
     ),
 
+  getSessionWorkspace: (sessionId: string) =>
+    invoke<string>("get_session_workspace", { sessionId }).then(
+      (r) => JSON.parse(r) as SessionWorkspace
+    ),
+
   // Delete a chat, including cancellation, history removal, and broadcast.
   deleteSession: (sessionId: string) =>
     invoke("delete_session", { sessionId }),
@@ -1078,13 +1092,13 @@ export const api = {
   pickFolder: () =>
     open({ directory: true, multiple: false, title: translate("Select working folder") }),
 
-  listProjectFiles: (projectPath: string) =>
-    invoke<string>("list_project_files", { projectPath }).then(
-      (result) => (JSON.parse(result) as ProjectEntry[]) ?? []
+  listWorkspaceFiles: (sessionId: string) =>
+    invoke<string>("list_workspace_files", { sessionId }).then(
+      (result) => (JSON.parse(result) as WorkspaceEntry[]) ?? []
     ),
 
-  readProjectFile: (projectPath: string, path: string) =>
-    invoke<string>("read_project_file", { projectPath, path }),
+  readWorkspaceFile: (sessionId: string, path: string) =>
+    invoke<string>("read_workspace_file", { sessionId, path }),
 
   listExternalEditors: () =>
     invoke<string>("list_external_editors").then(
@@ -1094,34 +1108,37 @@ export const api = {
   openProjectInExternalEditor: (projectPath: string, editorId: string) =>
     invoke("open_project_in_external_editor", { projectPath, editorId }),
 
-  watchProjectFiles: (
-    projectPath: string,
-    onEvent: (event: ProjectFilesChanged) => void
+  watchWorkspaceFiles: (
+    workspacePath: string,
+    onEvent: (event: WorkspaceFilesChanged) => void
   ) => {
     const channel = new Channel<string>();
     channel.onmessage = (data) => {
-      onEvent(JSON.parse(data) as ProjectFilesChanged);
+      onEvent(JSON.parse(data) as WorkspaceFilesChanged);
     };
-    return invoke<string>("watch_project_files", { projectPath, channel });
+    return invoke<string>("watch_project_files", {
+      projectPath: workspacePath,
+      channel,
+    });
   },
 
-  unwatchProjectFiles: (watchId: string) =>
+  unwatchWorkspaceFiles: (watchId: string) =>
     invoke("unwatch_project_files", { watchId }),
 
-  createProjectFile: (projectPath: string, path: string) =>
-    invoke<string>("create_project_file", { projectPath, path }),
+  createWorkspaceFile: (sessionId: string, path: string) =>
+    invoke<string>("create_workspace_entry", { sessionId, path, kind: "file" }),
 
-  createProjectDirectory: (projectPath: string, path: string) =>
-    invoke<string>("create_project_directory", { projectPath, path }),
+  createWorkspaceDirectory: (sessionId: string, path: string) =>
+    invoke<string>("create_workspace_entry", { sessionId, path, kind: "directory" }),
 
-  renameProjectEntry: (projectPath: string, path: string, newName: string) =>
-    invoke<string>("rename_project_entry", { projectPath, path, newName }),
+  renameWorkspaceEntry: (sessionId: string, path: string, newName: string) =>
+    invoke<string>("rename_workspace_entry", { sessionId, path, newName }),
 
-  deleteProjectEntry: (projectPath: string, path: string) =>
-    invoke("delete_project_entry", { projectPath, path }),
+  deleteWorkspaceEntry: (sessionId: string, path: string) =>
+    invoke("delete_workspace_entry", { sessionId, path }),
 
-  resolveProjectPath: (projectPath: string, path = "") =>
-    invoke<string>("resolve_project_path", { projectPath, path }),
+  resolveWorkspacePath: (sessionId: string, path = "") =>
+    invoke<string>("resolve_workspace_path", { sessionId, path }),
 
   listSessions: () =>
     invoke<string>("list_sessions").then((r) => (JSON.parse(r) as Session[]) ?? []),
@@ -1169,6 +1186,7 @@ export const api = {
     message: string,
     attachments: AttachmentRef[] = [],
     browserElements: BrowserElementSelection[] = [],
+    workspaceFiles: string[] = [],
     skillRef = ""
   ) =>
     invoke<string>("submit_turn", {
@@ -1177,6 +1195,7 @@ export const api = {
       skillRef,
       attachments,
       browserElements,
+      workspaceFiles,
     }).then(
       (r) => JSON.parse(r) as SubmitTurnResult
     ),
@@ -1347,6 +1366,7 @@ export const api = {
     message: string,
     attachments: AttachmentRef[] = [],
     browserElements: BrowserElementSelection[] = [],
+    workspaceFiles: string[] = [],
     skillRef = ""
   ) =>
     invoke<string>("enqueue_message", {
@@ -1355,6 +1375,7 @@ export const api = {
       skillRef,
       attachments,
       browserElements,
+      workspaceFiles,
     }).then(
       (r) => JSON.parse(r) as QueuedMessage
     ),
@@ -1692,8 +1713,13 @@ export const api = {
       (r) => (JSON.parse(r) as CommandInfo[]) ?? []
     ),
 
-  executeCommand: (sessionId: string, name: string, args = "") =>
-    invoke<string>("execute_command", { sessionId, name, args }).then(
+  executeCommand: (
+    sessionId: string,
+    name: string,
+    args = "",
+    workspaceFiles: string[] = []
+  ) =>
+    invoke<string>("execute_command", { sessionId, name, args, workspaceFiles }).then(
       (r) => JSON.parse(r) as CommandExecution
     ),
 
