@@ -5,12 +5,18 @@ import {
   Code2Icon,
   DownloadIcon,
   FileIcon,
+  FilmIcon,
   ImageIcon,
   LoaderCircleIcon,
   SaveIcon,
   type LucideIcon,
 } from "@lucide/vue";
 import { api, type AttachmentRef } from "@/lib/api";
+import {
+  artifactMediaType,
+  isImageArtifact,
+  isVideoArtifact,
+} from "@/lib/artifactMedia";
 import { cn } from "@/lib/utils";
 
 const props = withDefaults(
@@ -35,7 +41,7 @@ const previewURLs = ref<Record<string, string>>({});
 const errors = ref<Record<string, string>>({});
 const saving = ref<Record<string, boolean>>({});
 const attachmentKey = computed(() =>
-  props.attachments.map((item) => `${item.id}:${item.media_type}`).join(",")
+  props.attachments.map((item) => `${item.id}:${item.name}:${item.media_type}`).join(",")
 );
 let previewLoad = 0;
 
@@ -45,11 +51,7 @@ function releasePreviewURLs() {
 }
 
 function mediaType(attachment: AttachmentRef): string {
-  return (attachment.media_type || "application/octet-stream").split(";")[0].trim().toLowerCase();
-}
-
-function isImageAttachment(attachment: AttachmentRef): boolean {
-  return attachment.kind === "image" || mediaType(attachment).startsWith("image/");
+  return artifactMediaType(attachment);
 }
 
 function isHTMLAttachment(attachment: AttachmentRef): boolean {
@@ -58,7 +60,8 @@ function isHTMLAttachment(attachment: AttachmentRef): boolean {
 }
 
 function isPreviewable(attachment: AttachmentRef): boolean {
-  return props.showPreview && (isImageAttachment(attachment) || isHTMLAttachment(attachment));
+  return props.showPreview &&
+    (isImageArtifact(attachment) || isVideoArtifact(attachment) || isHTMLAttachment(attachment));
 }
 
 async function loadPreviews() {
@@ -73,7 +76,7 @@ async function loadPreviews() {
       previewURLs.value = {
         ...previewURLs.value,
         [attachment.id]: URL.createObjectURL(
-          new Blob([bytes], { type: attachment.media_type || "application/octet-stream" })
+          new Blob([bytes], { type: artifactMediaType(attachment) })
         ),
       };
     } catch {
@@ -94,7 +97,8 @@ onBeforeUnmount(() => {
 });
 
 function fileIcon(attachment: AttachmentRef): LucideIcon {
-  if (isImageAttachment(attachment)) return ImageIcon;
+  if (isImageArtifact(attachment)) return ImageIcon;
+  if (isVideoArtifact(attachment)) return FilmIcon;
   if (isHTMLAttachment(attachment)) return Code2Icon;
   return FileIcon;
 }
@@ -115,7 +119,7 @@ async function downloadAttachment(attachment: AttachmentRef) {
   try {
     const bytes = await api.readArtifact(props.sessionId, attachment.id);
     const url = URL.createObjectURL(
-      new Blob([bytes], { type: attachment.media_type || "application/octet-stream" })
+      new Blob([bytes], { type: artifactMediaType(attachment) })
     );
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -175,10 +179,20 @@ async function saveAttachment(attachment: AttachmentRef) {
           class="flex h-40 items-center justify-center overflow-hidden bg-muted/50"
         >
           <img
-            v-if="isImageAttachment(attachment) && previewURLs[attachment.id]"
+            v-if="isImageArtifact(attachment) && previewURLs[attachment.id]"
             :src="previewURLs[attachment.id]"
             :alt="attachment.name"
             class="max-h-40 w-full object-contain"
+          />
+          <video
+            v-else-if="isVideoArtifact(attachment) && previewURLs[attachment.id]"
+            :src="previewURLs[attachment.id]"
+            :aria-label="attachment.name"
+            controls
+            playsinline
+            preload="metadata"
+            class="h-40 w-full object-contain"
+            @click.stop
           />
           <iframe
             v-else-if="isHTMLAttachment(attachment) && previewURLs[attachment.id]"

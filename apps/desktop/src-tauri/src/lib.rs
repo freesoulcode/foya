@@ -100,6 +100,7 @@ pub fn run() {
             get_session_workspace,
             list_workspace_files,
             read_workspace_file,
+            read_workspace_media_file,
             create_workspace_entry,
             rename_workspace_entry,
             delete_workspace_entry,

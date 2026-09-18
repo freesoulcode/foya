@@ -20,8 +20,14 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { AttachmentRef, ChatMessage, ToolCallView, MessageSegment } from "@/lib/api";
+import {
+  artifactMediaType,
+  isImageArtifact,
+  isVideoArtifact,
+} from "@/lib/artifactMedia";
 import { formatFullTime, formatMessageTime } from "@/lib/dateTime";
 import MarkdownContent from "./MarkdownContent.vue";
+import ArtifactAttachmentList from "./ArtifactAttachmentList.vue";
 import ToolActivityGroup from "./ToolActivityGroup.vue";
 import TaskArtifacts from "./TaskArtifacts.vue";
 
@@ -53,14 +59,14 @@ async function loadAttachmentPreviews() {
   releaseAttachmentURLs();
   if (!props.sessionId) return;
   for (const attachment of props.message.attachments ?? []) {
-    if (attachment.kind !== "image") continue;
+    if (!isImageArtifact(attachment) && !isVideoArtifact(attachment)) continue;
     try {
       const bytes = await api.readArtifact(props.sessionId, attachment.id);
       if (load !== attachmentLoad) return;
       attachmentURLs.value = {
         ...attachmentURLs.value,
         [attachment.id]: URL.createObjectURL(
-          new Blob([bytes], { type: attachment.media_type })
+          new Blob([bytes], { type: artifactMediaType(attachment) })
         ),
       };
     } catch {
@@ -93,6 +99,18 @@ const emit = defineEmits<{
 
 const isUser = computed(() => props.message.role === "user");
 const toolCalls = computed(() => props.message.tool_calls ?? []);
+const generatedMediaAttachments = computed(() => {
+  const attachments = new Map<string, AttachmentRef>();
+  for (const tool of toolCalls.value) {
+    if (tool.name !== "generate_image" && tool.name !== "generate_video") continue;
+    for (const attachment of tool.attachments ?? []) {
+      if (isImageArtifact(attachment) || isVideoArtifact(attachment)) {
+        attachments.set(attachment.id, attachment);
+      }
+    }
+  }
+  return [...attachments.values()];
+});
 const commandIcon = computed(() => {
   if (props.message.command === "plan") return RouteIcon;
   if (props.message.command === "spec") return FileTextIcon;
@@ -335,9 +353,18 @@ function rewindMessage() {
             class="overflow-hidden rounded-md border border-border bg-muted"
           >
             <img
-              v-if="attachmentURLs[attachment.id]"
+              v-if="isImageArtifact(attachment) && attachmentURLs[attachment.id]"
               :src="attachmentURLs[attachment.id]"
               :alt="attachment.name"
+              class="max-h-64 w-full object-contain"
+            />
+            <video
+              v-else-if="isVideoArtifact(attachment) && attachmentURLs[attachment.id]"
+              :src="attachmentURLs[attachment.id]"
+              :aria-label="attachment.name"
+              controls
+              playsinline
+              preload="metadata"
               class="max-h-64 w-full object-contain"
             />
             <p v-else class="px-3 py-2 text-xs text-muted-foreground">
@@ -470,6 +497,7 @@ function rewindMessage() {
               <ToolActivityGroup
                 :session-id="sessionId"
                 :tools="toolBatchAt(i)"
+                hide-media-attachments
                 @open-diff="(diff) => emit('open-diff', diff)"
                 @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
                 @background-tool="(toolCallId) => emit('background-tool', toolCallId)"
@@ -488,6 +516,14 @@ function rewindMessage() {
             />
           </template>
         </template>
+
+        <ArtifactAttachmentList
+          v-if="generatedMediaAttachments.length"
+          class="mb-2"
+          :session-id="sessionId"
+          :attachments="generatedMediaAttachments"
+          @open="(attachment) => emit('open-artifact', attachment)"
+        />
 
         <!-- Working indicator between streamed segments. -->
         <div v-if="showWorking" class="flex items-center gap-1 py-1">

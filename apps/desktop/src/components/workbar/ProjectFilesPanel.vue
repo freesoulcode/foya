@@ -50,6 +50,11 @@ import type {
 } from "@/lib/api";
 import { api } from "@/lib/api";
 import {
+  isImageFileName,
+  isVideoFileName,
+  mediaTypeForFileName,
+} from "@/lib/artifactMedia";
+import {
   diffFilePath,
   diffStats,
   fullDiffLines,
@@ -57,6 +62,7 @@ import {
 } from "@/lib/diff";
 import { renderMarkdown } from "@/lib/markdown";
 import FileTypeIcon from "./FileTypeIcon.vue";
+import MediaPreview from "./MediaPreview.vue";
 
 const CodePreview = defineAsyncComponent(() => import("./CodePreview.vue"));
 
@@ -113,6 +119,7 @@ const treeResizing = ref(false);
 const treeSelection = ref("");
 const query = ref("");
 const content = ref("");
+const mediaURL = ref("");
 const loadingTree = ref(false);
 const loadingFile = ref(false);
 const treeError = ref("");
@@ -176,6 +183,13 @@ const markdownPreview = computed(() => renderMarkdown(content.value));
 const isMarkdown = computed(() =>
   /\.(md|markdown|mdown|mkd)$/i.test(props.selectedPath ?? "")
 );
+const isImagePreview = computed(() => isImageFileName(props.selectedPath));
+const isVideoPreview = computed(() => isVideoFileName(props.selectedPath));
+
+function releaseMediaURL() {
+  if (mediaURL.value) URL.revokeObjectURL(mediaURL.value);
+  mediaURL.value = "";
+}
 
 function collectToolCalls(message: ChatMessage): ToolCallView[] {
   if (message.segments?.length) {
@@ -561,6 +575,7 @@ async function loadFile() {
   const request = ++fileRequest;
   const sessionId = props.sessionId;
   const selectedPath = props.selectedPath;
+  releaseMediaURL();
   if (!sessionId || !selectedPath) {
     content.value = "";
     fileError.value = "";
@@ -570,6 +585,15 @@ async function loadFile() {
   loadingFile.value = true;
   fileError.value = "";
   try {
+    if (isImageFileName(selectedPath) || isVideoFileName(selectedPath)) {
+      const bytes = await api.readWorkspaceMediaFile(sessionId, selectedPath);
+      if (request !== fileRequest) return;
+      content.value = "";
+      mediaURL.value = URL.createObjectURL(
+        new Blob([bytes], { type: mediaTypeForFileName(selectedPath) })
+      );
+      return;
+    }
     const next = await api.readWorkspaceFile(
       sessionId,
       selectedPath
@@ -706,6 +730,7 @@ useEventListener(window, "focus", () => {
 });
 
 onBeforeUnmount(() => {
+  releaseMediaURL();
   workspaceWatchGeneration += 1;
   if (workspaceWatchID) {
     void api.unwatchWorkspaceFiles(workspaceWatchID);
@@ -817,6 +842,20 @@ onBeforeUnmount(() => {
         class="prose-chat markdown-preview min-h-0 flex-1 overflow-auto px-6 py-4"
         @click="onMarkdownClick"
         v-html="markdownPreview"
+      />
+
+      <MediaPreview
+        v-else-if="isImagePreview && mediaURL"
+        :src="mediaURL"
+        :name="selectedPath"
+        kind="image"
+      />
+
+      <MediaPreview
+        v-else-if="isVideoPreview && mediaURL"
+        :src="mediaURL"
+        :name="selectedPath"
+        kind="video"
       />
 
       <CodePreview

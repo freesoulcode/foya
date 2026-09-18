@@ -3,13 +3,22 @@ import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from "vue
 import { useI18n } from "vue-i18n";
 import {
   AlertCircleIcon,
+  Code2Icon,
   DownloadIcon,
   FileIcon,
+  FilmIcon,
+  ImageIcon,
   LoaderCircleIcon,
   SaveIcon,
 } from "@lucide/vue";
 import { api, type AttachmentRef } from "@/lib/api";
+import {
+  artifactMediaType,
+  isImageArtifact,
+  isVideoArtifact,
+} from "@/lib/artifactMedia";
 import MarkdownContent from "@/components/chat/MarkdownContent.vue";
+import MediaPreview from "./MediaPreview.vue";
 
 const CodePreview = defineAsyncComponent(() => import("./CodePreview.vue"));
 
@@ -31,12 +40,7 @@ const bytes = ref<Uint8Array>();
 let request = 0;
 
 const name = computed(() => props.attachment?.name || props.attachment?.id || "generated");
-const media = computed(() =>
-  (props.attachment?.media_type || "application/octet-stream")
-    .split(";")[0]
-    .trim()
-    .toLowerCase()
-);
+const media = computed(() => artifactMediaType(props.attachment));
 const bytesLabel = computed(() => formatBytes(props.attachment?.bytes));
 const extension = computed(() => {
   const filename = name.value.toLowerCase();
@@ -44,12 +48,17 @@ const extension = computed(() => {
   return dot >= 0 ? filename.slice(dot + 1) : "";
 });
 
-const isImage = computed(() =>
-  props.attachment?.kind === "image" || media.value.startsWith("image/")
-);
+const isImage = computed(() => isImageArtifact(props.attachment));
+const isVideo = computed(() => isVideoArtifact(props.attachment));
 const isHTML = computed(() =>
   media.value === "text/html" || extension.value === "html" || extension.value === "htm"
 );
+const previewIcon = computed(() => {
+  if (isImage.value) return ImageIcon;
+  if (isVideo.value) return FilmIcon;
+  if (isHTML.value) return Code2Icon;
+  return FileIcon;
+});
 const isMarkdown = computed(() =>
   media.value === "text/markdown" ||
   ["md", "markdown", "mdown", "mkd"].includes(extension.value)
@@ -119,9 +128,9 @@ async function loadArtifact() {
     const data = await api.readArtifact(props.sessionId, props.attachment.id);
     if (current !== request) return;
     bytes.value = data;
-    if (isImage.value || isHTML.value) {
+    if (isImage.value || isVideo.value || isHTML.value) {
       objectURL.value = URL.createObjectURL(
-        new Blob([data], { type: props.attachment.media_type || "application/octet-stream" })
+        new Blob([data], { type: artifactMediaType(props.attachment) })
       );
       return;
     }
@@ -147,7 +156,7 @@ async function downloadAttachment() {
   try {
     const data = bytes.value ?? await api.readArtifact(props.sessionId, props.attachment.id);
     const url = URL.createObjectURL(
-      new Blob([data], { type: props.attachment.media_type || "application/octet-stream" })
+      new Blob([data], { type: artifactMediaType(props.attachment) })
     );
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -175,7 +184,13 @@ async function saveAttachment() {
 }
 
 watch(
-  () => [props.active, props.sessionId, props.attachment?.id, props.attachment?.media_type],
+  () => [
+    props.active,
+    props.sessionId,
+    props.attachment?.id,
+    props.attachment?.name,
+    props.attachment?.media_type,
+  ],
   () => void loadArtifact(),
   { immediate: true }
 );
@@ -189,7 +204,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="flex h-full min-h-0 flex-col bg-background">
     <header class="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-      <FileIcon class="size-4 shrink-0 text-primary" />
+      <component :is="previewIcon" class="size-4 shrink-0 text-primary" />
       <div class="min-w-0 flex-1">
         <div class="truncate font-mono text-sm text-foreground">{{ name }}</div>
         <div class="truncate text-[11px] text-muted-foreground">
@@ -232,12 +247,18 @@ onBeforeUnmount(() => {
       <AlertCircleIcon class="size-5 text-muted-foreground" />
       <p class="text-xs text-muted-foreground">{{ error }}</p>
     </div>
-    <div
+    <MediaPreview
       v-else-if="isImage && objectURL"
-      class="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-muted/20 p-4"
-    >
-      <img :src="objectURL" :alt="name" class="max-h-full max-w-full object-contain" />
-    </div>
+      :src="objectURL"
+      :name="name"
+      kind="image"
+    />
+    <MediaPreview
+      v-else-if="isVideo && objectURL"
+      :src="objectURL"
+      :name="name"
+      kind="video"
+    />
     <iframe
       v-else-if="isHTML && objectURL"
       :src="objectURL"

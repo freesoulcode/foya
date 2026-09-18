@@ -12,11 +12,11 @@ Foya 使用 Connection 表示一个模型账号或兼容端点。Session 保存
 | 类型 | 用途 |
 |---|---|
 | Language | 聊天、工具调用、标题生成和上下文压缩 |
-| Image | 创作画布中的图片生成 |
-| Video | 创作画布中的视频生成 |
+| Image | 普通对话和创作画布中的图片生成 |
+| Video | 普通对话和创作画布中的视频生成 |
 
 语言模型连接通过 OpenAI 兼容接口工作。图片和视频连接使用各自的生成适配器，
-不能混用于普通会话。
+不会替代 Session 使用的 Language Connection。
 
 ## 添加语言模型连接
 
@@ -53,10 +53,13 @@ Foya 会按模型保存以下能力声明：
 
 - Language：新会话默认模型。
 - Fast：自动标题等短任务优先使用。
-- Image：创作画布默认图片模型。
-- Video：创作画布默认视频模型。
+- Image：创作画布和普通对话 `generate_image` Tool 的默认图片模型。
+- Video：创作画布和普通对话 `generate_video` Tool 的默认视频模型。
 
 Session 创建后会保存具体连接和模型。修改全局默认值不会自动改写已有 Session。
+媒体生成 Tool 不绑定 Session 的语言模型配置：它可以使用最新的 Image/Video 默认
+模型，也可以按用户要求选择已配置的具体模型。没有默认模型时，Agent 可通过
+`list_media_models` 查询候选；只有一个兼容模型时会直接使用。
 
 Provider 接口、Route 隔离和 Usage 的技术说明参见
 [Provider 与模型路由](./technical/providers.md)。

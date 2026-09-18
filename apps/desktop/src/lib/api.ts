@@ -1132,6 +1132,11 @@ export const api = {
   readWorkspaceFile: (sessionId: string, path: string) =>
     invoke<string>("read_workspace_file", { sessionId, path }),
 
+  readWorkspaceMediaFile: (sessionId: string, path: string) =>
+    invoke<number[]>("read_workspace_media_file", { sessionId, path }).then(
+      (result) => new Uint8Array(result)
+    ),
+
   listExternalEditors: () =>
     invoke<string>("list_external_editors").then(
       (result) => (JSON.parse(result) as ExternalEditor[]) ?? []

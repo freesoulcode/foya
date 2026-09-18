@@ -74,6 +74,52 @@ func TestFileStoreRejectsInvalidAndOversizedImages(t *testing.T) {
 	}
 }
 
+func TestFileStoreVideoLifecycle(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewFileStore(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	source := []byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0}
+
+	ref, err := store.PutVideo(ctx, "session-1", "../clip.mp4", "", bytes.NewReader(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Name != "clip.mp4" || ref.Kind != "video" ||
+		ref.MediaType != "video/mp4" || ref.Bytes != int64(len(source)) || ref.SHA256 == "" {
+		t.Fatalf("unexpected video metadata: %#v", ref)
+	}
+	data, canonical, err := store.Read(ctx, "session-1", ref.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, source) || canonical != ref {
+		t.Fatal("stored video or canonical metadata changed")
+	}
+	if err := store.Commit(ctx, "session-1", []string{ref.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "session-1", ref.ID); !errors.Is(err, ErrCommitted) {
+		t.Fatalf("delete committed video artifact error = %v", err)
+	}
+}
+
+func TestFileStoreRejectsInvalidVideos(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.PutVideo(ctx, "session-1", "note.txt", "", strings.NewReader("not a video")); !errors.Is(err, ErrUnsupportedVideo) {
+		t.Fatalf("unsupported video error = %v", err)
+	}
+	if _, err := store.PutVideo(ctx, "../escape", "clip.mp4", "video/mp4", strings.NewReader("video")); !errors.Is(err, ErrInvalidID) {
+		t.Fatalf("invalid session error = %v", err)
+	}
+}
+
 func TestFileStoreFileLifecycle(t *testing.T) {
 	dataDir := t.TempDir()
 	store, err := NewFileStore(dataDir)

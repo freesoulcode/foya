@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -188,6 +189,39 @@ func TestManagedWorkspaceFileLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(renamedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("deleted workspace file stat error = %v", err)
+	}
+}
+
+func TestReadWorkspaceMediaFile(t *testing.T) {
+	ctx := context.Background()
+	service, sessionID, _ := newQueueTestBackend(t)
+	imagePath, err := service.CreateWorkspaceEntry(ctx, sessionID, "preview.png", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := service.ResolveWorkspacePath(ctx, sessionID, imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageData := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if err := os.WriteFile(resolved, imageData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	data, mediaType, err := service.ReadWorkspaceMediaFile(ctx, sessionID, imagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, imageData) || mediaType != "image/png" {
+		t.Fatalf("media preview = %q, %q", data, mediaType)
+	}
+
+	textPath, err := service.CreateWorkspaceEntry(ctx, sessionID, "notes.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.ReadWorkspaceMediaFile(ctx, sessionID, textPath); !errors.Is(err, ErrUnsupportedMediaFile) {
+		t.Fatalf("text media preview error = %v", err)
 	}
 }
 

@@ -30,6 +30,7 @@ import (
 const (
 	MaxImageBytes  int64 = 20 << 20
 	MaxFileBytes   int64 = 20 << 20
+	MaxVideoBytes  int64 = 500 << 20
 	MaxTurnBytes   int64 = 50 << 20
 	MaxAttachments       = 8
 	MaxImagePixels int64 = 40_000_000
@@ -41,8 +42,10 @@ var safeID = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var (
 	ErrInvalidID        = errors.New("invalid artifact identifier")
 	ErrUnsupportedType  = errors.New("unsupported image type")
+	ErrUnsupportedVideo = errors.New("unsupported video type")
 	ErrImageTooLarge    = errors.New("image exceeds size limit")
 	ErrArtifactTooLarge = errors.New("artifact exceeds size limit")
+	ErrVideoTooLarge    = errors.New("video exceeds size limit")
 	ErrTooManyPixels    = errors.New("image exceeds pixel limit")
 	ErrCommitted        = errors.New("artifact is already attached to a message")
 )
@@ -56,6 +59,7 @@ type Store interface {
 	WorkspaceDir(ctx context.Context, sessionID string) (string, error)
 	CopyWorkspace(ctx context.Context, sourceID, targetID string) error
 	PutImage(ctx context.Context, sessionID, name string, src io.Reader) (conversation.AttachmentRef, error)
+	PutVideo(ctx context.Context, sessionID, name, mediaType string, src io.Reader) (conversation.AttachmentRef, error)
 	PutFile(ctx context.Context, sessionID, name, mediaType string, src io.Reader) (conversation.AttachmentRef, error)
 	Read(ctx context.Context, sessionID, artifactID string) ([]byte, conversation.AttachmentRef, error)
 	Commit(ctx context.Context, sessionID string, artifactIDs []string) error
@@ -253,6 +257,114 @@ func (s *FileStore) PutFile(
 		return conversation.AttachmentRef{}, err
 	}
 	return ref, nil
+}
+
+func (s *FileStore) PutVideo(
+	ctx context.Context,
+	sessionID, name, mediaType string,
+	src io.Reader,
+) (conversation.AttachmentRef, error) {
+	if err := validateID(sessionID); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	id, err := randomID()
+	if err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	dir := filepath.Join(s.root, sessionID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	temp, err := os.CreateTemp(dir, "."+id+".bin-*")
+	if err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, err
+	}
+	hasher := sha256.New()
+	written, err := io.Copy(
+		io.MultiWriter(temp, hasher),
+		io.LimitReader(&contextReader{ctx: ctx, reader: src}, MaxVideoBytes+1),
+	)
+	if err != nil {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, err
+	}
+	if written > MaxVideoBytes {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, ErrVideoTooLarge
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, err
+	}
+	if _, err := temp.Seek(0, io.SeekStart); err != nil {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, err
+	}
+	header := make([]byte, 512)
+	headerBytes, readErr := io.ReadFull(temp, header)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		_ = temp.Close()
+		return conversation.AttachmentRef{}, readErr
+	}
+	if err := temp.Close(); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+
+	safeName := safeArtifactName(name)
+	resolvedType := videoMediaType(safeName, mediaType, header[:headerBytes])
+	if !strings.HasPrefix(resolvedType, "video/") {
+		return conversation.AttachmentRef{}, ErrUnsupportedVideo
+	}
+	if safeName == "" || safeName == "." {
+		safeName = id
+	}
+	ref := conversation.AttachmentRef{
+		ID:        id,
+		Name:      safeName,
+		Kind:      "video",
+		MediaType: resolvedType,
+		Bytes:     written,
+		SHA256:    hex.EncodeToString(hasher.Sum(nil)),
+	}
+	binPath := filepath.Join(dir, id+".bin")
+	if err := os.Rename(tempPath, binPath); err != nil {
+		return conversation.AttachmentRef{}, err
+	}
+	meta, err := json.Marshal(metadata{AttachmentRef: ref})
+	if err != nil {
+		_ = os.Remove(binPath)
+		return conversation.AttachmentRef{}, err
+	}
+	if err := writeAtomic(filepath.Join(dir, id+".json"), meta, 0o600); err != nil {
+		_ = os.Remove(binPath)
+		return conversation.AttachmentRef{}, err
+	}
+	return ref, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
 }
 
 func (s *FileStore) putRaw(
@@ -479,6 +591,20 @@ func fileMediaType(name, provided string, data []byte) string {
 		return mediaType
 	}
 	return "application/octet-stream"
+}
+
+func videoMediaType(name, provided string, data []byte) string {
+	detected := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	if strings.HasPrefix(detected, "video/") {
+		return detected
+	}
+	if mediaType := normalizedMediaType(provided); strings.HasPrefix(mediaType, "video/") {
+		return mediaType
+	}
+	if mediaType := normalizedMediaType(mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))); strings.HasPrefix(mediaType, "video/") {
+		return mediaType
+	}
+	return ""
 }
 
 func normalizedMediaType(value string) string {

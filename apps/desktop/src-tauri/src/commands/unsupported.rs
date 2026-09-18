@@ -37,6 +37,14 @@ pub(crate) fn read_workspace_file(_session_id: String, _path: String) -> Result<
 }
 
 #[tauri::command]
+pub(crate) fn read_workspace_media_file(
+    _session_id: String,
+    _path: String,
+) -> Result<Vec<u8>, String> {
+    Err("Windows transport is not implemented yet".into())
+}
+
+#[tauri::command]
 pub(crate) fn create_workspace_entry(
     _session_id: String,
     _path: String,

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,11 +21,13 @@ const (
 
 	maxWorkspaceEntries     = 10_000
 	maxWorkspacePreviewSize = 2 << 20
+	maxWorkspaceMediaSize   = 500 << 20
 )
 
 var (
 	ErrInvalidWorkspacePath = errors.New("invalid workspace path")
 	ErrWorkspaceEntryExists = errors.New("workspace entry already exists")
+	ErrUnsupportedMediaFile = errors.New("workspace file is not previewable media")
 )
 
 var ignoredWorkspaceDirectories = map[string]struct{}{
@@ -136,6 +140,81 @@ func (b *Service) ReadWorkspaceFile(ctx context.Context, sessionID, relativePath
 		return "", errors.New("binary file previews are not supported")
 	}
 	return string(data), nil
+}
+
+func (b *Service) ReadWorkspaceMediaFile(
+	ctx context.Context,
+	sessionID, relativePath string,
+) ([]byte, string, error) {
+	root, err := b.workspaceRoot(ctx, sessionID)
+	if err != nil {
+		return nil, "", err
+	}
+	file, err := existingWorkspaceEntry(root, relativePath)
+	if err != nil {
+		return nil, "", err
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return nil, "", err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "", errors.New("workspace entry is not a file")
+	}
+	if info.Size() > maxWorkspaceMediaSize {
+		return nil, "", errors.New("media files larger than 500 MiB cannot be previewed")
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, "", err
+	}
+	mediaType := workspaceMediaType(relativePath, data)
+	if mediaType == "" {
+		return nil, "", ErrUnsupportedMediaFile
+	}
+	return data, mediaType, nil
+}
+
+func workspaceMediaType(name string, data []byte) string {
+	detected := strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0])
+	if strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "video/") {
+		return detected
+	}
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".avif":
+		return "image/avif"
+	case ".bmp":
+		return "image/bmp"
+	case ".gif":
+		return "image/gif"
+	case ".ico":
+		return "image/x-icon"
+	case ".jpeg", ".jpg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
+	case ".webp":
+		return "image/webp"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".m4v", ".mp4":
+		return "video/mp4"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".mov":
+		return "video/quicktime"
+	case ".ogg", ".ogv":
+		return "video/ogg"
+	case ".webm":
+		return "video/webm"
+	}
+	mediaType := strings.TrimSpace(strings.Split(mime.TypeByExtension(filepath.Ext(name)), ";")[0])
+	if strings.HasPrefix(mediaType, "image/") || strings.HasPrefix(mediaType, "video/") {
+		return mediaType
+	}
+	return ""
 }
 
 func (b *Service) CreateWorkspaceEntry(

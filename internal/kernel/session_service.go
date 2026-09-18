@@ -294,6 +294,8 @@ func copyArtifactByID(
 	switch canonical.Kind {
 	case "image":
 		next, err = store.PutImage(ctx, targetID, canonical.Name, bytes.NewReader(data))
+	case "video":
+		next, err = store.PutVideo(ctx, targetID, canonical.Name, canonical.MediaType, bytes.NewReader(data))
 	case "file":
 		next, err = store.PutFile(ctx, targetID, canonical.Name, canonical.MediaType, bytes.NewReader(data))
 	default:
