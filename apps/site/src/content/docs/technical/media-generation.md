@@ -1,13 +1,40 @@
 ---
 title: 媒体生成
-description: 了解 Canvas 如何调用图片和视频模型并保存生成结果。
+description: 了解普通对话和 Canvas 如何调用图片、视频模型并保存生成结果。
 slug: docs/technical/media-generation
 ---
 
-媒体生成是 Canvas 上的显式操作。它使用独立 Image 或 Video Connection，不经过
-普通聊天 Agent Loop。
+媒体生成使用独立的 Image 或 Video Connection。它有两个入口：
 
-## 通用流程
+- 普通对话中的 Agent Tool，生成结果保存为 Session Artifact 并直接显示在消息中；
+- Canvas 上的 Generation Node，生成结果保存为 Canvas Asset。
+
+两个入口复用相同的图片和视频 Adapter、Connection Catalog 与全局默认模型。
+
+## 普通对话流程
+
+普通 Agent Loop 直接暴露三个工具：
+
+| Tool | 输入 | 模型选择 |
+|---|---|---|
+| `list_media_models` | 可选 Image/Video 类型 | 返回可用模型、Connection、Protocol 和默认标记 |
+| `generate_image` | Prompt、Aspect Ratio、Quality、可选 Model/Connection | 显式选择或自动解析 |
+| `generate_video` | Prompt、Aspect Ratio、Duration、可选 Model/Connection | 显式选择或自动解析 |
+
+工具执行时：
+
+1. 从 Tool Context 读取当前 Session；
+2. 解析显式指定的 Model/Connection，或选择默认模型；
+3. 校验 Connection 类型与模型 Generation Capability；
+4. 调用与 Canvas 相同的生成 Adapter；
+5. 把结果写入当前 Session 的 Artifact Store；
+6. 在 Tool Result 中返回 `artifact_ref`；
+7. Agent Engine 提交引用，客户端在助手消息中显示图片或视频。
+
+普通对话 v1 只支持文本生成媒体，不接受参考图片。图片和视频仍分别使用 5 分钟和
+30 分钟 Timeout。
+
+## Canvas 流程
 
 1. 客户端提交 Canvas ID、Generation Node、Output Node 和 Expected Revision。
 2. Kernel Service 校验 Document 没有并发变化。
@@ -23,7 +50,7 @@ slug: docs/technical/media-generation
 
 ## Connection 选择
 
-优先级为：
+Canvas 的 Connection 选择优先级为：
 
 1. API 请求显式 Connection；
 2. Generation Node 中的 Connection；
@@ -33,6 +60,13 @@ Model 优先使用 Generation Node 配置，缺失时使用对应默认模型。
 
 图片生成只接受 Image Connection，视频生成只接受 Video Connection。模型存在显式
 能力设置时，还必须声明对应 Generation Capability。
+
+普通对话可以传入 `model` 和 `connection_id`，但只能选择 Connection Catalog 中已导入、
+且启用了对应 Generation Capability 的模型。只指定模型名且唯一匹配时不要求
+Connection ID；同名模型存在于多个连接时必须同时指定 Connection ID。
+
+未显式指定模型时优先使用全局默认模型。如果没有默认模型但只有一个兼容模型，则自动
+使用该模型；存在多个候选时，Agent 可先调用 `list_media_models` 再选择。
 
 ## Prompt 组装
 
@@ -57,7 +91,7 @@ Image Adapter 使用 OpenAI Images 接口：
 Provider 可以返回 Base64 或下载 URL。URL 结果会由 Foya 下载，最大 100 MiB，并
 验证响应是图片。
 
-Canvas 图片生成总 Timeout 为 5 分钟。
+图片生成总 Timeout 为 5 分钟。
 
 ## 视频生成
 
@@ -73,7 +107,7 @@ Video Adapter 当前支持：
 - 成功并得到 Result URL；
 - 失败、取消或过期；
 - 调用 Context 取消；
-- 超过 Canvas 的 30 分钟 Timeout。
+- 超过 30 分钟 Timeout。
 
 Duration 接受 4 到 15 秒，其他值使用 5 秒默认值。生成视频最大下载 500 MiB。
 
@@ -103,7 +137,7 @@ Asset 写入或 Document 更新失败时，Generation 显示 Error。
 
 Image/Video Adapter 不实现普通 Agent Provider：
 
-- 不接收对话历史；
+- 即使由 Agent Tool 触发，也不接收对话历史；
 - 不接收 Tool Schema；
 - 不参与 Context Compaction；
 - 使用专门的生成请求和结果下载逻辑。
@@ -114,6 +148,7 @@ Connection Catalog 复用身份、Base URL、API Key 和 Model Settings，但运
 
 - 图片使用 OpenAI Images 兼容接口。
 - 视频仅支持 Seedance 和 MiniMax H3 两种协议。
+- 普通对话当前只支持文本生图和文生视频，不支持参考图输入。
 - 媒体生成不记录 Language Model Usage。
 - 生成 Job 不跨 Kernel 重启恢复。
 - 当前没有后台生成队列或并发配额。

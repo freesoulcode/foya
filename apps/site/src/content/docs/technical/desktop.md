@@ -161,6 +161,11 @@ Project File Explorer 的本机文件操作由 Rust Command 提供。Interactive
 则由 Go Kernel 的 Terminal Manager 创建和持有 PTY、输出 Buffer、Replay Seq 与
 进程生命周期；Rust/Tauri Command 只负责把 WebView 请求和输出流桥接到内核。
 
+工作区文本文件通过 JSON 字符串读取；图片和视频通过独立的二进制 Command 读取，
+再由 WebView 创建 Object URL 交给原生图片或视频组件预览。这条路径同时支持本机、
+SSH 和 HTTPS Kernel。工作区文件和 Session Artifact 共用媒体预览组件：图片支持
+缩放、拖拽、适应窗口和原始尺寸切换，视频支持原生控制与双击全屏。
+
 Terminal 输出通过独立 Channel 流式返回。关闭 Session 时，Go Kernel 会停止对应
 Terminal 和后台命令。
 

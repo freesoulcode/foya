@@ -373,6 +373,9 @@ func New(cfg config.Config) (*App, error) {
 	service.SetCapabilityManagers(skills, web, mcpManager)
 	service.SetPluginManager(plugins)
 	service.SetArtifactStore(artifactStore)
+	for _, mediaTool := range tool.MediaGenerationTools(service) {
+		tools.Register(mediaTool)
+	}
 	service.SetCanvasStore(canvasStore)
 	service.SetAgentManager(agents)
 	service.SetSubAgentManager(subagents)

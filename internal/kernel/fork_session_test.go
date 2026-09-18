@@ -189,6 +189,50 @@ func TestForkSessionCopiesFileArtifacts(t *testing.T) {
 	}
 }
 
+func TestForkSessionCopiesVideoArtifacts(t *testing.T) {
+	ctx := context.Background()
+	be, sourceID, _ := newQueueTestBackend(t)
+	be.mu.RLock()
+	store := be.artifacts
+	be.mu.RUnlock()
+	videoData := []byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0}
+	ref, err := store.PutVideo(ctx, sourceID, "clip.mp4", "video/mp4", bytes.NewReader(videoData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendHistoryMessage(t, be, sourceID, conversation.Message{
+		Role:        conversation.RoleAssistant,
+		Content:     "generated video",
+		Attachments: []conversation.AttachmentRef{ref},
+	})
+
+	forked, err := be.ForkSession(ctx, sourceID, ForkSessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := be.History(ctx, forked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || len(history[0].Attachments) != 1 {
+		t.Fatalf("forked history = %#v", history)
+	}
+	copied := history[0].Attachments[0]
+	if copied.ID == ref.ID || copied.Kind != "video" || copied.MediaType != "video/mp4" {
+		t.Fatalf("forked video artifact = %#v, source=%#v", copied, ref)
+	}
+	data, _, err := be.ReadArtifact(ctx, forked.ID, copied.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, videoData) {
+		t.Fatalf("forked video data = %v", data)
+	}
+	if err := be.DeleteArtifact(ctx, forked.ID, copied.ID); !errors.Is(err, artifact.ErrCommitted) {
+		t.Fatalf("delete forked video artifact error = %v", err)
+	}
+}
+
 func TestForkSessionCopiesManagedWorkspace(t *testing.T) {
 	ctx := context.Background()
 	be, sourceID, _ := newQueueTestBackend(t)

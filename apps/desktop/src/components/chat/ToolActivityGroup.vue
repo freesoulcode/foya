@@ -8,8 +8,10 @@ import {
   FilePenLineIcon,
   FilePlusIcon,
   FileTextIcon,
+  FilmIcon,
   Trash2Icon,
   GlobeIcon,
+  ImageIcon,
   ListChecksIcon,
   LoaderCircleIcon,
   MessageSquareTextIcon,
@@ -30,13 +32,20 @@ import {
   parseToolPayload,
 } from "@/lib/toolDisplay";
 import type { AttachmentRef, ToolCallView } from "@/lib/api";
+import { isImageArtifact, isVideoArtifact } from "@/lib/artifactMedia";
 import ArtifactAttachmentList from "./ArtifactAttachmentList.vue";
 import SubAgentActivity from "./SubAgentActivity.vue";
 
-const props = defineProps<{
-  sessionId: string;
-  tools: ToolCallView[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    sessionId: string;
+    tools: ToolCallView[];
+    hideMediaAttachments?: boolean;
+  }>(),
+  {
+    hideMediaAttachments: false,
+  }
+);
 const { t } = useI18n();
 
 const emit = defineEmits<{
@@ -66,6 +75,9 @@ const TOOL_META: Record<string, ToolMeta> = {
   ask_user: { icon: MessageSquareTextIcon, queued: "Waiting for your answer", running: "Waiting for your answer", done: "Received answer" },
   read_tasks: { icon: ListChecksIcon, queued: "Waiting to read tasks", running: "Reading tasks", done: "Read tasks" },
   update_tasks: { icon: ListChecksIcon, queued: "Waiting to update tasks", running: "Updating tasks", done: "Updated tasks" },
+  list_media_models: { icon: ListChecksIcon, queued: "Waiting to inspect media models", running: "Inspecting media models", done: "Inspected media models" },
+  generate_image: { icon: ImageIcon, queued: "Waiting to generate image", running: "Generating image", done: "Generated image" },
+  generate_video: { icon: FilmIcon, queued: "Waiting to generate video", running: "Generating video", done: "Generated video" },
   agent: { icon: BotIcon, queued: "Sub-agent queued", running: "Sub-agent running", done: "Sub-agent completed" },
   spawn_agent: { icon: BotIcon, queued: "Waiting to dispatch sub-agent", running: "Dispatching sub-agent", done: "Dispatched sub-agent" },
   wait_agents: { icon: BotIcon, queued: "Waiting for sub-agent", running: "Waiting for sub-agent", done: "Sub-agent returned" },
@@ -93,11 +105,15 @@ function actionSummary(tools: ToolCallView[]): string {
   let commands = 0;
   let webSearches = 0;
   let webPages = 0;
+  let imagesGenerated = 0;
+  let videosGenerated = 0;
   let agents = 0;
   let others = 0;
 
   for (const tool of tools) {
-    if (isGeneratedFileTool(tool)) {
+    if (tool.name === "generate_image") imagesGenerated++;
+    else if (tool.name === "generate_video") videosGenerated++;
+    else if (isGeneratedFileTool(tool)) {
       filesGenerated += generatedFileCount(tool);
     } else if (tool.name === "write" || tool.name === "edit" || tool.name === "delete") filesChanged++;
     else if (tool.name === "read") filesRead++;
@@ -122,6 +138,8 @@ function actionSummary(tools: ToolCallView[]): string {
   if (commands > 0) parts.push(t("Ran {count} commands", { count: commands }));
   if (webSearches > 0) parts.push(t("Searched the web {count} times", { count: webSearches }));
   if (webPages > 0) parts.push(t("Read {count} web pages", { count: webPages }));
+  if (imagesGenerated > 0) parts.push(t("Generated {count} images", { count: imagesGenerated }));
+  if (videosGenerated > 0) parts.push(t("Generated {count} videos", { count: videosGenerated }));
   if (agents > 0) parts.push(t("Dispatched {count} sub-agents", { count: agents }));
   if (others > 0) parts.push(t("Called {count} tools", { count: others }));
   return parts.join(t(", "));
@@ -181,6 +199,16 @@ function isGeneratedFileTool(tool: ToolCallView): boolean {
     !tool.diff &&
     generatedFileCount(tool) > 0
   );
+}
+
+function isMediaAttachment(attachment: AttachmentRef): boolean {
+  return isImageArtifact(attachment) || isVideoArtifact(attachment);
+}
+
+function visibleToolAttachments(tool: ToolCallView): AttachmentRef[] {
+  const attachments = tool.attachments ?? [];
+  if (!props.hideMediaAttachments) return attachments;
+  return attachments.filter((attachment) => !isMediaAttachment(attachment));
 }
 
 function toolTargetPath(tool: ToolCallView): string {
@@ -387,12 +415,12 @@ function isToolExpanded(tool: ToolCallView): boolean {
               <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/70">{{ tool.output }}</pre>
             </div>
             <div
-              v-if="tool.attachments?.length"
+              v-if="visibleToolAttachments(tool).length"
               class="mt-2"
             >
               <ArtifactAttachmentList
                 :session-id="sessionId"
-                :attachments="tool.attachments"
+                :attachments="visibleToolAttachments(tool)"
                 @open="(attachment) => emit('open-artifact', attachment)"
               />
             </div>

@@ -70,6 +70,23 @@ pub(crate) async fn read_workspace_file(
 }
 
 #[tauri::command]
+pub(crate) async fn read_workspace_media_file(
+    session_id: String,
+    path: String,
+) -> Result<Vec<u8>, String> {
+    kernel::request_bytes(
+        "GET",
+        &format!(
+            "/sessions/{session_id}/workspace/file?path={}&media=1",
+            super::encode_query_component(&path)
+        ),
+        None,
+        Vec::new(),
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn create_workspace_entry(
     session_id: String,
     path: String,

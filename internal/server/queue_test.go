@@ -34,6 +34,12 @@ func (idleProvider) Stream(context.Context, model.Request) (<-chan model.StreamE
 
 func newQueueTestServer(t *testing.T) (http.Handler, string) {
 	t.Helper()
+	handler, sessionID, _ := newQueueTestServerWithService(t)
+	return handler, sessionID
+}
+
+func newQueueTestServerWithService(t *testing.T) (http.Handler, string, *kernel.Service) {
+	t.Helper()
 	sessions := newTestSessionManager(t)
 	log := newTestStore(t)
 	bus := broker.New[conversation.Event]()
@@ -81,7 +87,7 @@ func newQueueTestServer(t *testing.T) (http.Handler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(config.Config{}, be).Handler(), sess.ID
+	return New(config.Config{}, be).Handler(), sess.ID, be
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path string, body any, dst any) int {
