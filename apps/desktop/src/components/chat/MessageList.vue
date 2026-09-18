@@ -19,6 +19,7 @@ const emit = defineEmits<{
   "update:activeTurn": [value: number];
   "rewind-message": [messageSeq: number];
   "fork-message": [messageSeq: number];
+  "side-chat-message": [messageSeq: number];
   "open-diff": [diff: string];
   "cancel-tool": [toolCallId: string];
   "background-tool": [toolCallId: string];
@@ -198,6 +199,7 @@ onBeforeUnmount(() => {
             "
             @rewind="(messageSeq) => emit('rewind-message', messageSeq)"
             @fork="(messageSeq) => emit('fork-message', messageSeq)"
+            @side-chat="(messageSeq) => emit('side-chat-message', messageSeq)"
             @open-diff="(diff) => emit('open-diff', diff)"
             @cancel-tool="(toolCallId) => emit('cancel-tool', toolCallId)"
             @background-tool="(toolCallId) => emit('background-tool', toolCallId)"

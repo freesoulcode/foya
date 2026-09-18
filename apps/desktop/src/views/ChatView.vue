@@ -46,6 +46,7 @@ const {
   keepAllFileChanges,
   undoAllFileChanges,
   toggleFileReviewForceFile,
+  forkSession,
   createSideChat,
   onOpenDiff,
   onOpenReviewFile,
@@ -93,6 +94,13 @@ function updateQuestionPanelExpanded(value: boolean) {
 
 function forkAtMessage(messageSeq: number) {
   if (!activeId.value) return;
+  void forkSession(activeId.value, messageSeq).catch((error) => {
+    console.error("Failed to fork chat from this message:", error);
+  });
+}
+
+function sideChatAtMessage(messageSeq: number) {
+  if (!activeId.value) return;
   createSideChat(activeId.value, messageSeq);
 }
 </script>
@@ -121,6 +129,7 @@ function forkAtMessage(messageSeq: number) {
         :editable="queuedMessages.length === 0"
         @rewind-message="rewindSentMessage"
         @fork-message="forkAtMessage"
+        @side-chat-message="sideChatAtMessage"
         @open-diff="onOpenDiff"
         @open-artifact="onOpenArtifact"
         @cancel-tool="cancelTool"
