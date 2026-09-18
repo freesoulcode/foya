@@ -82,8 +82,9 @@ type Message struct {
 	SkillRef             string           `json:"skill_ref,omitempty"`
 	Attachments          []AttachmentRef  `json:"attachments,omitempty"`
 	BrowserElements      []BrowserElement `json:"browser_elements,omitempty"`
-	EventSeq             uint64           `json:"event_seq,omitempty"` // Stable projection ID; not sent to the model.
-	Reasoning            string           `json:"reasoning,omitempty"` // Display-only assistant reasoning.
+	EventSeq             uint64           `json:"event_seq,omitempty"`  // Stable projection ID; not sent to the model.
+	CreatedAt            *time.Time       `json:"created_at,omitempty"` // Event time used by clients; not sent to the model.
+	Reasoning            string           `json:"reasoning,omitempty"`  // Display-only assistant reasoning.
 	ToolCalls            []ToolCall       `json:"tool_calls,omitempty"`
 	ToolCallID           string           `json:"tool_call_id,omitempty"`
 	Diff                 string           `json:"diff,omitempty"` // Display-only file diff for tool results.

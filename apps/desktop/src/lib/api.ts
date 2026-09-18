@@ -502,6 +502,7 @@ export interface ChatMessage {
   attachments?: AttachmentRef[];
   browser_elements?: BrowserElementSelection[];
   event_seq?: number;
+  created_at?: string;
   reasoning?: string;
   tool_calls?: ToolCallView[];
   // Ordered assistant segments take precedence over legacy flat fields.

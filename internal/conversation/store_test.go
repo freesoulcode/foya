@@ -119,6 +119,26 @@ func TestStorePersistsTypedEventsAndUsageProjection(t *testing.T) {
 	}
 }
 
+func TestStoreHistoryUsesMessageEventTime(t *testing.T) {
+	store := newTestStore(t)
+	occurredAt := time.Date(2026, time.September, 18, 9, 30, 0, 0, time.UTC)
+	appendStoreEvent(t, store, Event{
+		Kind:    KindMessageEnd,
+		Session: "session-1",
+		Time:    occurredAt,
+		Payload: Message{Role: RoleUser, Content: "hello"},
+	})
+
+	history, err := store.History(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].CreatedAt == nil ||
+		!history[0].CreatedAt.Equal(occurredAt) {
+		t.Fatalf("history timestamp = %#v, want %s", history, occurredAt)
+	}
+}
+
 func TestStorePersistsOnlyAttachmentReferences(t *testing.T) {
 	db, err := storage.Open(t.TempDir())
 	if err != nil {

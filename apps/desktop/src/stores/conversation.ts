@@ -216,7 +216,7 @@ function handleEvent(sessionId: string, data: string) {
         let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
         // Recreate the optimistic bubble when it is missing after a reload.
-        bucket.push({ role: "assistant", content: "" });
+        bucket.push({ role: "assistant", content: "", created_at: ev.time });
         idx = bucket.length - 1;
           setStreamingIndex(sessionId, idx);
       }
@@ -232,7 +232,7 @@ function handleEvent(sessionId: string, data: string) {
       const delta = ev.payload as string;
         let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
-        bucket.push({ role: "assistant", content: "" });
+        bucket.push({ role: "assistant", content: "", created_at: ev.time });
         idx = bucket.length - 1;
           setStreamingIndex(sessionId, idx);
       }
@@ -243,7 +243,12 @@ function handleEvent(sessionId: string, data: string) {
     }
     case "message_end":
     case "message_imported": {
-      const m = { ...(ev.payload as ChatMessage), event_seq: ev.seq };
+      const payload = ev.payload as ChatMessage;
+      const m = {
+        ...payload,
+        event_seq: ev.seq,
+        created_at: payload.created_at ?? ev.time,
+      };
       // Kernel events project user messages to every connected client.
       if (m.role === "user") {
         bucket.push(m);
@@ -252,6 +257,7 @@ function handleEvent(sessionId: string, data: string) {
         const idx = getStreamingIndex(sessionId);
       if (m.role === "assistant" && idx >= 0) {
         bucket[idx].event_seq = m.event_seq;
+        bucket[idx].created_at = m.created_at;
         // Prefer accumulated deltas and use the final payload as a fallback.
         if (!bucket[idx].content && m.content) {
           bucket[idx].content = m.content;
@@ -279,6 +285,8 @@ function handleEvent(sessionId: string, data: string) {
         if (!m.tool_calls) {
             setStreamingIndex(sessionId, -1);
         }
+      } else if (m.role === "tool" && idx >= 0) {
+        bucket[idx].created_at = m.created_at;
       }
       // Tool results are rendered from tool_end events.
       break;
@@ -460,11 +468,16 @@ function handleEvent(sessionId: string, data: string) {
       runningSessions.value[sessionId] = true;
         let idx = getStreamingIndex(sessionId);
       if (idx < 0) {
-        bucket.push({ role: "assistant", content: "" });
+        bucket.push({
+          role: "assistant",
+          content: "",
+          created_at: p?.started_at ?? ev.time,
+        });
         idx = bucket.length - 1;
           setStreamingIndex(sessionId, idx);
       }
       bucket[idx].turn_started_at = p?.started_at ?? ev.time;
+      bucket[idx].created_at ??= p?.started_at ?? ev.time;
       if (sessionId === activeId.value) streaming.value = true;
       break;
     }
@@ -483,12 +496,14 @@ function handleEvent(sessionId: string, data: string) {
       if (idx >= 0) {
         bucket[idx].turn_started_at ??= p?.started_at ?? ev.time;
         bucket[idx].turn_completed_at = p?.completed_at ?? ev.time;
+        bucket[idx].created_at = p?.completed_at ?? ev.time;
         if (p?.status) bucket[idx].turn_status = p.status;
         if (p?.reason) bucket[idx].turn_reason = p.reason;
       } else if (p?.status === "cancelled") {
         bucket.push({
           role: "assistant",
           content: "",
+          created_at: p.completed_at ?? ev.time,
           turn_started_at: p.started_at ?? ev.time,
           turn_completed_at: p.completed_at ?? ev.time,
           turn_status: p.status,
@@ -575,9 +590,15 @@ function handleEvent(sessionId: string, data: string) {
       if (idx >= 0) {
         bucket[idx].content = text;
         bucket[idx].error = true;
+        bucket[idx].created_at = ev.time;
           setStreamingIndex(sessionId, -1);
       } else {
-        bucket.push({ role: "assistant", content: text, error: true });
+        bucket.push({
+          role: "assistant",
+          content: text,
+          created_at: ev.time,
+          error: true,
+        });
       }
       if (sessionId === activeId.value) streaming.value = false;
       break;
@@ -672,12 +693,14 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
           role: "assistant",
           content: "",
           event_seq: m.event_seq,
+          created_at: m.created_at,
           segments: [],
           tool_calls: [],
         };
         out.push(cur);
       }
       cur.event_seq = m.event_seq;
+      if (m.created_at) cur.created_at = m.created_at;
       const segs = cur.segments!;
       if (m.reasoning) segs.push({ kind: "reasoning", text: m.reasoning });
       if (m.content) {
@@ -701,6 +724,7 @@ function normalizeHistory(history: ChatMessage[]): ChatMessage[] {
       // Fill the matching tool segment using tool_call_id.
       if (cur) {
         if (m.event_seq) cur.event_seq = m.event_seq;
+        if (m.created_at) cur.created_at = m.created_at;
         const seg = cur.segments!.find(
             (s) => s.kind === "tool" && s.tool.id === m.tool_call_id,
         );
@@ -990,6 +1014,7 @@ async function send(
           content: translate("Compaction failed: {error}", {
             error: String(e),
           }),
+        created_at: new Date().toISOString(),
         error: true,
       });
     }
@@ -1026,6 +1051,7 @@ async function send(
       messagesBySession.value[id].push({
         role: "assistant",
         content: translate("Send failed: {error}", { error: String(e) }),
+        created_at: new Date().toISOString(),
         error: true,
       });
     } else {
