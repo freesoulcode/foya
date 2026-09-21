@@ -1,0 +1,19 @@
+{
+  "task_stopped": "已停止当前任务。",
+  "no_task_to_stop": "当前没有可停止的任务。",
+  "queue_full": "消息队列已满，请稍后重试。",
+  "new_chat": "已开启新会话。",
+  "conversation_unbound": "当前聊天尚未连接。发送 /new 创建 Foya 会话，或发送 Foya 中显示的 /bind 配对码。",
+  "pairing_usage": "请发送 /bind 配对码来连接当前聊天。",
+  "pairing_failed": "配对码无效或已过期。",
+  "pairing_complete": "当前聊天已连接到 Foya。",
+  "unsupported_message": "暂时只支持文本和图片消息。",
+  "empty_response": "任务已结束，但没有生成文本回复。",
+  "unsupported_attachment": "暂时不支持 %s 类型的附件。",
+  "download_image_failed": "下载图片失败：%v",
+  "import_image_failed": "导入图片失败：%v",
+  "request_failed": "请求失败：%v",
+  "app_description": "通过 Foya 桌面端运行的飞书智能助手",
+  "missing_credentials": "飞书未返回应用凭证",
+  "unsupported_account": "当前仅支持飞书账号"
+}

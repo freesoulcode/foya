@@ -67,6 +67,7 @@ for (const file of sourceFiles) {
   const allowsChinese =
     file === localeFile ||
     file === join(repositoryRoot, "internal/channel/feishu/messages.go") ||
+    file === join(repositoryRoot, "internal/channel/telegram/messages.go") ||
     file.endsWith("_test.go");
   if (!allowsChinese && /[\u3400-\u9fff]/u.test(source)) {
     unexpectedChinese.push(relative(repositoryRoot, file));

@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	foyachannel "github.com/freesoulcode/foya/internal/channel"
 	interaction "github.com/freesoulcode/foya/internal/interaction"
+	"github.com/freesoulcode/foya/internal/testkit"
 )
 
 func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
@@ -16,20 +18,24 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	defer cancel()
 	dataDir := t.TempDir()
 	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
 	var channels []*managedChannel
 	factory := func(_, _ string) Channel {
 		channel := &managedChannel{fakeChannel: fakeChannel{}}
 		channels = append(channels, channel)
 		return channel
 	}
-	manager, err := newManager(ctx, dataDir, runtime, log.Default(), factory, false)
+	pairings := foyachannel.NewConversationPairingStore(bindings, runtime)
+	manager, err := newManager(
+		ctx, dataDir, runtime, bindings, pairings, log.Default(), factory, false,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
 
 	state, err := manager.Create(UpdateInput{
-		Name:         "飞书 Bot",
+		Name:         "Feishu Bot",
 		Locale:       "en-US",
 		Enabled:      true,
 		AppID:        "cli_test",
@@ -55,12 +61,12 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if len(persisted.Bots) != 1 || persisted.Bots[0].AppSecret != "secret" {
-		t.Fatalf("persisted bots = %#v", persisted.Bots)
+	if len(persisted.Channels) != 1 || persisted.Channels[0].AppSecret != "secret" {
+		t.Fatalf("persisted channels = %#v", persisted.Channels)
 	}
 
 	state, err = manager.Update(state.ID, UpdateInput{
-		Name:         "更新后的 Bot",
+		Name:         "Updated Bot",
 		Locale:       "en-US",
 		Enabled:      true,
 		AppID:        "cli_updated",
@@ -70,7 +76,7 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.HasAppSecret || state.AppID != "cli_updated" || state.Name != "更新后的 Bot" {
+	if !state.HasAppSecret || state.AppID != "cli_updated" || state.Name != "Updated Bot" {
 		t.Fatalf("updated state = %#v", state)
 	}
 	if len(channels) != 2 {
@@ -78,7 +84,9 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	}
 
 	manager.Close()
-	reloaded, err := newManager(ctx, dataDir, runtime, log.Default(), factory, true)
+	reloaded, err := newManager(
+		ctx, dataDir, runtime, bindings, pairings, log.Default(), factory, true,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,11 +103,15 @@ func TestManagerPersistsRedactsAndRestartsSettings(t *testing.T) {
 	}
 }
 
-func TestManagerRejectsIncompleteEnabledSettings(t *testing.T) {
+func TestManagerAllowsPairingOnlyAccess(t *testing.T) {
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
 	manager, err := newManager(
 		context.Background(),
 		t.TempDir(),
-		newFakeBackend(),
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
 		log.Default(),
 		func(_, _ string) Channel { return &managedChannel{} },
 		false,
@@ -110,13 +122,98 @@ func TestManagerRejectsIncompleteEnabledSettings(t *testing.T) {
 	defer manager.Close()
 
 	if _, err := manager.Create(UpdateInput{
-		Name:         "飞书 Bot",
+		Name:         "Feishu Bot",
 		Enabled:      true,
 		AppID:        "cli_test",
 		AppSecret:    "secret",
 		ApprovalMode: interaction.ModeAuto,
-	}); err == nil {
-		t.Fatal("enabled bot accepted an empty access policy")
+	}); err != nil {
+		t.Fatalf("pairing-only channel failed: %v", err)
+	}
+}
+
+func TestManagerDeletesChannelConversations(t *testing.T) {
+	db := testkit.OpenDatabase(t)
+	bindings := foyachannel.NewConversationBindingStore(db)
+	runtime := newFakeBackend()
+	manager, err := newManager(
+		context.Background(),
+		t.TempDir(),
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
+		log.Default(),
+		func(_, _ string) Channel { return &managedChannel{} },
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	state, err := manager.Create(UpdateInput{Name: "Feishu", ApprovalMode: interaction.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bindings.Observe(
+		context.Background(),
+		state.ID,
+		"chat:oc_1",
+		"group",
+		"oc_1",
+		"Release group",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindings.Bind(
+		context.Background(),
+		state.ID,
+		"chat:oc_1",
+		"session-a",
+	); err != nil {
+		t.Fatal(err)
+	}
+	items, err := bindings.List(context.Background(), state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ActiveSessionID != "session-a" {
+		t.Fatalf("conversations = %#v", items)
+	}
+	if err := manager.Delete(state.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err = bindings.List(context.Background(), state.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("deleted channel conversations = %#v", items)
+	}
+}
+
+func TestManagerRejectsVersionOneCatalog(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dataDir, "feishu-channels.json"),
+		[]byte(`{"version":1,"bots":[]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
+	_, err := newManager(
+		context.Background(),
+		dataDir,
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
+		log.Default(),
+		func(_, _ string) Channel { return &managedChannel{} },
+		false,
+	)
+	if err == nil {
+		t.Fatal("version 1 channel catalog was accepted")
 	}
 }
 

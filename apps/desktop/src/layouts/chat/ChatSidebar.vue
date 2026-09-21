@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   ChevronRightIcon,
@@ -47,6 +47,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ProjectInfo, Session } from "@/lib/api";
+import ChannelBindingButton from "@/components/chat/ChannelBindingButton.vue";
 import SessionSidebarItem from "@/components/chat/SessionSidebarItem.vue";
 import {
   buildChatSidebarGroups,
@@ -105,11 +106,21 @@ function title(s: Session) {
 const pendingDelete = ref<Session | null>(null);
 const pendingProjectDelete = ref<ProjectGroup | null>(null);
 const pendingProjectRename = ref<ProjectInfo | null>(null);
+const pendingChannelSession = ref<Session | null>(null);
+const channelBinding = ref<InstanceType<typeof ChannelBindingButton> | null>(
+  null
+);
 const projectRename = ref("");
 
 function onDelete(s: Session) {
   pendingDelete.value = s;
   emit("delete-dialog-change", true);
+}
+
+async function openChannelBinding(session: Session) {
+  pendingChannelSession.value = session;
+  await nextTick();
+  await channelBinding.value?.open();
 }
 
 function confirmDelete() {
@@ -301,6 +312,7 @@ function sectionIsCollapsed(section: SidebarSection): boolean {
                   @rename="(id, value) => emit('rename', id, value)"
                   @pin="(id, value) => emit('pin', id, value)"
                   @fork="(item) => emit('fork', item.id)"
+                  @connect="openChannelBinding"
                   @delete="onDelete"
                 />
               </SidebarMenu>
@@ -350,6 +362,7 @@ function sectionIsCollapsed(section: SidebarSection): boolean {
                   @rename="(id, value) => emit('rename', id, value)"
                   @pin="(id, value) => emit('pin', id, value)"
                   @fork="(item) => emit('fork', item.id)"
+                  @connect="openChannelBinding"
                   @delete="onDelete"
                 />
               </SidebarMenu>
@@ -497,6 +510,7 @@ function sectionIsCollapsed(section: SidebarSection): boolean {
                       @rename="(id, value) => emit('rename', id, value)"
                       @pin="(id, value) => emit('pin', id, value)"
                       @fork="(item) => emit('fork', item.id)"
+                      @connect="openChannelBinding"
                       @delete="onDelete"
                     />
                   </SidebarMenu>
@@ -527,6 +541,13 @@ function sectionIsCollapsed(section: SidebarSection): boolean {
       </SidebarMenu>
     </SidebarFooter>
   </Sidebar>
+
+  <ChannelBindingButton
+    v-if="pendingChannelSession"
+    ref="channelBinding"
+    :session="pendingChannelSession"
+    :show-trigger="false"
+  />
 
   <Dialog
     :open="pendingDelete !== null"

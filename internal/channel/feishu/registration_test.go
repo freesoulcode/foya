@@ -8,15 +8,21 @@ import (
 	"testing"
 	"time"
 
+	foyachannel "github.com/freesoulcode/foya/internal/channel"
 	interaction "github.com/freesoulcode/foya/internal/interaction"
+	"github.com/freesoulcode/foya/internal/testkit"
 	larkregistration "github.com/larksuite/oapi-sdk-go/v3/scene/registration"
 )
 
 func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
 	manager, err := newManager(
 		context.Background(),
 		t.TempDir(),
-		newFakeBackend(),
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
 		log.Default(),
 		func(_, _ string) Channel { return &managedChannel{} },
 		false,
@@ -32,11 +38,11 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 		ctx context.Context,
 		options *larkregistration.Options,
 	) (*larkregistration.RegisterAppResult, error) {
-		if !options.CreateOnly || options.Addons == nil ||
+		if options.CreateOnly || options.Addons == nil ||
 			options.Addons.Preset == nil || *options.Addons.Preset {
 			t.Errorf("registration options = %#v", options)
 		}
-		if options.AppPreset == nil || options.AppPreset.Name != "扫码 Bot" {
+		if options.AppPreset == nil || options.AppPreset.Name != "Existing Bot" {
 			t.Errorf("app preset = %#v", options.AppPreset)
 		}
 		if options.AppPreset.Desc != "A Feishu assistant powered by the Foya desktop app" {
@@ -63,7 +69,7 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 	}
 
 	started, err := manager.StartRegistration(RegistrationInput{
-		Name:         "扫码 Bot",
+		Name:         "Existing Bot",
 		Locale:       "en-US",
 		ApprovalMode: interaction.ModeAuto,
 	})
@@ -101,10 +107,14 @@ func TestRegistrationCreatesEnabledChannelWithoutExposingSecret(t *testing.T) {
 }
 
 func TestRegistrationCanBeCancelled(t *testing.T) {
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
 	manager, err := newManager(
 		context.Background(),
 		t.TempDir(),
-		newFakeBackend(),
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
 		log.Default(),
 		func(_, _ string) Channel { return &managedChannel{} },
 		false,
@@ -128,7 +138,7 @@ func TestRegistrationCanBeCancelled(t *testing.T) {
 		return nil, ctx.Err()
 	}
 
-	started, err := manager.StartRegistration(RegistrationInput{})
+	started, err := manager.StartRegistration(RegistrationInput{ApprovalMode: interaction.ModeAuto})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +149,79 @@ func TestRegistrationCanBeCancelled(t *testing.T) {
 	cancelled := waitForRegistrationStatus(t, manager, started.ID, RegistrationCancelled)
 	if cancelled.Channel != nil || cancelled.Error != "" {
 		t.Fatalf("cancelled registration = %#v", cancelled)
+	}
+}
+
+func TestRegistrationReusesExistingAppChannel(t *testing.T) {
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
+	manager, err := newManager(
+		context.Background(),
+		t.TempDir(),
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
+		log.Default(),
+		func(_, _ string) Channel { return &managedChannel{} },
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	existing, err := manager.Create(UpdateInput{
+		Name:         "Existing Bot",
+		Enabled:      false,
+		AppID:        "cli_existing",
+		AppSecret:    "old-secret",
+		ApprovalMode: interaction.ModeAuto,
+		AllowedUsers: []string{"ou_existing"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.registerApp = func(
+		context.Context,
+		*larkregistration.Options,
+	) (*larkregistration.RegisterAppResult, error) {
+		return &larkregistration.RegisterAppResult{
+			ClientID:     "cli_existing",
+			ClientSecret: "new-secret",
+			UserInfo: &larkregistration.UserInfo{
+				OpenID:      "ou_scanner",
+				TenantBrand: "feishu",
+			},
+		}, nil
+	}
+
+	started, err := manager.StartRegistration(RegistrationInput{
+		Name:         "Ignored Name",
+		Locale:       "en-US",
+		ApprovalMode: interaction.ModeAuto,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := waitForRegistrationStatus(
+		t,
+		manager,
+		started.ID,
+		RegistrationCompleted,
+	)
+	if completed.Channel == nil || completed.Channel.ID != existing.ID {
+		t.Fatalf("completed registration = %#v", completed)
+	}
+	items := manager.List()
+	if len(items) != 1 || !items[0].Enabled ||
+		len(items[0].AllowedUsers) != 2 {
+		t.Fatalf("channels = %#v", items)
+	}
+	manager.mu.RLock()
+	secret := manager.settings[existing.ID].AppSecret
+	manager.mu.RUnlock()
+	if secret != "new-secret" {
+		t.Fatalf("persisted secret was not refreshed")
 	}
 }
 

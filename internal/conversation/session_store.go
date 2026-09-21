@@ -222,11 +222,23 @@ func (m *manager) SetPinned(id string, pinned bool) (*Session, error) {
 }
 
 func (m *manager) Delete(id string) error {
-	result, err := m.db.ExecContext(
-		context.Background(),
-		`DELETE FROM sessions WHERE id = ?`,
+	ctx := context.Background()
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin session delete: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE channel_conversations
+		 SET active_session_id = '', updated_at_ns = ?
+		 WHERE active_session_id = ?`,
+		time.Now().UnixNano(),
 		id,
-	)
+	); err != nil {
+		return fmt.Errorf("unbind deleted session from channel conversation: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -236,6 +248,9 @@ func (m *manager) Delete(id string) error {
 	}
 	if affected == 0 {
 		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit session delete: %w", err)
 	}
 	return nil
 }

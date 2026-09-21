@@ -69,13 +69,6 @@ const settingsRoutes: RouteRecordRaw[] = [
     meta: { settingsSection: "web-search" },
   },
   {
-    path: "channels",
-    name: RouteName.settingsChannels,
-    component: () => import("@/views/settings/ChannelsView.vue"),
-    meta: { settingsSection: "channels" },
-  },
-  { path: "feishu-bot", redirect: { name: RouteName.settingsChannels } },
-  {
     path: "agents",
     name: RouteName.settingsAgents,
     component: () => import("@/views/settings/AgentsView.vue"),

@@ -137,7 +137,7 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 	minimalPreset := false
 	options := &larkregistration.Options{
 		Source:     "foya",
-		CreateOnly: true,
+		CreateOnly: false,
 		AppPreset: &larkregistration.AppPreset{
 			Name: input.Name,
 			Desc: localizedMessage(input.Locale, "app_description"),
@@ -214,11 +214,10 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 		input.AllowedUsers = append(input.AllowedUsers, result.UserInfo.OpenID)
 	}
 	input.AllowedUsers = cleanIDs(input.AllowedUsers)
-	enabled := input.AllowAll || len(input.AllowedUsers) > 0 || len(input.AllowedChats) > 0
-	channel, createErr := m.Create(UpdateInput{
+	update := UpdateInput{
 		Name:         input.Name,
 		Locale:       input.Locale,
-		Enabled:      enabled,
+		Enabled:      true,
 		AppID:        result.ClientID,
 		AppSecret:    result.ClientSecret,
 		ConnectionID: input.ConnectionID,
@@ -228,7 +227,22 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 		AllowedUsers: input.AllowedUsers,
 		AllowedChats: input.AllowedChats,
 		AllowAll:     input.AllowAll,
-	})
+	}
+	var channel State
+	var createErr error
+	if existing, exists := m.settingsForAppID(result.ClientID); exists {
+		update.Name = existing.Name
+		update.AllowedUsers = cleanIDs(
+			append(existing.AllowedUsers, update.AllowedUsers...),
+		)
+		update.AllowedChats = cleanIDs(
+			append(existing.AllowedChats, update.AllowedChats...),
+		)
+		update.AllowAll = existing.AllowAll || update.AllowAll
+		channel, createErr = m.Update(existing.ID, update)
+	} else {
+		channel, createErr = m.Create(update)
+	}
 	if createErr != nil && channel.ID == "" {
 		m.finishRegistrationError(id, createErr)
 		return
@@ -248,6 +262,18 @@ func (m *Manager) runRegistration(ctx context.Context, id string, input Registra
 	}
 	run.cancel = nil
 	run.updatedAt = time.Now()
+}
+
+func (m *Manager) settingsForAppID(appID string) (Settings, bool) {
+	appID = strings.TrimSpace(appID)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.order {
+		if m.settings[id].AppID == appID {
+			return m.settings[id], true
+		}
+	}
+	return Settings{}, false
 }
 
 func (m *Manager) finishRegistrationError(id string, cause error) {
@@ -300,7 +326,7 @@ func registrationFinished(status RegistrationStatus) bool {
 func normalizeRegistrationInput(input RegistrationInput) RegistrationInput {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
-		input.Name = "Feishu Bot"
+		input.Name = "Feishu"
 	}
 	input.ConnectionID = strings.TrimSpace(input.ConnectionID)
 	input.Model = strings.TrimSpace(input.Model)

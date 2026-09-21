@@ -177,6 +177,14 @@ func TestManagerDeleteIsDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO channel_conversations(
+			channel_id, conversation_key, kind, external_id, active_session_id,
+			last_seen_at_ns, updated_at_ns
+		) VALUES ('feishu-1', 'chat:oc_1', 'group', 'oc_1', ?, 1, 1)
+	`, created.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.Delete(created.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -185,5 +193,16 @@ func TestManagerDeleteIsDurable(t *testing.T) {
 	}
 	if err := manager.Delete(created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete error = %v", err)
+	}
+	var activeSessionID string
+	if err := db.QueryRow(`
+		SELECT active_session_id
+		FROM channel_conversations
+		WHERE channel_id = 'feishu-1' AND conversation_key = 'chat:oc_1'
+	`).Scan(&activeSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if activeSessionID != "" {
+		t.Fatalf("deleted session remains bound as %q", activeSessionID)
 	}
 }

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/freesoulcode/foya/internal/channel/feishu"
+	"github.com/freesoulcode/foya/internal/channelhub"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	conversation "github.com/freesoulcode/foya/internal/conversation"
@@ -385,8 +385,9 @@ func runBot(args []string) {
 	}
 	defer app.Close()
 
-	channelInput := feishu.UpdateInput{
-		Name:         "Feishu Bot",
+	channelInput := channelhub.UpdateInput{
+		Kind:         channelhub.KindFeishu,
+		Name:         "Feishu",
 		Enabled:      true,
 		ConnectionID: *connectionID,
 		Model:        *model,
@@ -399,10 +400,17 @@ func runBot(args []string) {
 		AppSecret:    *appSecret,
 	}
 	var updateErr error
-	if channels := app.Channels().List(); len(channels) > 0 {
-		_, updateErr = app.Channels().Update(channels[0].ID, channelInput)
-	} else {
+	var existingID string
+	for _, item := range app.Channels().List() {
+		if item.Kind == channelhub.KindFeishu {
+			existingID = item.ID
+			break
+		}
+	}
+	if existingID == "" {
 		_, updateErr = app.Channels().Create(channelInput)
+	} else {
+		_, updateErr = app.Channels().Update(existingID, channelInput)
 	}
 	if updateErr != nil {
 		fatal(updateErr)

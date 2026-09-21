@@ -15,7 +15,8 @@ import (
 	"github.com/freesoulcode/foya/internal/broker"
 	"github.com/freesoulcode/foya/internal/browseruse"
 	canvas "github.com/freesoulcode/foya/internal/canvas"
-	"github.com/freesoulcode/foya/internal/channel/feishu"
+	"github.com/freesoulcode/foya/internal/channel"
+	"github.com/freesoulcode/foya/internal/channelhub"
 	"github.com/freesoulcode/foya/internal/config"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	conversation "github.com/freesoulcode/foya/internal/conversation"
@@ -50,7 +51,7 @@ type App struct {
 	mcp          *mcpclient.Manager
 	memory       *memorymaint.Manager
 	browser      *browseruse.Controller
-	channels     *feishu.Manager
+	channels     *channelhub.Manager
 	automations  *automation.Manager
 	telemetry    *foyatelemetry.Provider
 	database     *storage.Database
@@ -392,10 +393,11 @@ func New(cfg config.Config) (*App, error) {
 	}
 	engine.SetWorkflowCompletionHandler(service.CompleteWorkflow)
 	appCtx, cancel := context.WithCancel(context.Background())
-	feishuManager, err := feishu.NewManager(
+	channelManager, err := channelhub.NewManager(
 		appCtx,
 		cfg.DataDir,
 		service,
+		channel.NewConversationBindingStore(database),
 		nil,
 		!cfg.DisableExternalIntegrations,
 	)
@@ -410,7 +412,7 @@ func New(cfg config.Config) (*App, error) {
 		!cfg.DisableExternalIntegrations,
 	)
 	if err != nil {
-		feishuManager.Close()
+		channelManager.Close()
 		cancel()
 		return nil, err
 	}
@@ -423,7 +425,7 @@ func New(cfg config.Config) (*App, error) {
 	)
 	if err != nil {
 		automationManager.Close()
-		feishuManager.Close()
+		channelManager.Close()
 		cancel()
 		return nil, err
 	}
@@ -433,7 +435,7 @@ func New(cfg config.Config) (*App, error) {
 	app := &App{
 		cfg: cfg, service: service, cancel: cancel, mcp: mcpManager,
 		memory: memoryManager, browser: browserController,
-		channels: feishuManager, automations: automationManager,
+		channels: channelManager, automations: automationManager,
 		telemetry: telemetryProvider,
 		database:  database, instanceLock: instanceLock,
 	}
@@ -481,7 +483,7 @@ func (a *App) Service() *Service { return a.service }
 // Config returns kernel configuration.
 func (a *App) Config() config.Config { return a.cfg }
 
-func (a *App) Channels() *feishu.Manager { return a.channels }
+func (a *App) Channels() *channelhub.Manager { return a.channels }
 
 func (a *App) Automations() *automation.Manager { return a.automations }
 

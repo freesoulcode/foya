@@ -112,20 +112,64 @@ pub(crate) async fn update_agent_limits(limits: serde_json::Value) -> Result<Str
 }
 
 #[tauri::command]
-pub(crate) async fn get_feishu_bot_settings() -> Result<String, String> {
-    kernel::request("GET", "/settings/feishu-bot", None).await
-}
-
-#[tauri::command]
-pub(crate) async fn update_feishu_bot_settings(
-    settings: serde_json::Value,
-) -> Result<String, String> {
-    kernel::request("PUT", "/settings/feishu-bot", Some(&settings.to_string())).await
-}
-
-#[tauri::command]
 pub(crate) async fn list_channels() -> Result<String, String> {
     kernel::request("GET", "/channels", None).await
+}
+
+#[tauri::command]
+pub(crate) async fn get_session_channel_binding(session_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/sessions/{session_id}/channel-binding"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn start_session_channel_pairing(
+    session_id: String,
+    channel_id: String,
+) -> Result<String, String> {
+    let input = serde_json::json!({ "channel_id": channel_id });
+    kernel::request(
+        "POST",
+        &format!("/sessions/{session_id}/channel-pairings"),
+        Some(&input.to_string()),
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn get_channel_pairing(pairing_id: String) -> Result<String, String> {
+    kernel::request(
+        "GET",
+        &format!("/channel-pairings/{}", encode_query_component(&pairing_id)),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_channel_pairing(pairing_id: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/channel-pairings/{}", encode_query_component(&pairing_id)),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub(crate) async fn unbind_session_channel(session_id: String) -> Result<(), String> {
+    kernel::request(
+        "DELETE",
+        &format!("/sessions/{session_id}/channel-binding"),
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 #[tauri::command]

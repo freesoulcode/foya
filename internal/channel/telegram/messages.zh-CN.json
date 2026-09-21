@@ -1,0 +1,13 @@
+{
+  "task_stopped": "已停止当前任务。",
+  "no_task_to_stop": "当前没有可停止的任务。",
+  "queue_full": "消息队列已满，请稍后重试。",
+  "new_chat": "已开启新会话。",
+  "conversation_unbound": "当前聊天尚未连接。发送 /new 创建 Foya 会话，或发送 Foya 中显示的 /bind 配对码。",
+  "pairing_usage": "请发送 /bind 配对码来连接当前聊天。",
+  "pairing_failed": "配对码无效或已过期。",
+  "pairing_complete": "当前聊天已连接到 Foya。",
+  "unsupported_message": "暂时只支持文本消息。",
+  "empty_response": "任务已结束，但没有生成文本回复。",
+  "request_failed": "请求失败：%v"
+}

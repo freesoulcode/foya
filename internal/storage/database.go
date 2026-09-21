@@ -171,6 +171,22 @@ CREATE INDEX IF NOT EXISTS sessions_parent_idx
 CREATE INDEX IF NOT EXISTS sessions_updated_idx
     ON sessions(updated_at_ns DESC);
 
+CREATE TABLE IF NOT EXISTS channel_conversations (
+    channel_id TEXT NOT NULL,
+    conversation_key TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    active_session_id TEXT NOT NULL DEFAULT '',
+    last_seen_at_ns INTEGER NOT NULL,
+    updated_at_ns INTEGER NOT NULL,
+    PRIMARY KEY(channel_id, conversation_key)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS channel_conversations_session_idx
+    ON channel_conversations(active_session_id)
+    WHERE active_session_id != '';
+
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,

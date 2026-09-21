@@ -17,7 +17,6 @@ export const RouteName = {
   settingsHooks: "settings-hooks",
   settingsMcp: "settings-mcp",
   settingsWebSearch: "settings-web-search",
-  settingsChannels: "settings-channels",
   settingsAgents: "settings-agents",
   settingsUsage: "settings-usage",
   settingsAppearance: "settings-appearance",
@@ -34,7 +33,6 @@ export type SettingsSection =
   | "hooks"
   | "mcp"
   | "web-search"
-  | "channels"
   | "agents"
   | "usage"
   | "appearance";
@@ -50,7 +48,6 @@ const settingsRouteBySection: Record<SettingsSection, string> = {
   hooks: RouteName.settingsHooks,
   mcp: RouteName.settingsMcp,
   "web-search": RouteName.settingsWebSearch,
-  channels: RouteName.settingsChannels,
   agents: RouteName.settingsAgents,
   usage: RouteName.settingsUsage,
   appearance: RouteName.settingsAppearance,

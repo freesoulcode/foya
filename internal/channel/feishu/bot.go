@@ -19,44 +19,57 @@ import (
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
 
-const workerQueueSize = 32
 const acknowledgementReaction = "OK"
 
 type Config struct {
+	ChannelID    string
 	ConnectionID string
 	Model        string
 	ProjectID    string
 	ApprovalMode interaction.Mode
 	Locale       string
-	SessionPath  string
 	AllowedUsers []string
 	AllowedChats []string
 	AllowAll     bool
 }
 
 type Bot struct {
-	config  Config
-	backend foyachannel.Runtime
-	channel Channel
-	store   *foyachannel.SessionStore
-	logger  *log.Logger
+	config   Config
+	backend  foyachannel.Runtime
+	channel  Channel
+	store    *foyachannel.ConversationBindingStore
+	pairings *foyachannel.ConversationPairingStore
+	logger   *log.Logger
+	core     *foyachannel.ChannelCore
 
 	mu      sync.Mutex
 	runCtx  context.Context
 	started bool
-	workers map[string]chan *types.NormalizedMessage
 	wg      sync.WaitGroup
 }
 
-func New(config Config, runtime foyachannel.Runtime, channel Channel, logger *log.Logger) (*Bot, error) {
+func New(
+	config Config,
+	runtime foyachannel.Runtime,
+	store *foyachannel.ConversationBindingStore,
+	pairings *foyachannel.ConversationPairingStore,
+	channel Channel,
+	logger *log.Logger,
+) (*Bot, error) {
 	if runtime == nil {
 		return nil, errors.New("Feishu bot backend is required")
+	}
+	if store == nil {
+		return nil, errors.New("Feishu conversation binding store is required")
+	}
+	if pairings == nil {
+		return nil, errors.New("Feishu conversation pairing store is required")
 	}
 	if channel == nil {
 		return nil, errors.New("Feishu channel is required")
 	}
-	if config.SessionPath == "" {
-		return nil, errors.New("Feishu session path is required")
+	if strings.TrimSpace(config.ChannelID) == "" {
+		return nil, errors.New("Feishu channel ID is required")
 	}
 	if config.ApprovalMode == "" {
 		config.ApprovalMode = interaction.ModeAuto
@@ -64,29 +77,43 @@ func New(config Config, runtime foyachannel.Runtime, channel Channel, logger *lo
 	if config.Locale != "en-US" && config.Locale != "zh-CN" {
 		config.Locale = "zh-CN"
 	}
-	if config.ApprovalMode != interaction.ModeAuto && config.ApprovalMode != interaction.ModeFullAccess {
+	if config.ApprovalMode != interaction.ModeAuto &&
+		config.ApprovalMode != interaction.ModeFullAccess {
 		return nil, errors.New("Feishu bot approval mode must be auto or full_access")
 	}
 	config.AllowedUsers = cleanIDs(config.AllowedUsers)
 	config.AllowedChats = cleanIDs(config.AllowedChats)
-	if !config.AllowAll && len(config.AllowedUsers) == 0 && len(config.AllowedChats) == 0 {
-		return nil, errors.New("configure at least one allowed user or chat, or explicitly enable allow-all")
-	}
-	store, err := foyachannel.OpenSessionStore(config.SessionPath)
-	if err != nil {
-		return nil, fmt.Errorf("open Feishu session store: %w", err)
-	}
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Bot{
-		config:  config,
-		backend: runtime,
-		channel: channel,
-		store:   store,
-		logger:  logger,
-		workers: make(map[string]chan *types.NormalizedMessage),
-	}, nil
+	bot := &Bot{
+		config:   config,
+		backend:  runtime,
+		channel:  channel,
+		store:    store,
+		pairings: pairings,
+		logger:   logger,
+	}
+	core, err := foyachannel.NewChannelCore(foyachannel.CoreConfig{
+		ChannelID: config.ChannelID,
+		CreateOptions: conversation.CreateOptions{
+			ConnectionID: config.ConnectionID,
+			Model:        config.Model,
+			ProjectID:    config.ProjectID,
+			ApprovalMode: string(config.ApprovalMode),
+		},
+		Locale:           config.Locale,
+		ResponseMarkdown: true,
+		Localize: func(key string, args ...any) string {
+			return localizedMessage(config.Locale, key, args...)
+		},
+		Logger: logger,
+	}, runtime, store, pairings, bot)
+	if err != nil {
+		return nil, err
+	}
+	bot.core = core
+	return bot, nil
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -100,6 +127,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.started = true
 	b.runCtx = runCtx
 	b.mu.Unlock()
+	b.core.SetRunContext(runCtx)
 
 	b.channel.OnMessage(b.enqueue)
 	b.channel.OnReject(func(_ context.Context, rejected *types.RejectEvent) error {
@@ -143,10 +171,10 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 
 	cancel()
+	b.core.Wait()
 	b.wg.Wait()
 	b.mu.Lock()
 	b.runCtx = nil
-	b.workers = make(map[string]chan *types.NormalizedMessage)
 	b.mu.Unlock()
 	if errors.Is(result, context.Canceled) {
 		return nil
@@ -158,50 +186,15 @@ func (b *Bot) enqueue(ctx context.Context, incoming *types.NormalizedMessage) er
 	if incoming == nil || incoming.ChatID == "" || incoming.MessageID == "" {
 		return nil
 	}
-	if !b.allowed(incoming) {
-		b.logger.Printf(
-			"Feishu message rejected: reason=not_allowed sender=%s chat=%s",
-			incoming.UserID,
-			incoming.ChatID,
-		)
-		return nil
-	}
-
-	content := cleanContent(incoming)
-	if content == "/stop" {
-		if sessionID := b.store.Get(incoming.ChatID); sessionID != "" {
-			b.backend.CancelTurn(sessionID)
+	queued, err := b.core.Enqueue(ctx, b.incoming(incoming))
+	if err != nil || !queued {
+		if b.incoming(incoming).Content == "/stop" {
 			b.acknowledge(ctx, incoming)
-			return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "task_stopped"))
 		}
-		b.acknowledge(ctx, incoming)
-		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "no_task_to_stop"))
+		return err
 	}
-
-	b.mu.Lock()
-	runCtx := b.runCtx
-	if runCtx == nil {
-		runCtx = ctx
-	}
-	worker, ok := b.workers[incoming.ChatID]
-	if !ok {
-		worker = make(chan *types.NormalizedMessage, workerQueueSize)
-		b.workers[incoming.ChatID] = worker
-		b.wg.Add(1)
-		go b.runWorker(runCtx, incoming.ChatID, worker)
-	}
-	b.mu.Unlock()
-
-	cloned := cloneMessage(incoming)
-	select {
-	case worker <- cloned:
-		b.acknowledge(runCtx, incoming)
-		return nil
-	case <-runCtx.Done():
-		return runCtx.Err()
-	default:
-		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "queue_full"))
-	}
+	b.acknowledge(ctx, incoming)
+	return nil
 }
 
 func (b *Bot) acknowledge(ctx context.Context, incoming *types.NormalizedMessage) {
@@ -220,122 +213,73 @@ func (b *Bot) acknowledge(ctx context.Context, incoming *types.NormalizedMessage
 	}()
 }
 
-func (b *Bot) runWorker(ctx context.Context, chatID string, input <-chan *types.NormalizedMessage) {
-	defer b.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case incoming := <-input:
-			if incoming == nil {
-				continue
-			}
-			if err := b.processMessage(ctx, incoming); err != nil && !errors.Is(err, context.Canceled) {
-				b.logger.Printf("Feishu message failed: chat=%s message=%s error=%v", chatID, incoming.MessageID, err)
-			}
-		}
-	}
-}
-
 func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMessage) error {
-	turnCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	return b.core.Process(ctx, b.incoming(incoming))
+}
 
-	content := cleanContent(incoming)
-	if content == "/new" {
-		if _, err := b.createSession(incoming.ChatID); err != nil {
-			return b.replyError(turnCtx, incoming, err)
-		}
-		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "new_chat"))
-	}
-
-	sessionID, err := b.sessionForChat(incoming.ChatID)
-	if err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-	attachments, err := b.imageAttachments(turnCtx, sessionID, incoming)
-	if err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-	if content == "" && len(attachments) == 0 {
-		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "unsupported_message"))
-	}
-
-	events := b.backend.Subscribe(turnCtx, sessionID)
-	if err := b.backend.SubmitChatInput(turnCtx, sessionID, conversation.UserInput{
-		Text:        content,
-		Attachments: attachments,
-	}); err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-
-	var lastAssistant string
-	var finalAssistant string
-	var responseErr error
-	for {
-		select {
-		case <-turnCtx.Done():
-			return turnCtx.Err()
-		case item, ok := <-events:
-			if !ok {
-				return errors.New("Foya event stream closed before turn completion")
-			}
-			switch item.Kind {
-			case conversation.KindMessageEnd:
-				item, ok := item.Payload.(conversation.Message)
-				if !ok || item.Role != conversation.RoleAssistant {
-					continue
-				}
-				if item.Content != "" {
-					lastAssistant = item.Content
-				}
-				if len(item.ToolCalls) == 0 {
-					finalAssistant = item.Content
-				}
-			case conversation.KindApprovalReq:
-				request, ok := item.Payload.(interaction.Request)
-				if ok {
-					_ = b.backend.ResolveApproval(request.ID, string(interaction.DecisionDenied))
-				}
-			case conversation.KindQuestionRequested:
-				batch, ok := item.Payload.(interaction.Batch)
-				if ok {
-					_ = b.backend.CancelQuestions(sessionID, batch.ID)
-				}
-			case conversation.KindError:
-				responseErr = fmt.Errorf("%v", item.Payload)
-			case conversation.KindTurnComplete:
-				response := finalAssistant
-				if response == "" {
-					response = lastAssistant
-				}
-				if responseErr != nil {
-					if response != "" {
-						response += "\n\n> "
-					}
-					response += responseErr.Error()
-				}
-				if response == "" {
-					response = localizedMessage(b.config.Locale, "empty_response")
-				}
-				return b.sendMarkdown(turnCtx, incoming, response)
-			}
-		}
+func (b *Bot) incoming(incoming *types.NormalizedMessage) foyachannel.IncomingMessage {
+	return foyachannel.IncomingMessage{
+		ConversationKey: conversationKey(incoming.ChatID),
+		Kind:            incoming.ChatType,
+		ExternalID:      incoming.ChatID,
+		DisplayName:     conversationDisplayName(incoming),
+		Content:         cleanContent(incoming),
+		Source:          incoming,
 	}
 }
 
-func (b *Bot) sessionForChat(chatID string) (string, error) {
-	if sessionID := b.store.Get(chatID); sessionID != "" {
+func (b *Bot) Allowed(message foyachannel.IncomingMessage) bool {
+	incoming, _ := message.Source.(*types.NormalizedMessage)
+	return incoming != nil && b.allowed(incoming)
+}
+
+func (b *Bot) Send(
+	ctx context.Context,
+	message foyachannel.IncomingMessage,
+	text string,
+	markdown bool,
+) error {
+	incoming, _ := message.Source.(*types.NormalizedMessage)
+	if incoming == nil {
+		return errors.New("Feishu message source is required")
+	}
+	if markdown {
+		return b.sendMarkdown(ctx, incoming, text)
+	}
+	return b.sendText(ctx, incoming, text)
+}
+
+func (b *Bot) Attachments(
+	ctx context.Context,
+	sessionID string,
+	message foyachannel.IncomingMessage,
+) ([]conversation.AttachmentRef, error) {
+	incoming, _ := message.Source.(*types.NormalizedMessage)
+	if incoming == nil {
+		return nil, errors.New("Feishu message source is required")
+	}
+	return b.imageAttachments(ctx, sessionID, incoming)
+}
+
+func (b *Bot) sessionForChat(ctx context.Context, chatID string) (string, error) {
+	sessionID, err := b.store.Get(ctx, b.config.ChannelID, conversationKey(chatID))
+	if err != nil {
+		return "", err
+	}
+	if sessionID != "" {
 		for _, item := range b.backend.ListSessions() {
 			if item.ID == sessionID {
 				return sessionID, nil
 			}
 		}
+		if err := b.store.UnbindSession(ctx, sessionID); err != nil {
+			return "", err
+		}
 	}
-	return b.createSession(chatID)
+	return "", foyachannel.ErrConversationUnbound
 }
 
-func (b *Bot) createSession(chatID string) (string, error) {
+func (b *Bot) createSession(ctx context.Context, chatID string) (string, error) {
 	created, err := b.backend.CreateSession(conversation.CreateOptions{
 		ConnectionID: b.config.ConnectionID,
 		Model:        b.config.Model,
@@ -345,10 +289,35 @@ func (b *Bot) createSession(chatID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := b.store.Set(chatID, created.ID); err != nil {
+	if err := b.store.Bind(ctx, b.config.ChannelID, conversationKey(chatID), created.ID); err != nil {
 		return "", err
 	}
 	return created.ID, nil
+}
+
+func conversationKey(chatID string) string {
+	return "chat:" + strings.TrimSpace(chatID)
+}
+
+func conversationDisplayName(incoming *types.NormalizedMessage) string {
+	if incoming.ChatType == "p2p" && incoming.UserID != "" {
+		return incoming.UserID
+	}
+	return incoming.ChatID
+}
+
+func (b *Bot) observeConversation(
+	ctx context.Context,
+	incoming *types.NormalizedMessage,
+) error {
+	return b.store.Observe(
+		ctx,
+		b.config.ChannelID,
+		conversationKey(incoming.ChatID),
+		incoming.ChatType,
+		incoming.ChatID,
+		conversationDisplayName(incoming),
+	)
 }
 
 func (b *Bot) imageAttachments(
@@ -389,7 +358,8 @@ func (b *Bot) allowed(incoming *types.NormalizedMessage) bool {
 		return true
 	}
 	if incoming.ChatType == "group" {
-		return contains(b.config.AllowedChats, incoming.ChatID)
+		return contains(b.config.AllowedChats, incoming.ChatID) ||
+			contains(b.config.AllowedUsers, incoming.UserID)
 	}
 	return contains(b.config.AllowedUsers, incoming.UserID)
 }

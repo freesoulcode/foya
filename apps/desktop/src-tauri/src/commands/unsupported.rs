@@ -503,19 +503,35 @@ pub(crate) async fn update_agent_limits(_limits: serde_json::Value) -> Result<St
 }
 
 #[tauri::command]
-pub(crate) async fn get_feishu_bot_settings() -> Result<String, String> {
+pub(crate) async fn list_channels() -> Result<String, String> {
     Err("Windows transport is not implemented".into())
 }
 
 #[tauri::command]
-pub(crate) async fn update_feishu_bot_settings(
-    _settings: serde_json::Value,
+pub(crate) async fn get_session_channel_binding(_session_id: String) -> Result<String, String> {
+    Err("Windows transport is not implemented".into())
+}
+
+#[tauri::command]
+pub(crate) async fn start_session_channel_pairing(
+    _session_id: String,
+    _channel_id: String,
 ) -> Result<String, String> {
     Err("Windows transport is not implemented".into())
 }
 
 #[tauri::command]
-pub(crate) async fn list_channels() -> Result<String, String> {
+pub(crate) async fn get_channel_pairing(_pairing_id: String) -> Result<String, String> {
+    Err("Windows transport is not implemented".into())
+}
+
+#[tauri::command]
+pub(crate) async fn cancel_channel_pairing(_pairing_id: String) -> Result<(), String> {
+    Err("Windows transport is not implemented".into())
+}
+
+#[tauri::command]
+pub(crate) async fn unbind_session_channel(_session_id: String) -> Result<(), String> {
     Err("Windows transport is not implemented".into())
 }
 

@@ -1,4 +1,4 @@
-package feishu
+package telegram
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"sync"
 
 	foyachannel "github.com/freesoulcode/foya/internal/channel"
-	interaction "github.com/freesoulcode/foya/internal/interaction"
+	"github.com/freesoulcode/foya/internal/interaction"
 )
 
 type Status string
@@ -30,8 +30,7 @@ type Settings struct {
 	Name         string           `json:"name"`
 	Locale       string           `json:"locale,omitempty"`
 	Enabled      bool             `json:"enabled"`
-	AppID        string           `json:"app_id"`
-	AppSecret    string           `json:"app_secret,omitempty"`
+	Token        string           `json:"token,omitempty"`
 	ConnectionID string           `json:"connection_id,omitempty"`
 	Model        string           `json:"model,omitempty"`
 	ProjectID    string           `json:"project_id,omitempty"`
@@ -45,8 +44,7 @@ type UpdateInput struct {
 	Name         string           `json:"name"`
 	Locale       string           `json:"locale,omitempty"`
 	Enabled      bool             `json:"enabled"`
-	AppID        string           `json:"app_id"`
-	AppSecret    string           `json:"app_secret,omitempty"`
+	Token        string           `json:"token,omitempty"`
 	ConnectionID string           `json:"connection_id,omitempty"`
 	Model        string           `json:"model,omitempty"`
 	ProjectID    string           `json:"project_id,omitempty"`
@@ -62,8 +60,7 @@ type State struct {
 	Name         string           `json:"name"`
 	Locale       string           `json:"locale"`
 	Enabled      bool             `json:"enabled"`
-	AppID        string           `json:"app_id"`
-	HasAppSecret bool             `json:"has_app_secret"`
+	HasToken     bool             `json:"has_token"`
 	ConnectionID string           `json:"connection_id,omitempty"`
 	Model        string           `json:"model,omitempty"`
 	ProjectID    string           `json:"project_id,omitempty"`
@@ -75,7 +72,7 @@ type State struct {
 	LastError    string           `json:"last_error,omitempty"`
 }
 
-type channelFactory func(appID, appSecret string) Channel
+type apiFactory func(string) API
 
 type managedRun struct {
 	status    Status
@@ -88,18 +85,16 @@ type Manager struct {
 	opMu sync.Mutex
 	mu   sync.RWMutex
 
-	root           context.Context
-	runtime        foyachannel.Runtime
-	logger         *log.Logger
-	catalogPath    string
-	channelFactory channelFactory
-	bindings       *foyachannel.ConversationBindingStore
-	pairings       *foyachannel.ConversationPairingStore
-	settings       map[string]Settings
-	order          []string
-	runs           map[string]*managedRun
-	registrations  map[string]*registrationRun
-	registerApp    appRegistrar
+	root       context.Context
+	runtime    foyachannel.Runtime
+	bindings   *foyachannel.ConversationBindingStore
+	pairings   *foyachannel.ConversationPairingStore
+	logger     *log.Logger
+	path       string
+	apiFactory apiFactory
+	settings   map[string]Settings
+	order      []string
+	runs       map[string]*managedRun
 }
 
 type persistedCatalog struct {
@@ -123,7 +118,7 @@ func NewManager(
 		bindings,
 		pairings,
 		logger,
-		NewChannel,
+		func(token string) API { return NewClient(token) },
 		autoStart,
 	)
 }
@@ -135,41 +130,39 @@ func newManager(
 	bindings *foyachannel.ConversationBindingStore,
 	pairings *foyachannel.ConversationPairingStore,
 	logger *log.Logger,
-	factory channelFactory,
+	factory apiFactory,
 	autoStart bool,
 ) (*Manager, error) {
 	if ctx == nil {
-		return nil, errors.New("Feishu channel manager context is required")
+		return nil, errors.New("Telegram channel manager context is required")
 	}
 	if runtime == nil {
-		return nil, errors.New("Feishu channel runtime is required")
+		return nil, errors.New("Telegram channel runtime is required")
 	}
 	if bindings == nil {
-		return nil, errors.New("Feishu conversation bindings are required")
+		return nil, errors.New("Telegram conversation bindings are required")
 	}
 	if pairings == nil {
-		return nil, errors.New("Feishu conversation pairings are required")
+		return nil, errors.New("Telegram conversation pairings are required")
 	}
 	if logger == nil {
 		logger = log.Default()
 	}
-	catalogPath := filepath.Join(dataDir, "feishu-channels.json")
-	items, err := loadCatalog(catalogPath)
+	path := filepath.Join(dataDir, "telegram-channels.json")
+	items, err := loadCatalog(path)
 	if err != nil {
-		return nil, fmt.Errorf("load Feishu channel settings: %w", err)
+		return nil, fmt.Errorf("load Telegram channel settings: %w", err)
 	}
 	manager := &Manager{
-		root:           ctx,
-		runtime:        runtime,
-		logger:         logger,
-		catalogPath:    catalogPath,
-		channelFactory: factory,
-		bindings:       bindings,
-		pairings:       pairings,
-		settings:       make(map[string]Settings, len(items)),
-		runs:           make(map[string]*managedRun),
-		registrations:  make(map[string]*registrationRun),
-		registerApp:    defaultAppRegistrar,
+		root:       ctx,
+		runtime:    runtime,
+		bindings:   bindings,
+		pairings:   pairings,
+		logger:     logger,
+		path:       path,
+		apiFactory: factory,
+		settings:   make(map[string]Settings, len(items)),
+		runs:       make(map[string]*managedRun),
 	}
 	for _, item := range items {
 		manager.settings[item.ID] = item
@@ -179,8 +172,10 @@ func newManager(
 		for _, id := range manager.order {
 			if manager.settings[id].Enabled {
 				if err := manager.start(id); err != nil {
-					manager.runs[id] = &managedRun{status: StatusError, lastError: err.Error()}
-					logger.Printf("start persisted Feishu channel %s: %v", id, err)
+					manager.runs[id] = &managedRun{
+						status: StatusError, lastError: err.Error(),
+					}
+					logger.Printf("start persisted Telegram channel %s: %v", id, err)
 				}
 			}
 		}
@@ -191,11 +186,11 @@ func newManager(
 func (m *Manager) List() []State {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]State, 0, len(m.order))
+	items := make([]State, 0, len(m.order))
 	for _, id := range m.order {
-		result = append(result, m.stateLocked(id))
+		items = append(items, m.stateLocked(id))
 	}
-	return result
+	return items
 }
 
 func (m *Manager) Get(id string) (State, bool) {
@@ -210,30 +205,27 @@ func (m *Manager) Get(id string) (State, bool) {
 func (m *Manager) Create(input UpdateInput) (State, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-
 	id, err := newChannelID()
 	if err != nil {
 		return State{}, err
 	}
 	settings := settingsFromInput(id, input, "")
 	if settings.Name == "" {
-		settings.Name = fmt.Sprintf("Feishu %d", len(m.order)+1)
+		settings.Name = fmt.Sprintf("Telegram %d", len(m.order)+1)
 	}
 	if err := validateSettings(settings); err != nil {
 		return State{}, err
 	}
-	if err := m.validateUniqueAppID("", settings.AppID); err != nil {
+	if err := m.validateUniqueToken("", settings.Token); err != nil {
 		return State{}, err
 	}
-
 	m.mu.RLock()
 	items := m.catalogLocked(Settings{}, false)
 	m.mu.RUnlock()
 	items = append(items, settings)
-	if err := saveCatalog(m.catalogPath, items); err != nil {
+	if err := saveCatalog(m.path, items); err != nil {
 		return State{}, err
 	}
-
 	m.mu.Lock()
 	m.settings[id] = settings
 	m.order = append(m.order, id)
@@ -252,31 +244,28 @@ func (m *Manager) Create(input UpdateInput) (State, error) {
 func (m *Manager) Update(id string, input UpdateInput) (State, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-
 	m.mu.RLock()
 	current, ok := m.settings[id]
 	m.mu.RUnlock()
 	if !ok {
 		return State{}, os.ErrNotExist
 	}
-	settings := settingsFromInput(id, input, current.AppSecret)
+	settings := settingsFromInput(id, input, current.Token)
 	if settings.Name == "" {
 		settings.Name = current.Name
 	}
 	if err := validateSettings(settings); err != nil {
 		return State{}, err
 	}
-	if err := m.validateUniqueAppID(id, settings.AppID); err != nil {
+	if err := m.validateUniqueToken(id, settings.Token); err != nil {
 		return State{}, err
 	}
-
 	m.mu.RLock()
 	items := m.catalogLocked(settings, true)
 	m.mu.RUnlock()
-	if err := saveCatalog(m.catalogPath, items); err != nil {
+	if err := saveCatalog(m.path, items); err != nil {
 		return State{}, err
 	}
-
 	m.stopCurrent(id)
 	m.mu.Lock()
 	m.settings[id] = settings
@@ -295,7 +284,6 @@ func (m *Manager) Update(id string, input UpdateInput) (State, error) {
 func (m *Manager) Delete(id string) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-
 	m.mu.RLock()
 	if _, ok := m.settings[id]; !ok {
 		m.mu.RUnlock()
@@ -308,10 +296,9 @@ func (m *Manager) Delete(id string) error {
 		}
 	}
 	m.mu.RUnlock()
-	if err := saveCatalog(m.catalogPath, items); err != nil {
+	if err := saveCatalog(m.path, items); err != nil {
 		return err
 	}
-
 	m.stopCurrent(id)
 	m.mu.Lock()
 	delete(m.settings, id)
@@ -328,18 +315,9 @@ func (m *Manager) Delete(id string) error {
 func (m *Manager) Close() {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	m.mu.Lock()
+	m.mu.RLock()
 	ids := append([]string(nil), m.order...)
-	registrationCancels := make([]context.CancelFunc, 0, len(m.registrations))
-	for _, run := range m.registrations {
-		if run.cancel != nil {
-			registrationCancels = append(registrationCancels, run.cancel)
-		}
-	}
-	m.mu.Unlock()
-	for _, cancel := range registrationCancels {
-		cancel()
-	}
+	m.mu.RUnlock()
 	for _, id := range ids {
 		m.stopCurrent(id)
 	}
@@ -365,7 +343,7 @@ func (m *Manager) start(id string) error {
 		AllowedUsers: settings.AllowedUsers,
 		AllowedChats: settings.AllowedChats,
 		AllowAll:     settings.AllowAll,
-	}, m.runtime, m.bindings, m.pairings, m.channelFactory(settings.AppID, settings.AppSecret), m.logger)
+	}, m.runtime, m.bindings, m.pairings, m.apiFactory(settings.Token), m.logger)
 	if err != nil {
 		return err
 	}
@@ -418,7 +396,23 @@ func (m *Manager) stateLocked(id string) State {
 		status = run.status
 		lastError = run.lastError
 	}
-	return stateFromSettings(settings, status, lastError)
+	return State{
+		ID:           settings.ID,
+		Kind:         "telegram",
+		Name:         settings.Name,
+		Locale:       settings.Locale,
+		Enabled:      settings.Enabled,
+		HasToken:     settings.Token != "",
+		ConnectionID: settings.ConnectionID,
+		Model:        settings.Model,
+		ProjectID:    settings.ProjectID,
+		ApprovalMode: settings.ApprovalMode,
+		AllowedUsers: append([]string(nil), settings.AllowedUsers...),
+		AllowedChats: append([]string(nil), settings.AllowedChats...),
+		AllowAll:     settings.AllowAll,
+		Status:       status,
+		LastError:    lastError,
+	}
 }
 
 func (m *Manager) catalogLocked(replacement Settings, replace bool) []Settings {
@@ -433,67 +427,69 @@ func (m *Manager) catalogLocked(replacement Settings, replace bool) []Settings {
 	return items
 }
 
-func (m *Manager) validateUniqueAppID(excludedID, appID string) error {
-	if appID == "" {
+func (m *Manager) validateUniqueToken(excludedID, token string) error {
+	if token == "" {
 		return nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for id, item := range m.settings {
-		if id != excludedID && item.AppID == appID {
-			return errors.New("a Feishu channel with this app ID already exists")
+		if id != excludedID && item.Token == token {
+			return errors.New("a Telegram channel with this token already exists")
 		}
 	}
 	return nil
 }
 
-func loadCatalog(catalogPath string) ([]Settings, error) {
-	data, err := os.ReadFile(catalogPath)
-	if err == nil {
-		var persisted persistedCatalog
-		decoder := json.NewDecoder(strings.NewReader(string(data)))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&persisted); err != nil {
-			return nil, err
-		}
-		if persisted.Version != 2 {
-			return nil, errors.New("unsupported Feishu channel catalog version")
-		}
-		seen := make(map[string]struct{}, len(persisted.Channels))
-		appIDs := make(map[string]struct{}, len(persisted.Channels))
-		for index := range persisted.Channels {
-			item := normalizeSettings(persisted.Channels[index])
-			if item.ID == "" {
-				return nil, errors.New("Feishu channel ID is required")
-			}
-			if _, exists := seen[item.ID]; exists {
-				return nil, errors.New("duplicate Feishu channel ID")
-			}
-			if err := validateSettings(item); err != nil {
-				return nil, err
-			}
-			if item.AppID != "" {
-				if _, exists := appIDs[item.AppID]; exists {
-					return nil, errors.New("duplicate Feishu app ID")
-				}
-				appIDs[item.AppID] = struct{}{}
-			}
-			seen[item.ID] = struct{}{}
-			persisted.Channels[index] = item
-		}
-		return persisted.Channels, nil
+func loadCatalog(path string) ([]Settings, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		return nil, err
 	}
-	return nil, nil
+	var persisted persistedCatalog
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&persisted); err != nil {
+		return nil, err
+	}
+	if persisted.Version != 1 {
+		return nil, errors.New("unsupported Telegram channel catalog version")
+	}
+	seen := make(map[string]struct{}, len(persisted.Channels))
+	tokens := make(map[string]struct{}, len(persisted.Channels))
+	for index := range persisted.Channels {
+		item := normalizeSettings(persisted.Channels[index])
+		if item.ID == "" {
+			return nil, errors.New("Telegram channel ID is required")
+		}
+		if _, exists := seen[item.ID]; exists {
+			return nil, errors.New("duplicate Telegram channel ID")
+		}
+		if err := validateSettings(item); err != nil {
+			return nil, err
+		}
+		if item.Token != "" {
+			if _, exists := tokens[item.Token]; exists {
+				return nil, errors.New("duplicate Telegram bot token")
+			}
+			tokens[item.Token] = struct{}{}
+		}
+		seen[item.ID] = struct{}{}
+		persisted.Channels[index] = item
+	}
+	return persisted.Channels, nil
 }
 
 func saveCatalog(path string, items []Settings) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(persistedCatalog{Version: 2, Channels: items}, "", "  ")
+	data, err := json.MarshalIndent(persistedCatalog{
+		Version: 1, Channels: items,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -507,18 +503,17 @@ func saveCatalog(path string, items []Settings) error {
 	return os.Rename(temp, path)
 }
 
-func settingsFromInput(id string, input UpdateInput, existingSecret string) Settings {
-	secret := existingSecret
-	if strings.TrimSpace(input.AppSecret) != "" {
-		secret = strings.TrimSpace(input.AppSecret)
+func settingsFromInput(id string, input UpdateInput, existingToken string) Settings {
+	token := existingToken
+	if strings.TrimSpace(input.Token) != "" {
+		token = strings.TrimSpace(input.Token)
 	}
 	return normalizeSettings(Settings{
 		ID:           id,
 		Name:         input.Name,
 		Locale:       input.Locale,
 		Enabled:      input.Enabled,
-		AppID:        input.AppID,
-		AppSecret:    secret,
+		Token:        token,
 		ConnectionID: input.ConnectionID,
 		Model:        input.Model,
 		ProjectID:    input.ProjectID,
@@ -533,8 +528,7 @@ func normalizeSettings(settings Settings) Settings {
 	settings.ID = strings.TrimSpace(settings.ID)
 	settings.Name = strings.TrimSpace(settings.Name)
 	settings.Locale = strings.TrimSpace(settings.Locale)
-	settings.AppID = strings.TrimSpace(settings.AppID)
-	settings.AppSecret = strings.TrimSpace(settings.AppSecret)
+	settings.Token = strings.TrimSpace(settings.Token)
 	settings.ConnectionID = strings.TrimSpace(settings.ConnectionID)
 	settings.Model = strings.TrimSpace(settings.Model)
 	settings.ProjectID = strings.TrimSpace(settings.ProjectID)
@@ -552,39 +546,15 @@ func normalizeSettings(settings Settings) Settings {
 func validateSettings(settings Settings) error {
 	if settings.ApprovalMode != interaction.ModeAuto &&
 		settings.ApprovalMode != interaction.ModeFullAccess {
-		return errors.New("Feishu channel approval mode must be auto or full_access")
+		return errors.New("Telegram channel approval mode must be auto or full_access")
 	}
 	if !settings.Enabled {
 		return nil
 	}
-	if settings.AppID == "" {
-		return errors.New("Feishu app ID is required")
-	}
-	if settings.AppSecret == "" {
-		return errors.New("Feishu app secret is required")
+	if settings.Token == "" {
+		return errors.New("Telegram bot token is required")
 	}
 	return nil
-}
-
-func stateFromSettings(settings Settings, status Status, lastError string) State {
-	return State{
-		ID:           settings.ID,
-		Kind:         "feishu",
-		Name:         settings.Name,
-		Locale:       settings.Locale,
-		Enabled:      settings.Enabled,
-		AppID:        settings.AppID,
-		HasAppSecret: settings.AppSecret != "",
-		ConnectionID: settings.ConnectionID,
-		Model:        settings.Model,
-		ProjectID:    settings.ProjectID,
-		ApprovalMode: settings.ApprovalMode,
-		AllowedUsers: append([]string(nil), settings.AllowedUsers...),
-		AllowedChats: append([]string(nil), settings.AllowedChats...),
-		AllowAll:     settings.AllowAll,
-		Status:       status,
-		LastError:    lastError,
-	}
 }
 
 func newChannelID() (string, error) {
@@ -592,5 +562,5 @@ func newChannelID() (string, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	return "feishu-" + hex.EncodeToString(raw), nil
+	return "telegram-" + hex.EncodeToString(raw), nil
 }
