@@ -19,7 +19,6 @@ import (
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
 
-const workerQueueSize = 32
 const acknowledgementReaction = "OK"
 
 type Config struct {
@@ -46,7 +45,6 @@ type Bot struct {
 	mu      sync.Mutex
 	runCtx  context.Context
 	started bool
-	workers map[string]chan *types.NormalizedMessage
 	wg      sync.WaitGroup
 }
 
@@ -95,7 +93,6 @@ func New(
 		store:    store,
 		pairings: pairings,
 		logger:   logger,
-		workers:  make(map[string]chan *types.NormalizedMessage),
 	}
 	core, err := foyachannel.NewChannelCore(foyachannel.CoreConfig{
 		ChannelID: config.ChannelID,
@@ -178,7 +175,6 @@ func (b *Bot) Run(ctx context.Context) error {
 	b.wg.Wait()
 	b.mu.Lock()
 	b.runCtx = nil
-	b.workers = make(map[string]chan *types.NormalizedMessage)
 	b.mu.Unlock()
 	if errors.Is(result, context.Canceled) {
 		return nil
@@ -199,60 +195,6 @@ func (b *Bot) enqueue(ctx context.Context, incoming *types.NormalizedMessage) er
 	}
 	b.acknowledge(ctx, incoming)
 	return nil
-
-	content := cleanContent(incoming)
-	_, pairingCommand := foyachannel.ParsePairingCommand(content)
-	sessionID, err := b.store.Get(
-		ctx,
-		b.config.ChannelID,
-		conversationKey(incoming.ChatID),
-	)
-	if err != nil {
-		return err
-	}
-	if sessionID == "" && !pairingCommand && !b.allowed(incoming) {
-		b.logger.Printf(
-			"Feishu message rejected: reason=not_allowed sender=%s chat=%s",
-			incoming.UserID,
-			incoming.ChatID,
-		)
-		return nil
-	}
-
-	if content == "/stop" {
-		if sessionID != "" {
-			b.backend.CancelTurn(sessionID)
-			b.acknowledge(ctx, incoming)
-			return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "task_stopped"))
-		}
-		b.acknowledge(ctx, incoming)
-		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "conversation_unbound"))
-	}
-
-	b.mu.Lock()
-	runCtx := b.runCtx
-	if runCtx == nil {
-		runCtx = ctx
-	}
-	worker, ok := b.workers[incoming.ChatID]
-	if !ok {
-		worker = make(chan *types.NormalizedMessage, workerQueueSize)
-		b.workers[incoming.ChatID] = worker
-		b.wg.Add(1)
-		go b.runWorker(runCtx, incoming.ChatID, worker)
-	}
-	b.mu.Unlock()
-
-	cloned := cloneMessage(incoming)
-	select {
-	case worker <- cloned:
-		b.acknowledge(runCtx, incoming)
-		return nil
-	case <-runCtx.Done():
-		return runCtx.Err()
-	default:
-		return b.sendText(ctx, incoming, localizedMessage(b.config.Locale, "queue_full"))
-	}
 }
 
 func (b *Bot) acknowledge(ctx context.Context, incoming *types.NormalizedMessage) {
@@ -271,140 +213,8 @@ func (b *Bot) acknowledge(ctx context.Context, incoming *types.NormalizedMessage
 	}()
 }
 
-func (b *Bot) runWorker(ctx context.Context, chatID string, input <-chan *types.NormalizedMessage) {
-	defer b.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case incoming := <-input:
-			if incoming == nil {
-				continue
-			}
-			if err := b.processMessage(ctx, incoming); err != nil && !errors.Is(err, context.Canceled) {
-				b.logger.Printf("Feishu message failed: chat=%s message=%s error=%v", chatID, incoming.MessageID, err)
-			}
-		}
-	}
-}
-
 func (b *Bot) processMessage(ctx context.Context, incoming *types.NormalizedMessage) error {
 	return b.core.Process(ctx, b.incoming(incoming))
-
-	turnCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	content := cleanContent(incoming)
-	if code, ok := foyachannel.ParsePairingCommand(content); ok {
-		if code == "" {
-			return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "pairing_usage"))
-		}
-		if _, err := b.pairings.Consume(
-			turnCtx,
-			b.config.ChannelID,
-			code,
-			conversationKey(incoming.ChatID),
-			incoming.ChatType,
-			incoming.ChatID,
-			conversationDisplayName(incoming),
-		); err != nil {
-			return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "pairing_failed"))
-		}
-		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "pairing_complete"))
-	}
-	if content == "/new" {
-		if err := b.observeConversation(turnCtx, incoming); err != nil {
-			return b.replyError(turnCtx, incoming, err)
-		}
-		if _, err := b.createSession(turnCtx, incoming.ChatID); err != nil {
-			return b.replyError(turnCtx, incoming, err)
-		}
-		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "new_chat"))
-	}
-
-	sessionID, err := b.sessionForChat(turnCtx, incoming.ChatID)
-	if err != nil {
-		if errors.Is(err, foyachannel.ErrConversationUnbound) {
-			return b.sendText(
-				turnCtx,
-				incoming,
-				localizedMessage(b.config.Locale, "conversation_unbound"),
-			)
-		}
-		return b.replyError(turnCtx, incoming, err)
-	}
-	if err := b.observeConversation(turnCtx, incoming); err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-	attachments, err := b.imageAttachments(turnCtx, sessionID, incoming)
-	if err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-	if content == "" && len(attachments) == 0 {
-		return b.sendText(turnCtx, incoming, localizedMessage(b.config.Locale, "unsupported_message"))
-	}
-
-	events := b.backend.Subscribe(turnCtx, sessionID)
-	if err := b.backend.SubmitChatInput(turnCtx, sessionID, conversation.UserInput{
-		Text:        content,
-		Attachments: attachments,
-	}); err != nil {
-		return b.replyError(turnCtx, incoming, err)
-	}
-
-	var lastAssistant string
-	var finalAssistant string
-	var responseErr error
-	for {
-		select {
-		case <-turnCtx.Done():
-			return turnCtx.Err()
-		case item, ok := <-events:
-			if !ok {
-				return errors.New("Foya event stream closed before turn completion")
-			}
-			switch item.Kind {
-			case conversation.KindMessageEnd:
-				item, ok := item.Payload.(conversation.Message)
-				if !ok || item.Role != conversation.RoleAssistant {
-					continue
-				}
-				if item.Content != "" {
-					lastAssistant = item.Content
-				}
-				if len(item.ToolCalls) == 0 {
-					finalAssistant = item.Content
-				}
-			case conversation.KindApprovalReq:
-				request, ok := item.Payload.(interaction.Request)
-				if ok {
-					_ = b.backend.ResolveApproval(request.ID, string(interaction.DecisionDenied))
-				}
-			case conversation.KindQuestionRequested:
-				batch, ok := item.Payload.(interaction.Batch)
-				if ok {
-					_ = b.backend.CancelQuestions(sessionID, batch.ID)
-				}
-			case conversation.KindError:
-				responseErr = fmt.Errorf("%v", item.Payload)
-			case conversation.KindTurnComplete:
-				response := finalAssistant
-				if response == "" {
-					response = lastAssistant
-				}
-				if responseErr != nil {
-					if response != "" {
-						response += "\n\n> "
-					}
-					response += responseErr.Error()
-				}
-				if response == "" {
-					response = localizedMessage(b.config.Locale, "empty_response")
-				}
-				return b.sendMarkdown(turnCtx, incoming, response)
-			}
-		}
-	}
 }
 
 func (b *Bot) incoming(incoming *types.NormalizedMessage) foyachannel.IncomingMessage {

@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	workerQueueSize = 32
 	maxMessageRunes = 4000
 )
 
@@ -43,9 +42,8 @@ type Bot struct {
 	username string
 	core     *foyachannel.ChannelCore
 
-	mu      sync.Mutex
-	workers map[int64]chan Message
-	wg      sync.WaitGroup
+	mu sync.Mutex
+	wg sync.WaitGroup
 }
 
 func New(
@@ -90,7 +88,6 @@ func New(
 		pairings: pairings,
 		api:      api,
 		logger:   logger,
-		workers:  make(map[int64]chan Message),
 	}
 	core, err := foyachannel.NewChannelCore(foyachannel.CoreConfig{
 		ChannelID: config.ChannelID,
@@ -147,13 +144,6 @@ func (b *Bot) Run(ctx context.Context) error {
 			break
 		}
 	}
-	b.mu.Lock()
-	workers := b.workers
-	b.workers = make(map[int64]chan Message)
-	b.mu.Unlock()
-	for _, worker := range workers {
-		close(worker)
-	}
 	b.core.Wait()
 	b.wg.Wait()
 	return nil
@@ -167,182 +157,10 @@ func (b *Bot) enqueue(ctx context.Context, message Message) {
 	if err != nil && !errors.Is(err, context.Canceled) {
 		b.logger.Printf("enqueue Telegram message: %v", err)
 	}
-	return
-
-	chatID := strconv.FormatInt(message.Chat.ID, 10)
-	content := b.cleanContent(message)
-	_, pairingCommand := foyachannel.ParsePairingCommand(content)
-	sessionID, err := b.bindings.Get(
-		ctx,
-		b.config.ChannelID,
-		conversationKey(chatID),
-	)
-	if err != nil {
-		b.logger.Printf("read Telegram conversation binding: %v", err)
-		return
-	}
-	if sessionID == "" && !pairingCommand && !b.allowed(message) {
-		return
-	}
-	if content == "/stop" {
-		if sessionID != "" {
-			b.backend.CancelTurn(sessionID)
-			_ = b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "task_stopped"))
-			return
-		}
-		_ = b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "conversation_unbound"))
-		return
-	}
-
-	b.mu.Lock()
-	worker, ok := b.workers[message.Chat.ID]
-	if !ok {
-		worker = make(chan Message, workerQueueSize)
-		b.workers[message.Chat.ID] = worker
-		b.wg.Add(1)
-		go b.runWorker(ctx, message.Chat.ID, worker)
-	}
-	b.mu.Unlock()
-
-	select {
-	case worker <- message:
-	case <-ctx.Done():
-	default:
-		_ = b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "queue_full"))
-	}
-}
-
-func (b *Bot) runWorker(ctx context.Context, chatID int64, input <-chan Message) {
-	defer b.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case message, ok := <-input:
-			if !ok {
-				return
-			}
-			if err := b.processMessage(ctx, message); err != nil &&
-				!errors.Is(err, context.Canceled) {
-				b.logger.Printf(
-					"Telegram message failed: chat=%d message=%d error=%v",
-					chatID,
-					message.ID,
-					err,
-				)
-			}
-		}
-	}
 }
 
 func (b *Bot) processMessage(ctx context.Context, message Message) error {
 	return b.core.Process(ctx, b.incoming(message))
-
-	content := b.cleanContent(message)
-	chatID := strconv.FormatInt(message.Chat.ID, 10)
-	if code, ok := foyachannel.ParsePairingCommand(content); ok {
-		if code == "" {
-			return b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "pairing_usage"))
-		}
-		if _, err := b.pairings.Consume(
-			ctx,
-			b.config.ChannelID,
-			code,
-			conversationKey(chatID),
-			message.Chat.Type,
-			chatID,
-			conversationDisplayName(message),
-		); err != nil {
-			return b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "pairing_failed"))
-		}
-		return b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "pairing_complete"))
-	}
-	if content == "/new" {
-		if err := b.observeConversation(ctx, message); err != nil {
-			return b.replyError(ctx, message.Chat.ID, err)
-		}
-		if _, err := b.createSession(ctx, chatID); err != nil {
-			return b.replyError(ctx, message.Chat.ID, err)
-		}
-		return b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "new_chat"))
-	}
-	if content == "" {
-		return b.sendText(ctx, message.Chat.ID, localizedMessage(b.config.Locale, "unsupported_message"))
-	}
-	sessionID, err := b.sessionForChat(ctx, chatID)
-	if err != nil {
-		if errors.Is(err, foyachannel.ErrConversationUnbound) {
-			return b.sendText(
-				ctx,
-				message.Chat.ID,
-				localizedMessage(b.config.Locale, "conversation_unbound"),
-			)
-		}
-		return b.replyError(ctx, message.Chat.ID, err)
-	}
-	if err := b.observeConversation(ctx, message); err != nil {
-		return b.replyError(ctx, message.Chat.ID, err)
-	}
-	events := b.backend.Subscribe(ctx, sessionID)
-	if err := b.backend.SubmitChatInput(ctx, sessionID, conversation.UserInput{
-		Text: content,
-	}); err != nil {
-		return b.replyError(ctx, message.Chat.ID, err)
-	}
-
-	var lastAssistant string
-	var finalAssistant string
-	var responseErr error
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case item, ok := <-events:
-			if !ok {
-				return errors.New("Foya event stream closed before turn completion")
-			}
-			switch item.Kind {
-			case conversation.KindMessageEnd:
-				item, ok := item.Payload.(conversation.Message)
-				if !ok || item.Role != conversation.RoleAssistant {
-					continue
-				}
-				if item.Content != "" {
-					lastAssistant = item.Content
-				}
-				if len(item.ToolCalls) == 0 {
-					finalAssistant = item.Content
-				}
-			case conversation.KindApprovalReq:
-				request, ok := item.Payload.(interaction.Request)
-				if ok {
-					_ = b.backend.ResolveApproval(request.ID, string(interaction.DecisionDenied))
-				}
-			case conversation.KindQuestionRequested:
-				batch, ok := item.Payload.(interaction.Batch)
-				if ok {
-					_ = b.backend.CancelQuestions(sessionID, batch.ID)
-				}
-			case conversation.KindError:
-				responseErr = fmt.Errorf("%v", item.Payload)
-			case conversation.KindTurnComplete:
-				response := finalAssistant
-				if response == "" {
-					response = lastAssistant
-				}
-				if responseErr != nil {
-					if response != "" {
-						response += "\n\n"
-					}
-					response += responseErr.Error()
-				}
-				if response == "" {
-					response = localizedMessage(b.config.Locale, "empty_response")
-				}
-				return b.sendText(ctx, message.Chat.ID, response)
-			}
-		}
-	}
 }
 
 func (b *Bot) incoming(message Message) foyachannel.IncomingMessage {
