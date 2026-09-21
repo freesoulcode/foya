@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 
@@ -17,13 +18,14 @@ import (
 
 	"github.com/freesoulcode/foya/internal/artifact"
 	"github.com/freesoulcode/foya/internal/automation"
-	kernel "github.com/freesoulcode/foya/internal/kernel"
-
+	foyachannel "github.com/freesoulcode/foya/internal/channel"
 	"github.com/freesoulcode/foya/internal/channel/feishu"
+	"github.com/freesoulcode/foya/internal/channelhub"
 
 	"github.com/freesoulcode/foya/internal/config"
 
 	conversation "github.com/freesoulcode/foya/internal/conversation"
+	kernel "github.com/freesoulcode/foya/internal/kernel"
 
 	"github.com/freesoulcode/foya/internal/terminal"
 )
@@ -38,11 +40,16 @@ type Server struct {
 }
 
 type ChannelManager interface {
-	List() []feishu.State
-	Get(string) (feishu.State, bool)
-	Create(feishu.UpdateInput) (feishu.State, error)
-	Update(string, feishu.UpdateInput) (feishu.State, error)
+	List() []channelhub.State
+	Get(string) (channelhub.State, bool)
+	Create(channelhub.UpdateInput) (channelhub.State, error)
+	Update(string, channelhub.UpdateInput) (channelhub.State, error)
 	Delete(string) error
+	BindingForSession(context.Context, string) (foyachannel.ConversationBinding, error)
+	UnbindSession(context.Context, string) error
+	StartPairing(string, string) (foyachannel.ConversationPairing, error)
+	GetPairing(string) (foyachannel.ConversationPairing, bool)
+	CancelPairing(string) error
 	StartRegistration(feishu.RegistrationInput) (feishu.RegistrationState, error)
 	GetRegistration(string) (feishu.RegistrationState, bool)
 	CancelRegistration(string) error
@@ -148,14 +155,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /channels/{id}", s.handleGetChannel)
 	s.mux.HandleFunc("PUT /channels/{id}", s.handleUpdateChannel)
 	s.mux.HandleFunc("DELETE /channels/{id}", s.handleDeleteChannel)
+	s.mux.HandleFunc("GET /sessions/{id}/channel-binding", s.handleGetSessionChannelBinding)
+	s.mux.HandleFunc("DELETE /sessions/{id}/channel-binding", s.handleUnbindSessionChannel)
+	s.mux.HandleFunc("POST /sessions/{id}/channel-pairings", s.handleStartSessionChannelPairing)
+	s.mux.HandleFunc("GET /channel-pairings/{id}", s.handleGetChannelPairing)
+	s.mux.HandleFunc("DELETE /channel-pairings/{id}", s.handleCancelChannelPairing)
 	s.mux.HandleFunc("GET /automations", s.handleListAutomations)
 	s.mux.HandleFunc("POST /automations", s.handleCreateAutomation)
 	s.mux.HandleFunc("GET /automations/{id}", s.handleGetAutomation)
 	s.mux.HandleFunc("PUT /automations/{id}", s.handleUpdateAutomation)
 	s.mux.HandleFunc("DELETE /automations/{id}", s.handleDeleteAutomation)
 	s.mux.HandleFunc("POST /automations/{id}/run", s.handleRunAutomation)
-	s.mux.HandleFunc("GET /settings/feishu-bot", s.handleGetFeishuBot)
-	s.mux.HandleFunc("PUT /settings/feishu-bot", s.handleUpdateFeishuBot)
 	s.mux.HandleFunc("GET /hooks", s.handleGetHooks)
 	s.mux.HandleFunc("PUT /hooks", s.handleReplaceHooks)
 	s.mux.HandleFunc("GET /commands", s.handleListCommands)

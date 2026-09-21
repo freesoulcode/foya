@@ -3,13 +3,23 @@ import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   CircleAlertIcon,
+  EllipsisIcon,
   GitForkIcon,
+  Link2Icon,
   Loader2Icon,
   MessageCircleIcon,
+  PencilIcon,
   PinIcon,
   PinOffIcon,
   Trash2Icon,
 } from "@lucide/vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   SidebarMenuButton,
   SidebarMenuItem,
@@ -40,6 +50,7 @@ const emit = defineEmits<{
   (event: "rename", id: string, title: string): void;
   (event: "pin", id: string, pinned: boolean): void;
   (event: "fork", session: Session): void;
+  (event: "connect", session: Session): void;
   (event: "delete", session: Session): void;
 }>();
 
@@ -83,6 +94,14 @@ function requestFork(event: Event) {
 function requestDelete(event: Event) {
   event.stopPropagation();
   emit("delete", props.session);
+}
+
+function requestConnect() {
+  emit("connect", props.session);
+}
+
+function queueRename() {
+  setTimeout(() => void startRename(), 0);
 }
 </script>
 
@@ -163,14 +182,40 @@ function requestDelete(event: Event) {
           <PinIcon v-if="!session.pinned" class="size-3.5" />
           <PinOffIcon v-else class="size-3.5 text-primary" />
         </button>
-        <button
-          type="button"
-          class="rounded p-1 text-sidebar-foreground/60 hover:bg-destructive/15 hover:text-destructive"
-          :title="$t('Delete')"
-          @click="requestDelete"
-        >
-          <Trash2Icon class="size-3.5" />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <button
+              type="button"
+              class="rounded p-1 text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+              :title="$t('More')"
+              :aria-label="$t('More')"
+              @click.stop
+            >
+              <EllipsisIcon class="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="w-48">
+            <DropdownMenuItem @select="queueRename">
+              <PencilIcon />
+              {{ $t("Rename") }}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="!session.parent_id"
+              @select="requestConnect"
+            >
+              <Link2Icon />
+              {{ $t("Connect external conversation") }}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              class="text-destructive focus:text-destructive"
+              @select="requestDelete"
+            >
+              <Trash2Icon />
+              {{ $t("Delete") }}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </span>
     </div>
   </SidebarMenuItem>

@@ -659,16 +659,15 @@ export interface AgentLimits {
   max_tree_tokens: number;
 }
 
-export type FeishuBotStatus = "stopped" | "running" | "error";
+export type MessagingChannelKind = "feishu" | "telegram";
+export type MessagingChannelStatus = "stopped" | "running" | "error";
 
-export interface FeishuBotSettings {
+interface MessagingChannelBase {
   id: string;
-  kind: "feishu";
+  kind: MessagingChannelKind;
   name: string;
   locale: "zh-CN" | "en-US";
   enabled: boolean;
-  app_id: string;
-  has_app_secret: boolean;
   connection_id?: string;
   model?: string;
   project_id?: string;
@@ -676,16 +675,14 @@ export interface FeishuBotSettings {
   allowed_users: string[];
   allowed_chats: string[];
   allow_all: boolean;
-  status: FeishuBotStatus;
+  status: MessagingChannelStatus;
   last_error?: string;
 }
 
-export interface FeishuBotUpdate {
+interface MessagingChannelUpdateBase {
   name: string;
   locale: "zh-CN" | "en-US";
   enabled: boolean;
-  app_id: string;
-  app_secret?: string;
   connection_id?: string;
   model?: string;
   project_id?: string;
@@ -695,7 +692,67 @@ export interface FeishuBotUpdate {
   allow_all: boolean;
 }
 
-export type ChannelCreate = FeishuBotUpdate & { kind: "feishu" };
+export interface FeishuChannelSettings extends MessagingChannelBase {
+  kind: "feishu";
+  app_id: string;
+  has_app_secret: boolean;
+}
+
+export interface TelegramChannelSettings extends MessagingChannelBase {
+  kind: "telegram";
+  has_token: boolean;
+}
+
+export type MessagingChannelSettings =
+  | FeishuChannelSettings
+  | TelegramChannelSettings;
+
+export interface FeishuChannelUpdate extends MessagingChannelUpdateBase {
+  app_id: string;
+  app_secret?: string;
+}
+
+export interface TelegramChannelUpdate extends MessagingChannelUpdateBase {
+  token?: string;
+}
+
+export type MessagingChannelUpdate =
+  | FeishuChannelUpdate
+  | TelegramChannelUpdate;
+
+export type ChannelCreate =
+  | (FeishuChannelUpdate & { kind: "feishu" })
+  | (TelegramChannelUpdate & { kind: "telegram" });
+
+export interface ChannelConversation {
+  channel_id: string;
+  conversation_key: string;
+  kind: string;
+  external_id: string;
+  display_name?: string;
+  active_session_id?: string;
+  last_seen_at: string;
+  updated_at: string;
+}
+
+export type ChannelPairingStatus =
+  | "pending"
+  | "completed"
+  | "expired"
+  | "cancelled";
+
+export interface ChannelPairing {
+  id: string;
+  code: string;
+  command: string;
+  channel_id: string;
+  session_id: string;
+  status: ChannelPairingStatus;
+  conversation?: ChannelConversation;
+  created_at: string;
+  expires_at: string;
+  completed_at?: string;
+}
 
 export type FeishuRegistrationStatus =
   | "starting"
@@ -724,7 +781,7 @@ export interface FeishuRegistrationState {
   status: FeishuRegistrationStatus;
   qr_code_url?: string;
   expires_at?: string;
-  channel?: FeishuBotSettings;
+  channel?: FeishuChannelSettings;
   error?: string;
 }
 
@@ -1635,24 +1692,36 @@ export const api = {
       (r) => JSON.parse(r) as AgentLimits
     ),
 
-  getFeishuBotSettings: () =>
-    invoke<string>("get_feishu_bot_settings").then(
-      (r) => JSON.parse(r) as FeishuBotSettings
-    ),
-
-  updateFeishuBotSettings: (settings: FeishuBotUpdate) =>
-    invoke<string>("update_feishu_bot_settings", { settings }).then(
-      (r) => JSON.parse(r) as FeishuBotSettings
-    ),
-
   listChannels: () =>
     invoke<string>("list_channels").then(
-      (r) => (JSON.parse(r) as FeishuBotSettings[]) ?? []
+      (r) => (JSON.parse(r) as MessagingChannelSettings[]) ?? []
     ),
+
+  getSessionChannelBinding: (sessionId: string) =>
+    invoke<string>("get_session_channel_binding", { sessionId }).then(
+      (r) => JSON.parse(r) as ChannelConversation | null
+    ),
+
+  startSessionChannelPairing: (sessionId: string, channelId: string) =>
+    invoke<string>("start_session_channel_pairing", {
+      sessionId,
+      channelId,
+    }).then((r) => JSON.parse(r) as ChannelPairing),
+
+  getChannelPairing: (pairingId: string) =>
+    invoke<string>("get_channel_pairing", { pairingId }).then(
+      (r) => JSON.parse(r) as ChannelPairing
+    ),
+
+  cancelChannelPairing: (pairingId: string) =>
+    invoke("cancel_channel_pairing", { pairingId }),
+
+  unbindSessionChannel: (sessionId: string) =>
+    invoke("unbind_session_channel", { sessionId }),
 
   createChannel: (settings: ChannelCreate) =>
     invoke<string>("create_channel", { settings }).then(
-      (r) => JSON.parse(r) as FeishuBotSettings
+      (r) => JSON.parse(r) as MessagingChannelSettings
     ),
 
   startFeishuRegistration: (settings: FeishuRegistrationInput) =>
@@ -1668,9 +1737,9 @@ export const api = {
   cancelFeishuRegistration: (registrationId: string) =>
     invoke("cancel_feishu_registration", { registrationId }),
 
-  updateChannel: (channelId: string, settings: FeishuBotUpdate) =>
+  updateChannel: (channelId: string, settings: MessagingChannelUpdate) =>
     invoke<string>("update_channel", { channelId, settings }).then(
-      (r) => JSON.parse(r) as FeishuBotSettings
+      (r) => JSON.parse(r) as MessagingChannelSettings
     ),
 
   deleteChannel: (channelId: string) =>

@@ -12,6 +12,7 @@ import (
 	foyachannel "github.com/freesoulcode/foya/internal/channel"
 	conversation "github.com/freesoulcode/foya/internal/conversation"
 	interaction "github.com/freesoulcode/foya/internal/interaction"
+	"github.com/freesoulcode/foya/internal/testkit"
 
 	"github.com/larksuite/oapi-sdk-go/v3/channel/types"
 )
@@ -20,6 +21,7 @@ func TestProcessMessageReturnsCompleteResponseAndReusesSession(t *testing.T) {
 	runtime := newFakeBackend()
 	transport := &fakeChannel{}
 	bot := newTestBot(t, runtime, transport)
+	bindChatToNewSession(t, bot, runtime, "oc_1")
 	incoming := &types.NormalizedMessage{
 		MessageID: "om_1",
 		ChatID:    "oc_1",
@@ -58,6 +60,7 @@ func TestProcessMessageImportsImage(t *testing.T) {
 	runtime := newFakeBackend()
 	transport := &fakeChannel{downloads: map[string][]byte{"img_1": []byte("image")}}
 	bot := newTestBot(t, runtime, transport)
+	bindChatToNewSession(t, bot, runtime, "oc_image")
 	incoming := &types.NormalizedMessage{
 		MessageID: "om_image",
 		ChatID:    "oc_image",
@@ -90,30 +93,91 @@ func TestNewCommandReplacesChatSession(t *testing.T) {
 	runtime := newFakeBackend()
 	transport := &fakeChannel{}
 	bot := newTestBot(t, runtime, transport)
-	first, err := bot.sessionForChat("oc_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := bot.processMessage(context.Background(), &types.NormalizedMessage{
+	incoming := &types.NormalizedMessage{
 		MessageID: "om_new",
 		ChatID:    "oc_1",
 		ChatType:  "p2p",
 		UserID:    "ou_allowed",
 		Content:   "/new",
-	}); err != nil {
+	}
+	if err := bot.processMessage(context.Background(), incoming); err != nil {
+		t.Fatal(err)
+	}
+	first, err := bot.store.Get(
+		context.Background(),
+		bot.config.ChannelID,
+		conversationKey("oc_1"),
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	second := bot.store.Get("oc_1")
+	incoming.MessageID = "om_new_2"
+	if err := bot.processMessage(context.Background(), incoming); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := bot.store.Get(context.Background(), bot.config.ChannelID, conversationKey("oc_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first == second {
 		t.Fatalf("session was not replaced: %q", first)
+	}
+	if oldBinding, err := bot.store.ForSession(
+		context.Background(),
+		first,
+	); err != nil || oldBinding.ActiveSessionID != "" {
+		t.Fatalf("old session binding = %#v, err = %v", oldBinding, err)
 	}
 	if runtime.createCount != 2 {
 		t.Fatalf("created %d sessions, want 2", runtime.createCount)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].Text != "已开启新会话。" {
+	if len(transport.sent) != 2 ||
+		transport.sent[1].Text != localizedMessage(bot.config.Locale, "new_chat") {
 		t.Fatalf("sent messages = %#v", transport.sent)
+	}
+}
+
+func TestOneBotStartsIndependentSessionsFromPrivateAndThreeGroupChats(t *testing.T) {
+	runtime := newFakeBackend()
+	bot := newTestBot(t, runtime, &fakeChannel{})
+	ctx := context.Background()
+	chats := []struct {
+		id   string
+		kind string
+	}{
+		{id: "ou_private", kind: "p2p"},
+		{id: "oc_1", kind: "group"},
+		{id: "oc_2", kind: "group"},
+		{id: "oc_3", kind: "group"},
+	}
+	sessionIDs := make(map[string]struct{}, len(chats))
+	for index, chat := range chats {
+		if err := bot.processMessage(ctx, &types.NormalizedMessage{
+			MessageID: "om_new_" + strconv.Itoa(index),
+			ChatID:    chat.id,
+			ChatType:  chat.kind,
+			UserID:    "ou_allowed",
+			Content:   "/new",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		sessionID, err := bot.store.Get(
+			ctx,
+			bot.config.ChannelID,
+			conversationKey(chat.id),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sessionID == "" {
+			t.Fatalf("chat %q has no session", chat.id)
+		}
+		sessionIDs[sessionID] = struct{}{}
+	}
+	if len(sessionIDs) != 4 || runtime.createCount != 4 {
+		t.Fatalf("session IDs = %#v, creates = %d", sessionIDs, runtime.createCount)
 	}
 }
 
@@ -130,6 +194,7 @@ func TestAccessPolicy(t *testing.T) {
 		{"allowed dm", &types.NormalizedMessage{ChatType: "p2p", UserID: "ou_allowed"}, true},
 		{"denied dm", &types.NormalizedMessage{ChatType: "p2p", UserID: "ou_other"}, false},
 		{"allowed group", &types.NormalizedMessage{ChatType: "group", ChatID: "oc_allowed"}, true},
+		{"allowed group user", &types.NormalizedMessage{ChatType: "group", ChatID: "oc_other", UserID: "ou_allowed"}, true},
 		{"denied group", &types.NormalizedMessage{ChatType: "group", ChatID: "oc_other"}, false},
 	}
 	for _, test := range tests {
@@ -141,11 +206,78 @@ func TestAccessPolicy(t *testing.T) {
 	}
 }
 
+func TestUnboundMessageDoesNotDiscoverExternalConversation(t *testing.T) {
+	runtime := newFakeBackend()
+	transport := &fakeChannel{}
+	bot := newTestBot(t, runtime, transport)
+	if err := bot.processMessage(context.Background(), &types.NormalizedMessage{
+		MessageID: "om_discover",
+		ChatID:    "oc_discover",
+		ChatType:  "p2p",
+		UserID:    "ou_allowed",
+		Content:   "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := bot.store.List(context.Background(), bot.config.ChannelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ExternalID == "oc_discover" {
+			t.Fatalf("unbound conversation was discovered: %#v", item)
+		}
+	}
+	if runtime.createCount != 0 {
+		t.Fatalf("created %d sessions for an unbound message", runtime.createCount)
+	}
+	if len(transport.sent) != 1 ||
+		transport.sent[0].Text != localizedMessage(bot.config.Locale, "conversation_unbound") {
+		t.Fatalf("sent messages = %#v", transport.sent)
+	}
+}
+
+func TestPairingCommandBindsExistingSession(t *testing.T) {
+	runtime := newFakeBackend()
+	runtime.sessions = append(runtime.sessions, &conversation.Session{ID: "session-a"})
+	transport := &fakeChannel{}
+	bot := newTestBot(t, runtime, transport)
+	pairing, err := bot.pairings.Create(bot.config.ChannelID, "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bot.processMessage(context.Background(), &types.NormalizedMessage{
+		MessageID: "om_bind",
+		ChatID:    "oc_new",
+		ChatType:  "group",
+		UserID:    "ou_unknown",
+		Content:   "/bind " + pairing.Code,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := bot.store.ForSession(context.Background(), "session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.ExternalID != "oc_new" || binding.Kind != "group" {
+		t.Fatalf("binding = %#v", binding)
+	}
+	if len(transport.sent) != 1 ||
+		transport.sent[0].Text != localizedMessage(bot.config.Locale, "pairing_complete") {
+		t.Fatalf("sent messages = %#v", transport.sent)
+	}
+}
+
 func TestStopCommandCancelsCurrentSession(t *testing.T) {
 	runtime := newFakeBackend()
 	transport := &fakeChannel{}
 	bot := newTestBot(t, runtime, transport)
-	if err := bot.store.Set("oc_1", "session-1"); err != nil {
+	if err := bot.store.Bind(
+		context.Background(),
+		bot.config.ChannelID,
+		conversationKey("oc_1"),
+		"session-1",
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +295,8 @@ func TestStopCommandCancelsCurrentSession(t *testing.T) {
 	if len(runtime.cancelled) != 1 || runtime.cancelled[0] != "session-1" {
 		t.Fatalf("cancelled sessions = %#v", runtime.cancelled)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].Text != "已停止当前任务。" {
+	if len(transport.sent) != 1 ||
+		transport.sent[0].Text != localizedMessage(bot.config.Locale, "task_stopped") {
 		t.Fatalf("sent messages = %#v", transport.sent)
 	}
 	if len(transport.reactions) != 1 ||
@@ -173,10 +306,19 @@ func TestStopCommandCancelsCurrentSession(t *testing.T) {
 	}
 }
 
-func TestNewRequiresExplicitAccessPolicy(t *testing.T) {
-	_, err := New(Config{SessionPath: t.TempDir() + "/sessions.json"}, newFakeBackend(), &fakeChannel{}, log.Default())
-	if err == nil {
-		t.Fatal("New succeeded without an access policy")
+func TestNewSupportsPairingOnlyAccess(t *testing.T) {
+	runtime := newFakeBackend()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
+	_, err := New(
+		Config{ChannelID: "channel-1", ApprovalMode: interaction.ModeAuto},
+		runtime,
+		bindings,
+		foyachannel.NewConversationPairingStore(bindings, runtime),
+		&fakeChannel{},
+		log.Default(),
+	)
+	if err != nil {
+		t.Fatalf("New failed for pairing-only access: %v", err)
 	}
 }
 
@@ -191,7 +333,9 @@ type fakeBackend struct {
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{subscribers: make(map[string]chan conversation.Event)}
+	return &fakeBackend{
+		subscribers: make(map[string]chan conversation.Event),
+	}
 }
 
 func (b *fakeBackend) CreateSession(options conversation.CreateOptions) (*conversation.Session, error) {
@@ -370,9 +514,10 @@ type fakeReaction struct {
 
 func newTestBot(t *testing.T, runtime foyachannel.Runtime, transport Channel) *Bot {
 	t.Helper()
+	bindings := foyachannel.NewConversationBindingStore(testkit.OpenDatabase(t))
 	bot, err := New(Config{
+		ChannelID:    "channel-1",
 		ApprovalMode: interaction.ModeAuto,
-		SessionPath:  t.TempDir() + "/sessions.json",
 		AllowedUsers: []string{
 			"ou_allowed",
 		},
@@ -380,11 +525,46 @@ func newTestBot(t *testing.T, runtime foyachannel.Runtime, transport Channel) *B
 			"oc_1",
 			"oc_image",
 		},
-	}, runtime, transport, log.Default())
+	}, runtime, bindings, foyachannel.NewConversationPairingStore(bindings, runtime), transport, log.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, chatID := range []string{"oc_1", "oc_image"} {
+		if err := bot.store.Observe(
+			context.Background(),
+			bot.config.ChannelID,
+			conversationKey(chatID),
+			"group",
+			chatID,
+			chatID,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return bot
+}
+
+func bindChatToNewSession(
+	t *testing.T,
+	bot *Bot,
+	runtime *fakeBackend,
+	chatID string,
+) {
+	t.Helper()
+	session, err := runtime.CreateSession(conversation.CreateOptions{
+		ApprovalMode: string(interaction.ModeAuto),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bot.store.Bind(
+		context.Background(),
+		bot.config.ChannelID,
+		conversationKey(chatID),
+		session.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
 }
 
 var _ foyachannel.Runtime = (*fakeBackend)(nil)

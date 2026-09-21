@@ -10,11 +10,12 @@ import (
 	"strconv"
 
 	"github.com/freesoulcode/foya/internal/automation"
+	foyachannel "github.com/freesoulcode/foya/internal/channel"
 	"github.com/freesoulcode/foya/internal/channel/feishu"
+	"github.com/freesoulcode/foya/internal/channelhub"
 	"github.com/freesoulcode/foya/internal/contextdata"
 	conversation "github.com/freesoulcode/foya/internal/conversation"
 	"github.com/freesoulcode/foya/internal/hooks"
-	interaction "github.com/freesoulcode/foya/internal/interaction"
 	"github.com/freesoulcode/foya/internal/project"
 	workflow "github.com/freesoulcode/foya/internal/workflow"
 )
@@ -268,11 +269,6 @@ func (s *Server) handleUpdateMemorySettings(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, updated)
 }
 
-type channelCreateRequest struct {
-	Kind string `json:"kind"`
-	feishu.UpdateInput
-}
-
 func (s *Server) handleListChannels(w http.ResponseWriter, _ *http.Request) {
 	if s.channels == nil {
 		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
@@ -286,18 +282,14 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
 		return
 	}
-	var input channelCreateRequest
+	var input channelhub.UpdateInput
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if input.Kind != "feishu" {
-		writeErr(w, http.StatusBadRequest, "unsupported_channel", "unsupported channel kind")
-		return
-	}
-	state, err := s.channels.Create(input.UpdateInput)
+	state, err := s.channels.Create(input)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "channel_create_failed", err.Error())
 		return
@@ -368,7 +360,7 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
 		return
 	}
-	var input feishu.UpdateInput
+	var input channelhub.UpdateInput
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
@@ -401,6 +393,130 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGetSessionChannelBinding(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	sessionID := r.PathValue("id")
+	if findTopLevelSession(s.service.ListSessions(), sessionID) == nil {
+		writeErr(w, http.StatusNotFound, "session_not_found", "session not found")
+		return
+	}
+	item, err := s.channels.BindingForSession(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "channel_binding_failed", err.Error())
+		return
+	}
+	if item.ActiveSessionID == "" {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+type channelPairingRequest struct {
+	ChannelID string `json:"channel_id"`
+}
+
+func (s *Server) handleStartSessionChannelPairing(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	sessionID := r.PathValue("id")
+	session := findTopLevelSession(s.service.ListSessions(), sessionID)
+	if session == nil {
+		writeErr(w, http.StatusNotFound, "session_not_found", "session not found")
+		return
+	}
+	if session.ApprovalMode != "auto" && session.ApprovalMode != "full_access" {
+		writeErr(
+			w,
+			http.StatusConflict,
+			"interactive_session",
+			"channel-bound sessions require auto or full_access approval",
+		)
+		return
+	}
+	var input channelPairingRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if input.ChannelID == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "channel_id is required")
+		return
+	}
+	pairing, err := s.channels.StartPairing(input.ChannelID, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		writeErr(w, http.StatusNotFound, "channel_not_found", err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusConflict, "channel_pairing_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, pairing)
+}
+
+func (s *Server) handleGetChannelPairing(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	item, ok := s.channels.GetPairing(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "channel_pairing_not_found", "channel pairing not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleCancelChannelPairing(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	if err := s.channels.CancelPairing(r.PathValue("id")); err != nil {
+		if errors.Is(err, foyachannel.ErrPairingNotFound) {
+			writeErr(w, http.StatusNotFound, "channel_pairing_not_found", err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "channel_pairing_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUnbindSessionChannel(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
+		return
+	}
+	sessionID := r.PathValue("id")
+	if findTopLevelSession(s.service.ListSessions(), sessionID) == nil {
+		writeErr(w, http.StatusNotFound, "session_not_found", "session not found")
+		return
+	}
+	if err := s.channels.UnbindSession(r.Context(), sessionID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "channel_unbind_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func findTopLevelSession(items []*conversation.Session, id string) *conversation.Session {
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleListAutomations(w http.ResponseWriter, _ *http.Request) {
@@ -502,55 +618,6 @@ func (s *Server) handleRunAutomation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, task)
-}
-
-func (s *Server) handleGetFeishuBot(w http.ResponseWriter, _ *http.Request) {
-	if s.channels == nil {
-		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
-		return
-	}
-	items := s.channels.List()
-	if len(items) == 0 {
-		writeJSON(w, http.StatusOK, feishu.State{
-			Kind: "feishu", Name: "Feishu Bot", Locale: "zh-CN",
-			ApprovalMode: interaction.ModeAuto,
-			Status:       feishu.StatusStopped,
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, items[0])
-}
-
-func (s *Server) handleUpdateFeishuBot(w http.ResponseWriter, r *http.Request) {
-	if s.channels == nil {
-		writeErr(w, http.StatusServiceUnavailable, "channels_unavailable", "channels are unavailable")
-		return
-	}
-	var input feishu.UpdateInput
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	if input.Name == "" {
-		input.Name = "Feishu Bot"
-	}
-	items := s.channels.List()
-	var (
-		state feishu.State
-		err   error
-	)
-	if len(items) == 0 {
-		state, err = s.channels.Create(input)
-	} else {
-		state, err = s.channels.Update(items[0].ID, input)
-	}
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "channel_update_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
