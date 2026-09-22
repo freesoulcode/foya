@@ -49,8 +49,7 @@ function exactTokens(value: number) {
 }
 
 function percent(value: number) {
-  if (value > 0 && value < 1) return "<1%";
-  return `${value.toFixed(value < 10 ? 1 : 0)}%`;
+  return `${value.toFixed(1)}%`;
 }
 </script>
 
